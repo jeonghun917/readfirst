@@ -6,6 +6,9 @@ export const READ_LIST_FORMAT = 'readfirst/read-list@1';
 const TEST = /(^|\/)(?:tests?|__tests__|spec|e2e)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(^|\/)test[-_][^/]*\.(?:[cm]?[jt]sx?|py)$|_test\.(?:py|go)$/u;
 export const isTest = (path) => TEST.test(path);
 
+// The read list for no files, so `diff --json` is always JSON.
+export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], truncated: { tests: 0, usedBy: 0 } });
+
 export function readList({ map, files, imports, targets, commit = null, limit = 30 }) {
   if (!targets.length || targets.some((t) => !t.trim())) throw new Error('give at least one file path, none empty');
   const tracked = new Set(files);

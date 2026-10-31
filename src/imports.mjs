@@ -6,7 +6,8 @@ import { posix } from 'node:path';
 const JS = /\.(?:m?js|cjs|tsx?|jsx|mts|cts|vue|svelte)$/u;
 const PY = /\.py$/u;
 const JS_IMPORT = /\b(?:import|export)\s+(?:type\s+)?(?:[\w*{}\s,$]+?\s+from\s*)?['"]([^'"\n]+)['"]|\bimport\(\s*['"]([^'"\n]+)['"]\s*\)|\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/gu;
-const PY_IMPORT = /^[ \t]*(?:from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+([\w*, \t()]+)|import[ \t]+([\w., \t]+))/gmu;
+// `from a import (b,\n c)` may span lines inside its parentheses.
+const PY_IMPORT = /^[ \t]*(?:from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+(\([^)]*\)|[\w*, \t]+)|import[ \t]+([\w., \t]+))/gmu;
 const JS_EXT = ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.mts', '.vue', '.svelte', '/index.js', '/index.ts', '/index.tsx', '/index.mjs'];
 
 const lineAt = (body, index) => body.slice(0, index).split('\n').length;
@@ -50,7 +51,7 @@ export function importEdges(files, read) {
             const target = mod ? pyModule(mod, root) : null;
             if (target) { add(from, target, line); }
             // "from pkg import mod" may name sub-modules.
-            for (const name of m[2].replace(/[()]/gu, '').split(',').map((s) => s.trim().split(/\s+/u)[0]).filter((s) => s && s !== '*'))
+            for (const name of m[2].replace(/[()]|#[^\n]*/gu, '').split(',').map((s) => s.trim().split(/\s+/u)[0]).filter((s) => s && s !== '*'))
               add(from, pyModule(mod ? `${mod}.${name}` : name, root), line);
             if (target) break;
           }
