@@ -1,0 +1,11 @@
+{
+  "name": "readfirst",
+  "version": "0.1.0",
+  "description": "What to read and check before you (or your AI agent) change a file: project rules, risks and tests tied to code.",
+  "type": "module",
+  "bin": { "readfirst": "bin/readfirst.mjs" },
+  "files": ["bin", "src", "README.md"],
+  "engines": { "node": ">=20" },
+  "scripts": { "test": "node --test test/*.test.mjs" },
+  "keywords": ["ai", "agents", "claude-code", "cursor", "code-review", "impact-analysis", "monorepo"]
+}
