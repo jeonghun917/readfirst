@@ -43,6 +43,7 @@ const FIXTURE = {
   'py/app/db.py': 'X = 1\n',
   'py/app/views.py': 'from .db import X\nfrom . import db\n',
   'py/test_views.py': 'import app.views\nfrom app import db\n',
+  'py/app/multi.py': 'from . import (\n    db,  # the store\n    views,\n)\n',
 };
 
 test('patterns: paths, folders and one-segment globs', () => {
@@ -52,13 +53,16 @@ test('patterns: paths, folders and one-segment globs', () => {
   assert.ok(!patternToRegExp('src/*.js').test('src/a/b.js'));
   assert.ok(patternToRegExp('**/*.md').test('docs/x/y.md'));
   assert.ok(patternToRegExp('README.md').test('README.md') && !patternToRegExp('README.md').test('xREADME.md'));
+  assert.ok(patternToRegExp('src/?/**').test('src/a/x.js') && !patternToRegExp('src/?/**').test('src/abc/x.js'), '? is one character, also before /**');
+  assert.ok(!patternToRegExp('a.b/**').test('axb/c.js'), 'dots are literal');
 });
 
 test('imports: JS/TS (import, export from, require, .js for .ts, folder index) and Python (relative, absolute, sub-modules)', () => {
   const files = Object.keys(FIXTURE).sort();
   const edges = importEdges(files, (p) => FIXTURE[p]).map((e) => `${e.from} -> ${e.to}:${e.line}`);
   for (const e of ['src/billing/charge.ts -> src/util/money.ts:1', 'src/billing/index.ts -> src/billing/charge.ts:1', 'src/api/route.js -> src/billing/index.ts:1',
-    'src/main.js -> src/api/route.js:1', 'test/charge.test.ts -> src/billing/charge.ts:1', 'py/app/views.py -> py/app/db.py:1'])
+    'src/main.js -> src/api/route.js:1', 'test/charge.test.ts -> src/billing/charge.ts:1', 'py/app/views.py -> py/app/db.py:1',
+    'py/app/multi.py -> py/app/db.py:1', 'py/app/multi.py -> py/app/views.py:1'])
     assert.ok(edges.includes(e), `missing ${e}: ${edges.join('; ')}`);
 });
 
@@ -117,6 +121,8 @@ test('cli: init, check, prompt, read and diff on a real git repository', () => {
   assert.throws(() => run(root, 'read', 'src/main.js'), /run `readfirst init` first/u);
   assert.equal(run(root, 'init').code, 0);
   assert.throws(() => run(root, 'init'), /already exists/u);
+  assert.equal(run(root, 'init', '--force').code, 0, '--force is a switch, not a value');
+  assert.throws(() => run(root, 'read', '--limit', '0', 'src/main.js'), /--limit needs a whole number/u);
   assert.match(run(root, 'check').out, /is good/u);
   assert.match(run(root, 'prompt').out, /src-billing \(src\/billing\/\*\*\)/u);
   assert.match(run(root, 'read', 'src/util/money.ts').out, /`src\/billing\/charge.ts:1`/u);
@@ -125,6 +131,7 @@ test('cli: init, check, prompt, read and diff on a real git repository', () => {
   git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.');
   git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'map');
   git('checkout', '-q', '-b', 'work');
+  assert.deepEqual(JSON.parse(run(root, 'diff', '--json').out).targets, [], 'no changes is still JSON');
   writeFileSync(join(root, 'src/util/money.ts'), 'export const money = (n: number) => n * 100;\n');
   writeFileSync(join(root, 'src/util/new.ts'), 'export {};\n');
   const diff = JSON.parse(run(root, 'diff', '--json').out);

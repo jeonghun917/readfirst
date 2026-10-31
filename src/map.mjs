@@ -10,10 +10,11 @@ const isRecord = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const text = (v, max = 2000) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
 
 export function patternToRegExp(pattern) {
-  const esc = (s) => s.replace(/[.+^${}()|[\]\\]/gu, '\\$&');
-  if (pattern.endsWith('/**')) return new RegExp(`^${esc(pattern.slice(0, -3)).replace(/\*/gu, '[^/]*')}/`, 'u');
+  // Within one segment: `*` is any run of characters, `?` one character; everything else is literal.
+  const segment = (s) => s.replace(/[.+^${}()|[\]\\]/gu, '\\$&').replace(/\*/gu, '[^/]*').replace(/\?/gu, '[^/]');
+  if (pattern.endsWith('/**')) return new RegExp(`^${segment(pattern.slice(0, -3))}/`, 'u');
   if (pattern === '**') return /^/u;
-  const body = pattern.split('**/').map((part) => esc(part).replace(/\*/gu, '[^/]*').replace(/\?/gu, '[^/]')).join('(?:.*/)?');
+  const body = pattern.split('**/').map(segment).join('(?:.*/)?');
   return new RegExp(`^${body}$`, 'u');
 }
 
