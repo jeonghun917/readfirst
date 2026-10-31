@@ -66,13 +66,14 @@ test('imports: JS/TS (import, export from, require, .js for .ts, folder index) a
     assert.ok(edges.includes(e), `missing ${e}: ${edges.join('; ')}`);
 });
 
-test('draft: one group per folder (sub-folders under src), tests together, media-only folders ignored; it passes the check', () => {
+test('draft: one group per folder (sub-folders under src), tests together, media-only folders as their own group; it passes the check', () => {
   const files = Object.keys(FIXTURE).sort();
   const map = draftMap(files);
   assert.equal(map.format, MAP_FORMAT);
-  assert.deepEqual(map.groups.map((g) => g.id), ['py', 'root', 'src', 'src-api', 'src-billing', 'src-util', 'tests']);
+  assert.deepEqual(map.groups.map((g) => g.id), ['img', 'py', 'root', 'src', 'src-api', 'src-billing', 'src-util', 'tests']);
   assert.deepEqual(map.groups.find((g) => g.id === 'src').files, ['src/main.js']);
-  assert.deepEqual(map.ignore, ['img/**']);
+  assert.deepEqual(map.ignore, [], 'media folders get a group, not ignore: code loads them');
+  assert.match(map.groups.find((g) => g.id === 'img').title, /media files in img\/\*\* \(binary, not read\)/u);
   assert.deepEqual(mapProblems(map, files), []);
 });
 
@@ -80,7 +81,7 @@ test('check: unplaced, twice-placed, dead patterns, unknown fields and bad rules
   const files = Object.keys(FIXTURE).sort();
   const map = draftMap(files);
   const p = (m) => mapProblems(m, files).join('\n');
-  assert.match(p({ ...map, ignore: [] }), /1 file\(s\) in no group and not ignored: img\/logo.png/u);
+  assert.match(p({ ...map, groups: map.groups.filter((g) => g.id !== 'img') }), /1 file\(s\) in no group and not ignored: img\/logo.png/u);
   assert.match(p({ ...map, groups: [...map.groups, { id: 'all-src', title: 'x', files: ['src/main.js'] }] }), /src\/main.js: in more than one group/u);
   assert.match(p({ ...map, groups: [...map.groups, { id: 'gone', title: 'x', files: ['nope/**'] }] }), /nope\/\*\* matches no tracked file/u);
   assert.match(p({ ...map, extra: 1 }), /map.extra: unknown field/u);
