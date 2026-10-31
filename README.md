@@ -58,6 +58,38 @@ checks it lists. Before you finish, run `npx readfirst diff` and run every check
 When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.
 ```
 
+## On every pull request (GitHub Action)
+
+```yaml
+# .github/workflows/readfirst.yml
+name: readfirst
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  readfirst:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jeonghun917/readfirst@main
+```
+
+Each PR gets one comment, updated on every push, that lists:
+- the rules, risks and checks for the files the PR changes, with the checks as boxes to tick;
+- the tests that reach the changed code.
+
+The check fails when `.readfirst/map.json` no longer covers the code, for example when a new file is in no group. So the
+map is fixed in the same PR.
+
+| Input | Default | Meaning |
+|---|---|---|
+| `fail-on-map-problems` | `true` | `false` reports map problems without failing |
+| `comment` | `true` | `false` writes only the job summary |
+| `limit` | `30` | most tests and users listed per section |
+
+On a PR from a fork, the token is read-only. The list then goes to the job summary instead of a comment.
+
 ## The map
 
 ```json

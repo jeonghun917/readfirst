@@ -1,0 +1,54 @@
+{
+  "format": "readfirst/map@1",
+  "groups": [
+    {
+      "id": "cli",
+      "title": "the readfirst command and the GitHub Action",
+      "files": ["bin/**", "src/cli.mjs", "src/action.mjs", "src/prompt.mjs", "action.yml"],
+      "checks": [{ "run": "npm test", "why": "commands end to end on a scratch git repository, the Action against a fake GitHub" }],
+      "risks": [
+        { "text": "action.yml passes inputs as INPUT_* env vars by hand (composite actions do not); a new input needs a line there", "files": ["action.yml", "src/action.mjs"] },
+        { "text": "the PR comment is found again by its first line (MARKER); changing it makes every open PR get a second comment", "files": ["src/action.mjs"] }
+      ]
+    },
+    {
+      "id": "core",
+      "title": "the map format, import reading and the read list",
+      "files": ["src/map.mjs", "src/imports.mjs", "src/readlist.mjs"],
+      "checks": [{ "run": "npm test", "why": "format, patterns, imports and read list cases" }],
+      "risks": [
+        { "text": "map.json files in users' repositories must keep working: add fields as optional, never rename or remove one without a new format version", "files": ["src/map.mjs"] },
+        { "text": "the read list JSON is read by other tools (--json, the Action): keep field names", "files": ["src/readlist.mjs"] }
+      ]
+    },
+    {
+      "id": "tests",
+      "title": "tests",
+      "files": ["test/**"],
+      "checks": [{ "run": "npm test" }]
+    },
+    {
+      "id": "project",
+      "title": "package, docs and CI",
+      "files": [".gitignore", "README.md", "package.json", ".github/**"],
+      "risks": [
+        { "text": "package.json \"files\" decides what npm ships; a new folder under src is fine, a new top-level folder must be added there", "files": ["package.json"] }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "no-network-in-cli",
+      "rule": "the readfirst command reads only the checkout: no network calls and no model calls",
+      "why": "it runs in agents' sandboxes and on private code; only the Action talks to the GitHub API",
+      "files": ["src/cli.mjs", "src/map.mjs", "src/imports.mjs", "src/readlist.mjs", "src/prompt.mjs"]
+    },
+    {
+      "id": "no-dependencies",
+      "rule": "no runtime dependencies: Node's standard library only",
+      "why": "npx readfirst must start fast and nothing third-party runs on users' code",
+      "files": ["package.json", "src/**"]
+    }
+  ],
+  "ignore": []
+}

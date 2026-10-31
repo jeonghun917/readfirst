@@ -1,0 +1,29 @@
+name: readfirst
+description: Comment on each pull request with the rules, risks and checks for the files it changes, and fail when the map falls behind the code.
+author: jeonghun917
+branding:
+  icon: book-open
+  color: blue
+inputs:
+  token:
+    description: Token used to read the PR's files and write the comment (needs pull-requests write).
+    default: ${{ github.token }}
+  comment:
+    description: Post or update the PR comment ("false" only writes the job summary).
+    default: 'true'
+  fail-on-map-problems:
+    description: Fail the check when .readfirst/map.json no longer covers every tracked file.
+    default: 'true'
+  limit:
+    description: Most tests and users listed per section.
+    default: '30'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: node "$GITHUB_ACTION_PATH/src/action.mjs"
+      env:
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        INPUT_FAIL_ON_MAP_PROBLEMS: ${{ inputs.fail-on-map-problems }}
+        INPUT_LIMIT: ${{ inputs.limit }}
