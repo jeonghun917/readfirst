@@ -131,4 +131,4 @@ Imports are read for JavaScript/TypeScript (`import`, `export … from`, `import
 
 ## License
 
-TBD.
+MIT
