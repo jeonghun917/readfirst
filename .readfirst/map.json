@@ -3,51 +3,503 @@
   "groups": [
     {
       "id": "cli",
-      "title": "the readfirst command and the GitHub Action",
-      "files": ["bin/**", "src/cli.mjs", "src/action.mjs", "src/prompt.mjs", "action.yml"],
-      "checks": [{ "run": "npm test", "why": "commands end to end on a scratch git repository, the Action against a fake GitHub" }],
+      "title": "the readfirst command: argument parsing, git file listing, init/prompt/check/read/diff and the agent brief",
+      "files": [
+        "bin/**",
+        "src/cli.mjs",
+        "src/prompt.mjs"
+      ],
+      "checks": [
+        {
+          "run": "npm test",
+          "why": "the cli test runs init, check, prompt, read and diff on a scratch git repository (test/readfirst.test.mjs:115); the Action tests also go through repoFiles and readMapFile from src/cli.mjs"
+        }
+      ],
       "risks": [
-        { "text": "action.yml passes inputs as INPUT_* env vars by hand (composite actions do not); a new input needs a line there", "files": ["action.yml", "src/action.mjs"] },
-        { "text": "the PR comment is found again by its first line (MARKER); changing it makes every open PR get a second comment", "files": ["src/action.mjs"] }
+        {
+          "text": "src/action.mjs imports repoFiles, readMapFile and readText from src/cli.mjs: renaming them or changing what they return breaks the GitHub Action too, so run the Action tests as well.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "Exit codes are a contract for CI and agent scripts: main() returns 0 on success, 1 only when `check` finds problems, and 2 when no command is given (it prints the help); every other failure must throw, and bin/readfirst.mjs turns the throw into stderr plus exit 2. Do not call process.exit or print errors inside a command. `read` and `diff` on a stale map exit 2, not 1.",
+          "files": [
+            "bin/**",
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "Every `--name` option consumes the next argument as its value; only --json, -h and --help are flags. A new boolean flag must be added next to --json in parse(), or `readfirst read --flag file.js` silently eats the file name. For the same reason `init --force` alone fails ('needs a value'), and any value, even `--force no`, overwrites the map.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "repoFiles lists tracked files plus untracked files not ignored by .gitignore, so a stray local file makes `check` fail and counts as a file for the map, imports and the Action; tracked files deleted from disk are dropped.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "`diff` takes its base from the first of origin/main, main, origin/master, master that exists, diffs the working tree against the merge-base, and adds untracked files, so uncommitted edits and deleted files are targets too. With no changes it prints plain text even with --json, so a script that JSON.parses `diff --json` breaks on an empty diff.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "`check --json` prints { ok, problems } built in src/cli.mjs, not in readlist.mjs, and no test pins its shape; keep both field names.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "src/prompt.mjs writes the map's field names (title, checks {run, why}, risks {text, files}, rules {id, rule, why, files, checks}) and the pattern syntax by hand; only MAP_FORMAT and MAP_PATH come from src/map.mjs. Change the brief whenever the fields or the pattern syntax in src/map.mjs change; the test only looks at its 'Current groups' line.",
+          "files": [
+            "src/prompt.mjs"
+          ]
+        },
+        {
+          "text": "The command list is written three times: the header comment and HELP in src/cli.mjs and the Start section of README.md. A new command needs a branch in main() (anything else throws 'unknown command') and a line in all three.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "action",
+      "title": "the GitHub Action: one PR comment with the read list for the changed files, and a failed job when the map falls behind",
+      "files": [
+        "src/action.mjs",
+        "action.yml"
+      ],
+      "checks": [
+        {
+          "run": "npm test",
+          "why": "test/action.test.mjs runs runAction against a fake GitHub: first comment, update in place, map problems, read-only token, off a PR"
+        }
+      ],
+      "risks": [
+        {
+          "text": "A composite action does not set INPUT_* environment variables: action.yml maps each input to an env var by hand. A new input needs a line in the env block and a read in src/action.mjs, and the default in action.yml ('true', 'true', '30') is repeated as a fallback in the code; change both together.",
+          "files": [
+            "action.yml",
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "The old comment is found as the first PR comment whose body starts with MARKER, whoever wrote it. Changing MARKER or putting anything before it in commentBody makes every open PR get a second comment.",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "Changed files and comments are read 100 per page and at most 30 pages, with no warning past that; on a PR with more than 3000 comments the old comment is not found and a duplicate is posted on each push.",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "Fork PRs work only because a failed comment write whose error text matches /: 403 / is downgraded to a warning; that regex depends on the message format built in api() (`GitHub API <method> <path>: <status> ...`). Rewording that message turns every fork PR into a failed job. Any other status (401, 404, 422, 5xx) and any failed GET still fails the job.",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "Only the exact string 'false' turns off fail-on-map-problems or comment; 'False', '0' or 'no' leave them on. A missing or invalid .readfirst/map.json throws and fails the job even when fail-on-map-problems is false.",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "With any map problem the comment lists only the problems (up to 20) and no read list, so a PR that adds an unmapped file gets no rules, risks or checks until the map is fixed.",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "The comment is cut at 60000 characters (GitHub's limit is 65536), possibly mid-markdown; this cut is not tested.",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "src/action.mjs runs only when process.argv[1] ends with '/src/action.mjs', and action.yml calls node \"$GITHUB_ACTION_PATH/src/action.mjs\". Moving or renaming the file needs both changed, or the Action silently does nothing and passes; the tests import runAction and would not notice.",
+          "files": [
+            "src/action.mjs",
+            "action.yml"
+          ]
+        },
+        {
+          "text": "This is the only file allowed to use the network: it calls the GitHub API with INPUT_TOKEN at GITHUB_API_URL (default https://api.github.com). Off a pull request (no event.pull_request) it must make no API call and only check the map.",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "action.yml runs plain `node` from the runner with no setup-node and no npm install: the code must run on the runner's Node (package.json engines >=20) using only built-ins such as the global fetch.",
+          "files": [
+            "action.yml"
+          ]
+        }
       ]
     },
     {
       "id": "core",
-      "title": "the map format, import reading and the read list",
-      "files": ["src/map.mjs", "src/imports.mjs", "src/readlist.mjs"],
-      "checks": [{ "run": "npm test", "why": "format, patterns, imports and read list cases" }],
+      "title": "the map format and its check, pattern matching, the first draft, import reading and the read list",
+      "files": [
+        "src/map.mjs",
+        "src/imports.mjs",
+        "src/readlist.mjs"
+      ],
+      "checks": [
+        {
+          "run": "npm test",
+          "why": "patterns, imports, draft, check problems and read list cases in test/readfirst.test.mjs"
+        }
+      ],
       "risks": [
-        { "text": "map.json files in users' repositories must keep working: add fields as optional, never rename or remove one without a new format version", "files": ["src/map.mjs"] },
-        { "text": "the read list JSON is read by other tools (--json, the Action): keep field names", "files": ["src/readlist.mjs"] }
+        {
+          "text": "The map schema is closed: mapProblems rejects any field not in the allow-lists for map, group, check, risk and rule, and requires format exactly 'readfirst/map@1'. A new optional field must be added to the allow-list, and maps that use it fail on every older readfirst (including users' Action pinned to an older ref). Never rename or remove a field without a new format version.",
+          "files": [
+            "src/map.mjs"
+          ]
+        },
+        {
+          "text": "Patterns are not full globs: a path, a trailing '/**', '*' within one segment, '?' and '**/' are supported; braces, [abc], '!' negation and a leading '/' are taken literally. README.md and src/prompt.mjs describe the syntax by hand, so change them with patternToRegExp.",
+          "files": [
+            "src/map.mjs"
+          ]
+        },
+        {
+          "text": "In a pattern ending in '/**' only '*' is translated and '?' is left as a regex quantifier, so 'src/?/**' matches everything under src/ without any error.",
+          "files": [
+            "src/map.mjs"
+          ]
+        },
+        {
+          "text": "check only verifies that group and rule patterns match a file and that each file is in exactly one group or ignored. It does not check that risks[].files or ignore patterns match anything, or that checks[].run commands exist: a misspelt risk pattern silently never shows up in a read list.",
+          "files": [
+            "src/map.mjs",
+            "src/readlist.mjs"
+          ]
+        },
+        {
+          "text": "Imports are found by regex and only relative specifiers ('./', '../') with the extensions in JS_EXT are resolved: tsconfig paths, aliases, bare 'src/...' paths and dynamic imports with variables are skipped, so a test that reaches code only that way is missing from 'Tests that reach this code'.",
+          "files": [
+            "src/imports.mjs"
+          ]
+        },
+        {
+          "text": "Python absolute imports resolve only from the repository root or src/, and a multi-line `from x import (a,\\n b)` reads only the names on its first line.",
+          "files": [
+            "src/imports.mjs"
+          ]
+        },
+        {
+          "text": "Every read, diff and Action run reads and regex-scans every tracked JS/TS/Python file, with no cache; keep importEdges cheap, as it decides how fast readfirst is on a big repository.",
+          "files": [
+            "src/imports.mjs"
+          ]
+        },
+        {
+          "text": "The read list JSON (format 'readfirst/read-list@1') is printed as is by --json and turned into the Action's comment: keep the field names, the target status values IN_MAP, IGNORED, NO_GROUP, NOT_TRACKED and MAP, and via: null for direct tests. Only `format` is asserted by a test.",
+          "files": [
+            "src/readlist.mjs"
+          ]
+        },
+        {
+          "text": "limit caps only tests and usedBy; a non-numeric --limit or INPUT_LIMIT gives NaN, which silently empties both lists.",
+          "files": [
+            "src/readlist.mjs"
+          ]
+        },
+        {
+          "text": "isTest decides by path alone (test/, tests/, __tests__/, spec/, e2e/, *.test.*, *.spec.*, test_*, *_test.py/go) whether an importer is listed under tests or under 'Used by'.",
+          "files": [
+            "src/readlist.mjs"
+          ]
+        },
+        {
+          "text": "draftMap is what `readfirst init` writes into users' repositories, and docs/hosted-v0.md plans for the paid server to run the same init. The fixture test asserts the exact list of group ids, and its 'TODO:' titles pass check, so an unfilled map looks good.",
+          "files": [
+            "src/map.mjs"
+          ]
+        }
       ]
     },
     {
       "id": "tests",
-      "title": "tests",
-      "files": ["test/**"],
-      "checks": [{ "run": "npm test" }]
+      "title": "node:test suites: core and CLI on scratch git repositories, and the Action against a fake GitHub",
+      "files": [
+        "test/**"
+      ],
+      "checks": [
+        {
+          "run": "npm test",
+          "why": "runs test/*.test.mjs offline in under a second"
+        }
+      ],
+      "risks": [
+        {
+          "text": "npm test runs only test/*.test.mjs: a test in a subfolder or with another name is silently never run, locally or in CI.",
+          "files": [
+            "test/**"
+          ]
+        },
+        {
+          "text": "The tests build real git repositories in the OS temp folder and need git 2.28 or newer (`git init -b main`). The cli test commits with -c user.email/user.name so no global identity is needed, and its diff step relies on the branch being named main. The Action tests only stage files, which works because repoFiles also lists untracked files.",
+          "files": [
+            "test/**"
+          ]
+        },
+        {
+          "text": "The fake GitHub in test/action.test.mjs serves only page 1 of the PR files and comments, only the statuses modified/removed/added, and only a 403 as a failure. Pagination, renamed files, the 60000-character cut, INPUT_COMMENT=false, INPUT_LIMIT and the hyphenated INPUT_FAIL-ON-MAP-PROBLEMS name are not tested, so a break there passes npm test.",
+          "files": [
+            "test/action.test.mjs"
+          ]
+        },
+        {
+          "text": "The tests pass env, fetch and output functions into runAction and main() and never touch process.env; source code that reads process.env or process.stdout directly instead of the injected values escapes these tests.",
+          "files": [
+            "test/**"
+          ]
+        },
+        {
+          "text": "FIXTURE is shared by four tests and the draft test asserts its exact group ids; adding a file to FIXTURE changes several expectations at once.",
+          "files": [
+            "test/readfirst.test.mjs"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ci",
+      "title": "the CI workflow: npm test on Node 22, and readfirst's own Action run on this repository",
+      "files": [
+        ".github/**"
+      ],
+      "checks": [
+        {
+          "run": "node bin/readfirst.mjs check",
+          "why": "what the readfirst job fails on: every file in exactly one group of .readfirst/map.json"
+        }
+      ],
+      "risks": [
+        {
+          "text": "The readfirst job runs this repository's own Action (`uses: ./`), so a PR runs its own changed src/action.mjs, and the job fails when .readfirst/map.json no longer covers every file: a new file needs a map entry in the same PR.",
+          "files": [
+            ".github/workflows/ci.yml"
+          ]
+        },
+        {
+          "text": "The workflow-level permissions (pull-requests: write) are what let the Action comment; without them the comment write gets a 403 and the list only lands in the job summary.",
+          "files": [
+            ".github/workflows/ci.yml"
+          ]
+        },
+        {
+          "text": "Tests run only on Node 22 while package.json promises Node >=20 and the readfirst job uses the runner's own node; an API newer than Node 20 passes CI but breaks users on Node 20.",
+          "files": [
+            ".github/workflows/ci.yml"
+          ]
+        }
+      ]
     },
     {
       "id": "project",
-      "title": "package, docs and CI",
-      "files": [".gitignore", "LICENSE", "README.md", "package.json", ".github/**", "docs/**"],
+      "title": "package manifest, README, license and .gitignore",
+      "files": [
+        ".gitignore",
+        "LICENSE",
+        "README.md",
+        "package.json"
+      ],
+      "checks": [
+        {
+          "run": "npm test"
+        },
+        {
+          "run": "node bin/readfirst.mjs check",
+          "why": "the map still covers every file"
+        }
+      ],
       "risks": [
-        { "text": "package.json \"files\" decides what npm ships; a new folder under src is fine, a new top-level folder must be added there", "files": ["package.json"] }
+        {
+          "text": "package.json \"files\" decides what npm ships (bin, src, README.md): a new folder under src is fine, a new top-level runtime folder must be added there. \"bin\" points at bin/readfirst.mjs, which `npx readfirst` runs.",
+          "files": [
+            "package.json"
+          ]
+        },
+        {
+          "text": "README.md repeats by hand the Action inputs and defaults from action.yml, the commands from src/cli.mjs HELP and the pattern syntax from src/map.mjs; update it in the same change.",
+          "files": [
+            "README.md"
+          ]
+        },
+        {
+          "text": "readfirst counts every file git does not ignore, so .gitignore decides what the map must cover: an untracked file not listed there makes `check` and the CI readfirst job fail.",
+          "files": [
+            ".gitignore"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "hosted-design",
+      "title": "design notes (Korean) for the paid hosted GitHub App: AI map filling, cost caps, pricing and confirmed decisions",
+      "files": [
+        "docs/**"
+      ],
+      "checks": [],
+      "risks": [
+        {
+          "text": "Section 7 (D1-D5) holds decisions the user confirmed on 2026-10-31; do not change them without the user. The doc contradicts itself on payments: section 4 and D5 say Lemon Squeezy, step H2 in section 6 says Stripe; D5 is the decision.",
+          "files": [
+            "docs/hosted-v0.md"
+          ]
+        },
+        {
+          "text": "The paid server is planned to run the free CLI's `init` (draftMap and import reading) unchanged, so changes to src/map.mjs or src/imports.mjs also change what the hosted fill starts from.",
+          "files": [
+            "docs/hosted-v0.md"
+          ]
+        }
       ]
     }
   ],
   "rules": [
     {
       "id": "no-network-in-cli",
-      "rule": "the readfirst command reads only the checkout: no network calls and no model calls",
-      "why": "it runs in agents' sandboxes and on private code; only the Action talks to the GitHub API",
-      "files": ["src/cli.mjs", "src/map.mjs", "src/imports.mjs", "src/readlist.mjs", "src/prompt.mjs"]
+      "rule": "the readfirst command reads only the checkout: no network calls and no model calls; git is its only child process",
+      "why": "README promises 'No server, no account, no model calls'; it runs in agents' sandboxes and on private code. Only the Action (src/action.mjs) talks to the GitHub API",
+      "files": [
+        "bin/**",
+        "src/cli.mjs",
+        "src/map.mjs",
+        "src/imports.mjs",
+        "src/readlist.mjs",
+        "src/prompt.mjs"
+      ]
     },
     {
       "id": "no-dependencies",
       "rule": "no runtime dependencies: Node's standard library only",
-      "why": "npx readfirst must start fast and nothing third-party runs on users' code",
-      "files": ["package.json", "src/**"]
+      "why": "action.yml runs node on the action checkout with no npm install, so an imported package would crash the Action in users' workflows; npx readfirst also starts with nothing to install",
+      "files": [
+        "package.json",
+        "src/**",
+        "action.yml"
+      ]
+    },
+    {
+      "id": "map-format-compatible",
+      "rule": "maps with format readfirst/map@1 that pass check today keep passing: fields may be added (and allow-listed), never renamed or removed without a new format version",
+      "why": "users commit .readfirst/map.json and the Action fails their PRs when it stops passing",
+      "files": [
+        "src/map.mjs",
+        "src/prompt.mjs"
+      ],
+      "checks": [
+        {
+          "run": "npm test"
+        }
+      ]
+    },
+    {
+      "id": "every-file-in-one-group",
+      "rule": "check fails when a file is in no group and not ignored, in more than one group, or when a group or rule pattern matches no file",
+      "why": "README promises the map can't quietly fall behind the code; groupOf takes the first matching group, so overlaps would misattribute risks",
+      "files": [
+        "src/map.mjs"
+      ],
+      "checks": [
+        {
+          "run": "npm test"
+        },
+        {
+          "run": "node bin/readfirst.mjs check"
+        }
+      ]
+    },
+    {
+      "id": "read-list-json-stable",
+      "rule": "the read list JSON keeps format readfirst/read-list@1 and its field names and status values; changes are additions only",
+      "why": "README offers `diff --json` 'for tools and agents', and the Action builds its comment from the same object",
+      "files": [
+        "src/readlist.mjs",
+        "src/cli.mjs"
+      ],
+      "checks": [
+        {
+          "run": "npm test"
+        }
+      ]
+    },
+    {
+      "id": "check-exit-codes",
+      "rule": "`readfirst check` exits 1 when the map has problems and 0 when it is good; other errors exit 2 with the message on stderr",
+      "why": "README says to run check in CI, which relies on the exit code",
+      "files": [
+        "bin/**",
+        "src/cli.mjs"
+      ],
+      "checks": [
+        {
+          "run": "npm test"
+        }
+      ]
+    },
+    {
+      "id": "init-keeps-existing-map",
+      "rule": "`readfirst init` refuses to replace an existing .readfirst/map.json unless --force is given",
+      "why": "the map holds hand-written titles, risks and rules that a fresh draft would wipe out",
+      "files": [
+        "src/cli.mjs"
+      ],
+      "checks": [
+        {
+          "run": "npm test"
+        }
+      ]
+    },
+    {
+      "id": "one-comment-per-pr",
+      "rule": "each PR has one readfirst comment, found by MARKER at the start of its body and updated in place on every push",
+      "why": "README promises one comment updated on every push; a changed marker posts a second comment on every open PR",
+      "files": [
+        "src/action.mjs"
+      ],
+      "checks": [
+        {
+          "run": "npm test"
+        }
+      ]
+    },
+    {
+      "id": "fork-pr-does-not-fail",
+      "rule": "a 403 on the comment write (read-only token, e.g. a fork PR) is a warning, not a failure; the list still goes to the job summary",
+      "why": "README promises fork PRs get the list in the job summary instead of a comment",
+      "files": [
+        "src/action.mjs"
+      ],
+      "checks": [
+        {
+          "run": "npm test"
+        }
+      ]
+    },
+    {
+      "id": "free-code-stays-public",
+      "rule": "the free MIT code (command and Action) must be fine to publish: the generic agent brief in src/prompt.mjs is free by design, but the paid judgement (the hosted fill's own prompts and its two-stage procedure) stays on the hosted server and out of this repository",
+      "why": "docs/hosted-v0.md section 1 and decision D4: the free code is MIT and the paid value is only in the server's prompts and procedure",
+      "files": [
+        "src/**",
+        "bin/**",
+        "LICENSE",
+        "docs/hosted-v0.md"
+      ]
     }
   ],
   "ignore": []
