@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { importEdges } from './imports.mjs';
 import { assertMap, draftMap, MAP_PATH, mapProblems } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
-import { readList, toMarkdown } from './readlist.mjs';
+import { emptyList, readList, toMarkdown } from './readlist.mjs';
 
 const HELP = `readfirst — what to read and check before changing a file
 
@@ -21,13 +21,14 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
 
-Options: --root <dir>, --json, --limit <n>`;
+Options: --root <dir>, --json, --limit <n>, --force (init: replace the map)`;
 
 function parse(argv) {
   const args = { _: [], json: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') args.json = true;
+    else if (a === '--force') args.force = true;
     else if (a === '-h' || a === '--help') args.help = true;
     else if (a.startsWith('--')) { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); args[a.slice(2)] = v; }
     else args._.push(a);
@@ -78,7 +79,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
 
   if (cmd === 'init') {
     const at = join(root, MAP_PATH);
-    if (existsSync(at) && args.force === undefined) throw new Error(`${MAP_PATH} already exists (pass --force yes to replace it)`);
+    if (existsSync(at) && args.force !== true) throw new Error(`${MAP_PATH} already exists (pass --force to replace it)`);
     const map = draftMap(files);
     mkdirSync(join(root, '.readfirst'), { recursive: true });
     writeFileSync(at, `${JSON.stringify(map, null, 2)}\n`);
@@ -101,9 +102,14 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     if (cmd === 'diff') {
       const changed = changedFiles(root, args.base);
       targets = changed.files;
-      if (!targets.length) { io.out(`no files changed since ${changed.ref}.\n`); return 0; }
+      if (!targets.length) {
+        io.out(args.json ? `${JSON.stringify(emptyList(commit), null, 2)}\n` : `no files changed since ${changed.ref}.\n`);
+        return 0;
+      }
     }
-    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit: Number(args.limit ?? 30) });
+    const limit = Number(args.limit ?? 30);
+    if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
+    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
     return 0;
   }
