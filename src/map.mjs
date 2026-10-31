@@ -117,7 +117,9 @@ export function assertMap(map, files) {
 export const groupOf = (map, path) => map.groups.find((g) => matcher(g.files)(path)) ?? null;
 
 // A first map from the file tree alone: one group per top folder (one per sub-folder under src/, lib/ and app/),
-// tests together, folders of only media or fonts ignored. Titles and risks are left for a person or an agent to write.
+// tests together. Folders of only media or fonts get a group of their own too: code usually loads them, so the risks of
+// that code belong there; "ignore" is left for a person to fill with what nothing depends on. Titles and risks are left
+// for a person or an agent to write.
 const MEDIA = /\.(?:png|jpe?g|gif|webp|svg|ico|mp3|wav|ogg|m4a|flac|mp4|webm|mov|woff2?|ttf|otf|eot|glb|gltf|fbx|blend|zip|pdf)$/iu;
 export function draftMap(files) {
   const nested = new Set(['src', 'lib', 'app', 'packages', 'apps']);
@@ -139,11 +141,14 @@ export function draftMap(files) {
     byFolder.set(key, slot);
   }
   for (const [key, slot] of byFolder) {
-    if (slot.pattern && slot.files.every((f) => MEDIA.test(f))) { ignore.add(slot.pattern); continue; }
+    const media = Boolean(slot.pattern) && slot.files.every((f) => MEDIA.test(f));
     const id = key.toLowerCase().replace(/[^a-z0-9-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 64) || 'group';
     const patterns = slot.pattern ? [slot.pattern] : slot.files;
     const prev = groups.get(id);
-    groups.set(id, { id, title: `TODO: what ${slot.pattern ?? 'the top-level files'} ${slot.pattern ? 'is' : 'are'} for`, files: prev ? [...prev.files, ...patterns] : patterns, checks: [], risks: [] });
+    const title = media
+      ? `TODO: what loads the media files in ${slot.pattern} (binary, not read)`
+      : `TODO: what ${slot.pattern ?? 'the top-level files'} ${slot.pattern ? 'is' : 'are'} for`;
+    groups.set(id, { id, title, files: prev ? [...prev.files, ...patterns] : patterns, checks: [], risks: [] });
   }
   // A nested pattern ("src/a/**") and the parent's loose files ("src/x.js") must not overlap; loose files under a nested root
   // become their own group.
