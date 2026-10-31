@@ -31,6 +31,7 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
       out.notCovered.push({ path: target, why: 'not a tracked file at this commit (new, deleted or misspelt)' });
       continue;
     }
+    if (target === MAP_PATH) { out.targets.push({ path: target, group: null, status: 'MAP' }); continue; }
     const group = groupOf(map, target);
     out.targets.push({ path: target, group: group?.id ?? null, status: group ? 'IN_MAP' : ignored(target) ? 'IGNORED' : 'NO_GROUP' });
     if (!group) {
@@ -74,13 +75,16 @@ export function toMarkdown(list, { checklist = false, heading } = {}) {
   const title = heading === undefined ? `# Read first: ${list.targets.map((t) => `\`${t.path}\``).join(', ')}` : heading;
   const lines = title === null ? [] : [title, ''];
   const many = list.targets.length > 1;
-  const forWhom = (row) => (many ? ` _(${row.for.join(', ')})_` : '');
+  const forWhom = (row, also = null) => {
+    const parts = [also, many ? row.for.join(', ') : null].filter(Boolean);
+    return parts.length ? ` _(${parts.join(' · ')})_` : '';
+  };
   const section = (title, rows, render) => {
     if (!rows.length) return;
     lines.push(`## ${title}`, '', ...rows.map(render), '');
   };
   section('Rules that must keep holding', list.rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${forWhom(r)}`);
-  section('Watch out', list.risks, (r) => `- ${r.text} _(group ${r.group})_${forWhom(r)}`);
+  section('Watch out', list.risks, (r) => `- ${r.text}${forWhom(r, `group ${r.group}`)}`);
   section('Run these checks', list.checks, (c) => `- ${checklist ? '[ ] ' : ''}\`${c.run}\` — ${c.why}${forWhom(c)}`);
   section('Tests that reach this code', list.tests, (t) => `- \`${t.path}\`${t.via ? ` (through \`${t.via}\`)` : ''}${forWhom(t)}`);
   if (list.truncated?.tests) lines.splice(lines.length - 1, 0, `- …and ${list.truncated.tests} more`);

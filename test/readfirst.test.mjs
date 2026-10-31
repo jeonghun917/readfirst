@@ -106,6 +106,10 @@ test('read list: rules, risks, checks, tests (direct first, then through other f
   for (const s of ['## Rules that must keep holding', 'refunds are manual', '`npm run e2e:pay`', '(through `src/api/route.js`)', '`src/billing/index.ts:1`', '2 more file(s)', '`nope.js`'])
     assert.ok(md.includes(s), `markdown lacks ${s}`);
   assert.throws(() => readList({ map, files, imports, targets: [] }), /at least one file/u);
+  const withMap = readList({ map, files: [...files, '.readfirst/map.json'], imports, targets: ['.readfirst/map.json', 'src/billing/charge.ts'] });
+  assert.deepEqual(withMap.targets[0], { path: '.readfirst/map.json', group: null, status: 'MAP' });
+  assert.deepEqual(withMap.notCovered, [], 'the map itself is not reported as uncovered');
+  assert.ok(toMarkdown(withMap).includes('- amounts are in cents _(group src-billing · src/billing/charge.ts)_'), toMarkdown(withMap));
 });
 
 test('cli: init, check, prompt, read and diff on a real git repository', () => {
