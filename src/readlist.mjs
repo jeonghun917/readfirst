@@ -69,8 +69,10 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
   return out;
 }
 
-export function toMarkdown(list) {
-  const lines = [`# Read first: ${list.targets.map((t) => `\`${t.path}\``).join(', ')}`, ''];
+// checklist: checks as task-list boxes (for PR comments); heading: the title line, or null for none.
+export function toMarkdown(list, { checklist = false, heading } = {}) {
+  const title = heading === undefined ? `# Read first: ${list.targets.map((t) => `\`${t.path}\``).join(', ')}` : heading;
+  const lines = title === null ? [] : [title, ''];
   const many = list.targets.length > 1;
   const forWhom = (row) => (many ? ` _(${row.for.join(', ')})_` : '');
   const section = (title, rows, render) => {
@@ -79,7 +81,7 @@ export function toMarkdown(list) {
   };
   section('Rules that must keep holding', list.rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${forWhom(r)}`);
   section('Watch out', list.risks, (r) => `- ${r.text} _(group ${r.group})_${forWhom(r)}`);
-  section('Run these checks', list.checks, (c) => `- \`${c.run}\` — ${c.why}${forWhom(c)}`);
+  section('Run these checks', list.checks, (c) => `- ${checklist ? '[ ] ' : ''}\`${c.run}\` — ${c.why}${forWhom(c)}`);
   section('Tests that reach this code', list.tests, (t) => `- \`${t.path}\`${t.via ? ` (through \`${t.via}\`)` : ''}${forWhom(t)}`);
   if (list.truncated?.tests) lines.splice(lines.length - 1, 0, `- …and ${list.truncated.tests} more`);
   section('Used by', list.usedBy, (u) => `- \`${u.path}:${u.line}\`${forWhom(u)}`);

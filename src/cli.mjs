@@ -43,16 +43,18 @@ export function repoFiles(root) {
     .filter((f) => existsSync(join(root, f))).sort();
 }
 
-const readText = (root) => (path) => {
+export const readText = (root) => (path) => {
   try { return readFileSync(join(root, path), 'utf8'); } catch { return null; }
 };
 
-function loadMap(root, files) {
+export function readMapFile(root) {
   const at = join(root, MAP_PATH);
   if (!existsSync(at)) throw new Error(`no ${MAP_PATH} here: run \`readfirst init\` first`);
-  let map;
-  try { map = JSON.parse(readFileSync(at, 'utf8')); } catch (e) { throw new Error(`${MAP_PATH} is not valid JSON: ${e.message}`); }
-  return assertMap(map, files);
+  try { return JSON.parse(readFileSync(at, 'utf8')); } catch (e) { throw new Error(`${MAP_PATH} is not valid JSON: ${e.message}`); }
+}
+
+function loadMap(root, files) {
+  return assertMap(readMapFile(root), files);
 }
 
 function changedFiles(root, base) {
@@ -88,9 +90,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     return 0;
   }
   if (cmd === 'check') {
-    const at = join(root, MAP_PATH);
-    if (!existsSync(at)) throw new Error(`no ${MAP_PATH} here: run \`readfirst init\` first`);
-    const problems = mapProblems(JSON.parse(readFileSync(at, 'utf8')), files);
+    const problems = mapProblems(readMapFile(root), files);
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems }, null, 2)}\n`);
     else io.out(problems.length ? `${MAP_PATH} has ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n` : `${MAP_PATH} is good: ${files.length} files.\n`);
     return problems.length ? 1 : 0;

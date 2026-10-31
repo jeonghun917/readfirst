@@ -142,7 +142,7 @@ export function draftMap(files) {
     const id = key.toLowerCase().replace(/[^a-z0-9-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 64) || 'group';
     const patterns = slot.pattern ? [slot.pattern] : slot.files;
     const prev = groups.get(id);
-    groups.set(id, { id, title: `TODO: what ${slot.pattern ?? 'the top-level files'} does`, files: prev ? [...prev.files, ...patterns] : patterns, checks: [], risks: [] });
+    groups.set(id, { id, title: `TODO: what ${slot.pattern ?? 'the top-level files'} ${slot.pattern ? 'is' : 'are'} for`, files: prev ? [...prev.files, ...patterns] : patterns, checks: [], risks: [] });
   }
   // A nested pattern ("src/a/**") and the parent's loose files ("src/x.js") must not overlap; loose files under a nested root
   // become their own group.
