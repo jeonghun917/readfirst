@@ -30,7 +30,7 @@
     {
       "id": "project",
       "title": "package, docs and CI",
-      "files": [".gitignore", "README.md", "package.json", ".github/**"],
+      "files": [".gitignore", "README.md", "package.json", ".github/**", "docs/**"],
       "risks": [
         { "text": "package.json \"files\" decides what npm ships; a new folder under src is fine, a new top-level folder must be added there", "files": ["package.json"] }
       ]
