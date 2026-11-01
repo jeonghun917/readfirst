@@ -5,10 +5,12 @@
 //   readfirst fix                  place new files and drop patterns for deleted ones, then check
 //   readfirst read <file>...       the read list for files you are about to change
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
+//   readfirst hook [--install]     a Claude Code PreToolUse hook: the read list for the file an Edit or Write is about to change
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
 import { assertMap, draftMap, fixMap, MAP_PATH, mapProblems } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
@@ -22,6 +24,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst fix                  place new files, drop patterns for deleted ones
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
+  readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json)
 
 Options: --root <dir>, --json, --limit <n>, --force (init: replace the map),
          --agent (init: add the read-first line to CLAUDE.md / AGENTS.md / .cursorrules)`;
@@ -33,6 +36,7 @@ function parse(argv) {
     if (a === '--json') args.json = true;
     else if (a === '--force') args.force = true;
     else if (a === '--agent') args.agent = true;
+    else if (a === '--install') args.install = true;
     else if (a === '-h' || a === '--help') args.help = true;
     else if (a.startsWith('--')) { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); args[a.slice(2)] = v; }
     else args._.push(a);
@@ -100,10 +104,72 @@ function changedFiles(root, base) {
   return { ref, files: [...names].sort() };
 }
 
-export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }) {
+// The read list as a few factual lines for an agent's context: rules, risks and checks, nothing else.
+export function brief(list) {
+  const lines = [];
+  for (const r of list.rules) lines.push(`Rule ${r.id}: ${r.rule}${r.why ? ` (why: ${r.why})` : ''}`);
+  for (const r of list.risks) lines.push(`Risk: ${r.text}`);
+  for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}`);
+  if (list.tests.length) lines.push(`Tests that reach this file: ${list.tests.slice(0, 5).map((t) => t.path).join(', ')}`);
+  return lines;
+}
+
+// Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file the map covers,
+// prints the read list as additionalContext, once per file per session. Never blocks the edit: any problem means no output.
+export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
+  try {
+    const event = JSON.parse(input);
+    const file = event.tool_input?.file_path;
+    if (!file || !/^(?:Edit|Write|MultiEdit)$/u.test(event.tool_name ?? '')) return null;
+    const cwd = event.cwd ?? process.cwd();
+    const root = git(cwd, 'rev-parse', '--show-toplevel').trim();
+    const path = (isAbsolute(file) ? relative(root, file) : file).replace(/\\/gu, '/');
+    if (path.startsWith('..') || path === MAP_PATH || !existsSync(join(root, MAP_PATH))) return null;
+    const seenAt = join(stateDir, `readfirst-hook-${String(event.session_id ?? 'none').replace(/[^\w-]/gu, '')}.json`);
+    let seen = {};
+    try { seen = JSON.parse(readFileSync(seenAt, 'utf8')); } catch { seen = {}; }
+    if (seen[path] && now - seen[path] < 6 * 3600_000) return null;
+    const files = repoFiles(root);
+    const map = readMapFile(root);
+    if (mapProblems(map, files, { placement: false }).length) return null;
+    const list = readList({ map, files: files.includes(path) ? files : [...files, path].sort(), imports: importEdges(files, readText(root)), targets: [path], limit: 10 });
+    const lines = brief(list);
+    seen[path] = now;
+    try { writeFileSync(seenAt, JSON.stringify(seen)); } catch { /* best effort */ }
+    if (!lines.length) return null;
+    const shown = lines.slice(0, 12);
+    if (lines.length > shown.length) shown.push(`${lines.length - shown.length} more in \`npx readfirst read ${path}\``);
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `readfirst notes for ${path} (from ${MAP_PATH}):\n- ${shown.join('\n- ')}` } });
+  } catch {
+    return null;
+  }
+}
+
+export const HOOK_COMMAND = 'npx --yes readfirst hook';
+// Adds the hook to the project's .claude/settings.json, keeping everything already there.
+export function installHook(root) {
+  const at = join(root, '.claude', 'settings.json');
+  let settings = {};
+  if (existsSync(at)) {
+    try { settings = JSON.parse(readFileSync(at, 'utf8')); } catch { throw new Error('.claude/settings.json is not valid JSON; fix it first'); }
+  }
+  const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
+  if (pre.some((m) => (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '')))) return false;
+  pre.push({ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] });
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(at, `${JSON.stringify(settings, null, 2)}\n`);
+  return true;
+}
+
+export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }, stdin = () => readFileSync(0, 'utf8')) {
   const args = parse(argv);
   const [cmd, ...rest] = args._;
   if (args.help || !cmd) { io.out(`${HELP}\n`); return cmd || args.help ? 0 : 2; }
+  if (cmd === 'hook' && !args.install) {
+    const out = runHook(stdin());
+    if (out) io.out(`${out}\n`);
+    return 0;
+  }
   const root = args.root ?? git(process.cwd(), 'rev-parse', '--show-toplevel').trim();
   const files = repoFiles(root);
   const commit = (() => { try { return git(root, 'rev-parse', 'HEAD').trim(); } catch { return null; } })();
@@ -119,6 +185,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     if (args.agent) {
       const wrote = addAgentLine(root);
       io.out(wrote.length ? `added the read-first line to ${wrote.join(', ')}.\n` : 'your agent notes already mention readfirst.\n');
+      io.out('Using Claude Code? `readfirst hook --install` hands it the read list automatically before each edit.\n');
     }
     io.out(`Next: run \`readfirst prompt\` and give the brief to your coding agent, or fill in titles, checks, risks and rules by hand.${args.agent ? '' : '\nTip: `readfirst init --agent` also adds the one line your coding agent needs to CLAUDE.md or AGENTS.md.'}\n`);
     return 0;
@@ -132,6 +199,10 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems }, null, 2)}\n`);
     else io.out(problems.length ? `${MAP_PATH} has ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n` : `${MAP_PATH} is good: ${files.length} files.\n`);
     return problems.length ? 1 : 0;
+  }
+  if (cmd === 'hook') {
+    io.out(installHook(root) ? 'added the readfirst hook to .claude/settings.json: Claude Code now sees the read list before each edit.\n' : '.claude/settings.json already has the readfirst hook.\n');
+    return 0;
   }
   if (cmd === 'fix') {
     const { map, changes, problems } = fixMap(readMapFile(root), files);

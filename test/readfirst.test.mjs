@@ -244,3 +244,46 @@ test('read: a file in no group names the group `readfirst fix` would put it in',
   const list = readList({ map, files: ['src/a.js', 'src/b.js'], imports: [], targets: ['src/b.js'] });
   assert.match(list.notCovered[0].why, /`readfirst fix` would add it to group core/u);
 });
+
+test('hook: the read list goes to Claude Code as context once per file per session; it never blocks', async () => {
+  const { runHook, installHook, HOOK_COMMAND } = await import('../src/cli.mjs');
+  const { root } = repo(FIXTURE);
+  run(root, 'init');
+  const mapAt = join(root, '.readfirst/map.json');
+  const map = JSON.parse(readFileSync(mapAt, 'utf8'));
+  map.groups.find((g) => g.id === 'src-billing').risks = [{ text: 'amounts are in cents' }];
+  map.rules = [{ id: 'no-double-charge', rule: 'a charge runs once per order', why: 'refunds are manual', files: ['src/billing/**'] }];
+  writeFileSync(mapAt, JSON.stringify(map));
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-hook-'));
+  const ev = (over = {}) => JSON.stringify({ session_id: 's1', cwd: root, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: join(root, 'src/billing/charge.ts') }, ...over });
+
+  const out = JSON.parse(runHook(ev(), { stateDir, now: 1000 }));
+  assert.equal(out.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assert.equal(out.hookSpecificOutput.permissionDecision, undefined, 'it informs, it does not decide');
+  const ctx = out.hookSpecificOutput.additionalContext;
+  assert.match(ctx, /^readfirst notes for src\/billing\/charge.ts/u);
+  assert.match(ctx, /Rule no-double-charge: a charge runs once per order \(why: refunds are manual\)/u);
+  assert.match(ctx, /Risk: amounts are in cents/u);
+  assert.match(ctx, /Check to run after the change: npm test/u);
+
+  assert.equal(runHook(ev(), { stateDir, now: 2000 }), null, 'the same file in the same session is not repeated');
+  assert.ok(runHook(ev({ session_id: 's2' }), { stateDir, now: 2000 }), 'a new session hears it again');
+  assert.ok(runHook(ev({ tool_name: 'Write', tool_input: { file_path: 'src/billing/new.ts' }, session_id: 's3' }), { stateDir }), 'a new file in a mapped folder');
+  assert.equal(runHook(ev({ tool_name: 'Bash', tool_input: { command: 'ls' } }), { stateDir }), null);
+  assert.equal(runHook(ev({ tool_input: { file_path: '/elsewhere/x.ts' }, session_id: 's4' }), { stateDir }), null, 'outside the repository');
+  assert.equal(runHook('not json', { stateDir }), null);
+
+  // install keeps what is there and adds the hook once
+  mkdirSync(join(root, '.claude'), { recursive: true });
+  writeFileSync(join(root, '.claude/settings.json'), JSON.stringify({ permissions: { allow: ['Bash(ls)'] } }));
+  assert.equal(installHook(root), true);
+  assert.equal(installHook(root), false);
+  const settings = JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf8'));
+  assert.deepEqual(settings.permissions, { allow: ['Bash(ls)'] });
+  assert.deepEqual(settings.hooks.PreToolUse, [{ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }]);
+
+  // through main: stdin in, JSON out, exit 0
+  let printed = '';
+  assert.equal(main(['hook'], { out: (s) => { printed += s; }, err: () => {} }, () => ev({ session_id: `s5-${process.pid}-${Date.now()}` })), 0);
+  assert.match(printed, /additionalContext/u);
+});
