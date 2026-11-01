@@ -106,7 +106,8 @@
       "files": [
         "src/map.mjs",
         "src/imports.mjs",
-        "src/readlist.mjs"
+        "src/readlist.mjs",
+        "src/view.mjs"
       ],
       "checks": [
         {
