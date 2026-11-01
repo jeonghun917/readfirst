@@ -420,3 +420,22 @@ test('server.json (MCP Registry) names the same package, version and mcpName as 
   assert.deepEqual(server.packages[0].packageArguments, [{ type: 'positional', value: 'mcp' }]);
   assert.ok(server.description.length <= 100);
 });
+
+test('mcp: starts and lists its tools outside a git repository; a tool call there says where to start it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'readfirst-nogit-'));
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, [join(dirname(new URL(import.meta.url).pathname), '../bin/readfirst.mjs'), 'mcp'], { cwd: dir, stdio: ['pipe', 'pipe', 'pipe'] });
+  const lines = []; let buf = '';
+  child.stdout.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { lines.push(JSON.parse(buf.slice(0, i))); buf = buf.slice(i + 1); } });
+  for (const m of [
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '0' } } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'check_map', arguments: {} } },
+  ]) child.stdin.write(`${JSON.stringify(m)}\n`);
+  await new Promise((resolve, reject) => { const t = setTimeout(() => reject(new Error(`only ${lines.length} answers`)), 10000); const iv = setInterval(() => { if (lines.length >= 3) { clearInterval(iv); clearTimeout(t); resolve(); } }, 20); });
+  child.kill();
+  assert.equal(lines[0].result.serverInfo.name, 'readfirst');
+  assert.equal(lines[1].result.tools.length, 3);
+  assert.equal(lines[2].result.isError, true);
+  assert.match(lines[2].result.content[0].text, /not inside a git repository/u);
+});
