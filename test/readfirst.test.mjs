@@ -409,3 +409,14 @@ test('diff and verify explain a shallow clone instead of failing with a git erro
   run(root, 'init');
   assert.throws(() => run(root, 'diff', '--base', 'main'), /shallow[\s\S]*--base/u);
 });
+
+test('server.json (MCP Registry) names the same package, version and mcpName as package.json, and runs `readfirst mcp`', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  const server = JSON.parse(readFileSync(new URL('../server.json', import.meta.url), 'utf8'));
+  assert.equal(server.name, pkg.mcpName);
+  assert.equal(server.version, pkg.version);
+  assert.equal(server.packages[0].identifier, pkg.name);
+  assert.equal(server.packages[0].version, pkg.version);
+  assert.deepEqual(server.packages[0].packageArguments, [{ type: 'positional', value: 'mcp' }]);
+  assert.ok(server.description.length <= 100);
+});
