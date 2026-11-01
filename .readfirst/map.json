@@ -108,7 +108,8 @@
         "src/imports.mjs",
         "src/readlist.mjs",
         "src/view.mjs",
-        "src/view-city.mjs"
+        "src/view-city.mjs",
+        "src/labels.mjs"
       ],
       "checks": [
         {
@@ -150,6 +151,19 @@
         },
         {
           "text": "readlist.mjs finds the group for an unplaced file by matching the text of fixMap's change messages (`groups.<id>: added <pattern>`); rewording those messages in fixMap silently drops the 'would add it to group' hint from the read list"
+        },
+        {
+          "text": "labels are personal: they live in .readfirst/local/, which keepLocal adds to .git/info/exclude; reading labels from anywhere else, or writing them into the map, would hand one person's notes to the whole team",
+          "files": [
+            "src/labels.mjs",
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "the view page loads three.js 0.160.0 from cdn.jsdelivr.net through an import map; without network it shows only the WebGL/connection notice",
+          "files": [
+            "src/view-city.mjs"
+          ]
         }
       ]
     },

@@ -46,6 +46,21 @@ npx readfirst hook --install
 adds a hook to `.claude/settings.json`. Before each Edit or Write, Claude Code gets the rules, risks and checks for that
 file as context, once per file per session. Nothing to remember, and the edit is never blocked.
 
+### See the map
+
+```sh
+npx readfirst view               # the map as a city in one HTML page: .readfirst/local/view.html
+```
+
+Groups are neighbourhoods, files are buildings (taller when more code depends on them), and traffic between
+neighbourhoods is the imports between them. A red-lit building has a risk on it; an amber one is under a rule. Point at a
+building to see its read list. The page loads three.js from a CDN.
+
+Labels for yourself: `npx readfirst prompt --labels ko` (or `en`, ...) gives your agent a brief to write
+`.readfirst/local/labels/ko.json`. It holds a translation of the map in technical terms and plain notes for people new
+to the code. The view then has a switch between the two. `.readfirst/local/` is added to `.git/info/exclude`, so labels
+stay on your machine and never reach the team's map.
+
 ## On every pull request (GitHub Action)
 
 ```yaml

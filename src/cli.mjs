@@ -1,19 +1,24 @@
 // readfirst: what to read and check before changing a file.
 //   readfirst init [--agent]       write a first .readfirst/map.json from the file tree (and the agent-notes line)
 //   readfirst prompt               the brief for a coding agent to fill in titles, checks, risks and rules
+//   readfirst prompt --labels <lang>  the brief for personal labels (a translation and plain notes) for the view
 //   readfirst check                the map covers every tracked file and is well formed
 //   readfirst fix                  place new files and drop patterns for deleted ones, then check
 //   readfirst read <file>...       the read list for files you are about to change
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
 //   readfirst hook [--install]     a Claude Code PreToolUse hook: the read list for the file an Edit or Write is about to change
+//   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
 import { assertMap, draftMap, fixMap, MAP_PATH, mapProblems } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
+import { keepLocal, LABELS_DIR, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
+import { viewData } from './view.mjs';
+import { cityData, viewHtmlCity } from './view-city.mjs';
 import { emptyList, readList, toMarkdown } from './readlist.mjs';
 
 const HELP = `readfirst — what to read and check before changing a file
@@ -25,6 +30,8 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
   readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json)
+  readfirst view [--out <file>]  the map as a city in one HTML page
+  readfirst prompt --labels <lang>  brief for your agent to write personal labels for the view (e.g. ko, en)
 
 Options: --root <dir>, --json, --limit <n>, --force (init: replace the map),
          --agent (init: add the read-first line to CLAUDE.md / AGENTS.md / .cursorrules)`;
@@ -192,7 +199,28 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     return 0;
   }
   if (cmd === 'prompt') {
-    io.out(agentBrief(loadMap(root, files)));
+    const map = loadMap(root, files);
+    if (args.labels) {
+      if (!/^[a-z]{2,3}(-[A-Za-z0-9]+)?$/u.test(args.labels)) throw new Error('--labels needs a language code, e.g. ko or en');
+      if (keepLocal(root)) io.err(`note: added /${LOCAL_DIR}/ to .git/info/exclude, so labels stay on this machine.\n`);
+      mkdirSync(join(root, LABELS_DIR), { recursive: true });
+      io.out(labelsBrief(map, args.labels));
+      return 0;
+    }
+    io.out(agentBrief(map));
+    return 0;
+  }
+  if (cmd === 'view') {
+    const map = loadMapLenient(root, files, io);
+    const imports = importEdges(files, readText(root));
+    keepLocal(root);
+    const out = args.out ? (isAbsolute(args.out) ? args.out : join(process.cwd(), args.out)) : join(root, LOCAL_DIR, 'view.html');
+    const labels = readLabels(root, io.err);
+    mkdirSync(join(out, '..'), { recursive: true });
+    writeFileSync(out, viewHtmlCity(cityData(viewData({ map, files, imports, name: basename(root) }), imports, labels)));
+    const langs = Object.keys(labels);
+    io.out(`wrote ${relative(process.cwd(), out) || out}${langs.length ? ` with labels: ${langs.join(', ')}` : ''}. Open it in a browser (it loads three.js from a CDN).\n`);
+    if (!langs.length) io.out('Tip: `readfirst prompt --labels ko` (or en) gives your agent a brief for a translation and plain notes, seen only on this machine.\n');
     return 0;
   }
   if (cmd === 'check') {
