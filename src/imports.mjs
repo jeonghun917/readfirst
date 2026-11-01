@@ -1,7 +1,9 @@
 // Which tracked file imports which, read from the code. Only imports that resolve to a tracked file count: packages and
 // unresolved specifiers are left out. JavaScript/TypeScript (import, export from, import(), require) and Python
-// (import a.b, from a.b import c, relative from . imports) are read.
+// (import a.b, from a.b import c, relative from . imports) are read here; Go, Rust, Elixir, C#, Java/Kotlin, Ruby and
+// PHP in langs.mjs.
 import { posix } from 'node:path';
+import { moreEdges } from './langs.mjs';
 
 const JS = /\.(?:m?js|cjs|tsx?|jsx|mts|cts|vue|svelte)$/u;
 const PY = /\.py$/u;
@@ -62,5 +64,6 @@ export function importEdges(files, read) {
       }
     }
   }
+  moreEdges([...files].sort(), read, add);
   return out;
 }

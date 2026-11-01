@@ -3,7 +3,9 @@
 import { fixMap, groupOf, matcher, MAP_PATH } from './map.mjs';
 
 export const READ_LIST_FORMAT = 'readfirst/read-list@1';
-const TEST = /(^|\/)(?:tests?|__tests__|spec|e2e)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(^|\/)test[-_][^/]*\.(?:[cm]?[jt]sx?|py)$|_test\.(?:py|go)$/u;
+// Test files by folder or name, across the languages imports.mjs reads: JS/TS, Python, Go, Rust (tests/), Elixir,
+// C# (*Tests.cs, *.Tests/ projects), Java/Kotlin (src/test/, *Test), Ruby (spec/, *_spec.rb) and PHP (*Test.php).
+const TEST = /(^|\/)(?:tests?|__tests__|spec|e2e)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(^|\/)test[-_][^/]*\.(?:[cm]?[jt]sx?|py)$|_test\.(?:py|go|exs|rb)$|_spec\.rb$|(^|\/)[^/]+\.(?:Unit|Integration)?Tests?\/|Tests?\.(?:cs|java|kt|php)$|(^|\/)src\/(?:test|androidTest|integrationTest)\//u;
 export const isTest = (path) => TEST.test(path);
 
 // The read list for no files, so `diff --json` is always JSON.
