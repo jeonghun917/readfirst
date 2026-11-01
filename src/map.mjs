@@ -240,5 +240,19 @@ export function draftChecks(files, read = () => null) {
   if (has.has('Cargo.toml')) add('cargo test', 'the Rust tests');
   const py = has.has('pyproject.toml') || has.has('setup.py') || has.has('pytest.ini');
   if (py && files.some((f) => /(?:^|\/)(?:test_[^/]*|[^/]*_test)\.py$/u.test(f))) add('pytest', 'the Python tests');
+  if (files.some((f) => /\.(?:sln|csproj|fsproj)$/u.test(f))) add('dotnet test', 'the .NET tests');
+  if (has.has('mix.exs')) add('mix test', 'the Elixir tests');
+  if (has.has('gradlew') || has.has('build.gradle') || has.has('build.gradle.kts')) add(has.has('gradlew') ? './gradlew test' : 'gradle test', 'the JVM tests (Gradle)');
+  else if (has.has('pom.xml')) add(has.has('mvnw') ? './mvnw test' : 'mvn test', 'the JVM tests (Maven)');
+  if (has.has('Gemfile')) {
+    if (files.some((f) => /(?:^|\/)spec\/.*_spec\.rb$/u.test(f))) add('bundle exec rspec', 'the Ruby specs');
+    else if (files.some((f) => /(?:^|\/)test\/.*_test\.rb$/u.test(f))) add(has.has('bin/rails') ? 'bin/rails test' : 'bundle exec rake test', 'the Ruby tests');
+  }
+  if (has.has('composer.json')) {
+    let scripts = {};
+    try { scripts = JSON.parse(read('composer.json') ?? '{}').scripts ?? {}; } catch { scripts = {}; }
+    if (scripts.test) add('composer test', 'the PHP tests');
+    else if (has.has('phpunit.xml') || has.has('phpunit.xml.dist')) add('vendor/bin/phpunit', 'the PHP tests');
+  }
   return out;
 }

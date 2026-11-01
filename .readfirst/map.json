@@ -116,10 +116,11 @@
     },
     {
       "id": "core",
-      "title": "the map format and checker, the first-draft map, import reading and the read list",
+      "title": "the map format and checker, the first-draft map, import reading (JS/TS, Python and seven more languages) and the read list",
       "files": [
         "src/map.mjs",
         "src/imports.mjs",
+        "src/langs.mjs",
         "src/readlist.mjs",
         "src/view.mjs",
         "src/view-city.mjs",
@@ -151,16 +152,17 @@
           ]
         },
         {
-          "text": "test files are recognised by two separate regexes (isTest in readlist.mjs and the tests-folder check in draftMap); change both together",
+          "text": "test files are recognised by two separate regexes (isTest in readlist.mjs, which covers every language langs.mjs reads, and the top-level tests-folder check in draftMap); a new test naming convention goes into isTest, and into draftMap only if it is a top-level folder",
           "files": [
             "src/readlist.mjs",
             "src/map.mjs"
           ]
         },
         {
-          "text": "imports are read with regexes and only relative specifiers that resolve to a tracked file count, so path aliases and packages are not followed and tests reached through them are missing from the read list",
+          "text": "imports are read with regexes: JS/TS and Python in imports.mjs, Go, Rust, Elixir, C#, Java/Kotlin, Ruby and PHP in langs.mjs. Only edges that resolve to a tracked file count, so path aliases, packages and names the approximation misses (Rails constants used unqualified inside a module, C# types reached without a using) leave tests out of the read list",
           "files": [
-            "src/imports.mjs"
+            "src/imports.mjs",
+            "src/langs.mjs"
           ]
         },
         {
@@ -283,6 +285,7 @@
         "src/cli.mjs",
         "src/map.mjs",
         "src/imports.mjs",
+        "src/langs.mjs",
         "src/readlist.mjs",
         "src/prompt.mjs"
       ]
