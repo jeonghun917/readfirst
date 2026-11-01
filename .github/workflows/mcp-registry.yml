@@ -1,0 +1,36 @@
+# Lists the current server.json version in the official MCP Registry as io.github.jeonghun917/readfirst. Runs when a
+# release is published (and by hand). The Registry checks that the npm package has that version, and a fresh npm publish
+# takes a little while to show, so it waits for npm first. Logs in with this workflow's GitHub OIDC token: no secret.
+name: mcp-registry
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+      - name: Wait until npm has this version
+        run: |
+          v=$(node -p "require('./server.json').version")
+          for i in $(seq 1 40); do
+            if [ "$(npm view "readfirst@$v" version 2>/dev/null)" = "$v" ]; then echo "npm has $v"; exit 0; fi
+            sleep 15
+          done
+          echo "npm still does not list readfirst@$v after 10 minutes"; exit 1
+      - name: Publish server.json
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
+        run: |
+          curl --fail --location --silent --show-error --output mcp-publisher.tar.gz \
+            "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+          ./mcp-publisher login github-oidc
+          for i in 1 2 3; do ./mcp-publisher publish && exit 0; sleep 30; done
+          exit 1
