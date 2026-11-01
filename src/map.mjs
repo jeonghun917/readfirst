@@ -219,6 +219,22 @@ export function fixMap(map, files) {
   return { map: out, changes, problems: mapProblems(out, files) };
 }
 
+// A map that is only behind the code (new files that have a neighbour's group, patterns for deleted files) is settled
+// the way `fix` would settle it, without writing anything; only what fix cannot decide stays a problem. Read lists,
+// check and the Action use the settled map, so adding a file to an existing folder never fails a pull request.
+// A new top-level folder is the one placement fix guesses at (it joins the root files' group), so it stays a problem:
+// someone should give it a group.
+export function settleMap(map, files) {
+  const problems = mapProblems(map, files);
+  if (!problems.length) return { map, problems: [], settled: [] };
+  let fixed;
+  try { fixed = fixMap(map, files); } catch { return { map, problems, settled: [] }; }
+  const owned = matcher(map.groups.flatMap((g) => g.files));
+  const newTop = fixed.changes.map((c) => c.match(/^groups\.[^:]+: added ((\w[^/]*)\/.*)$/u)).filter((m) => m && !files.some((f) => f.startsWith(`${m[2]}/`) && owned(f)));
+  const left = [...fixed.problems, ...newTop.map((m) => `new top-level folder ${m[2]}/ is in no group: give it one (\`readfirst fix\` would put ${m[1]} with the root files)`)];
+  return { map: left.length ? map : fixed.map, problems: left.length ? problems.filter((p) => !/in no group|matches no/u.test(p)).concat(left) : [], settled: left.length ? fixed.changes.filter((c) => !newTop.some((m) => c.endsWith(`added ${m[1]}`))) : fixed.changes };
+}
+
 // The project's own check commands, found in its build files, so a first map already says what to run. Repository-wide
 // on purpose: narrowing a check to the group it covers is left to a person or an agent.
 export function draftChecks(files, read = () => null) {

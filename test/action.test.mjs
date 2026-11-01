@@ -88,6 +88,21 @@ test('a map that no longer covers the code fails the check and says why in the c
   assert.equal(soft.ok, true);
 });
 
+test('a new file beside mapped ones passes: the comment notes where it was placed, and strict fails on it', async () => {
+  // The util group names its file, so a new file next to it is in no group until someone (or fix) adds it.
+  const map = (m) => { m.groups.find((g) => g.id === 'src-util').files = ['src/util/cents.js']; return m; };
+  const { root, event } = setup({ map, extra: { 'src/util/round.js': "import { cents } from './cents.js';\nexport const round = (n) => cents(Math.round(n));\n" } });
+  const files = [{ filename: 'src/util/round.js', status: 'added' }];
+  const r = await runAction({ env: envFor(root, event), fetchImpl: fakeGitHub({ files }).fetchImpl, log: () => {} });
+  assert.equal(r.ok, true, r.body);
+  assert.doesNotMatch(r.body, /no longer matches the code/u);
+  assert.match(r.body, /New files placed by their neighbours/u);
+  assert.match(r.body, /src-util: added src\/util\/round\.js/u);
+  const strict = await runAction({ env: envFor(root, event, { INPUT_STRICT: 'true' }), fetchImpl: fakeGitHub({ files }).fetchImpl, log: () => {} });
+  assert.equal(strict.ok, false);
+  assert.match(strict.body, /not yet written in the map/u);
+});
+
 test('a read-only token (fork PR) keeps the list in the summary and does not fail', async () => {
   const { root, event } = setup();
   const logs = [];

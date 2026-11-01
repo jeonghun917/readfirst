@@ -138,9 +138,17 @@ test('cli: init, check, prompt, read and diff on a real git repository', () => {
   const diff = JSON.parse(run(root, 'diff', '--json').out);
   assert.deepEqual(diff.targets.map((t) => t.path), ['src/util/money.ts', 'src/util/new.ts'], 'changed and new files');
   writeFileSync(join(root, 'stray.txt'), 'x');
-  const bad = run(root, 'check');
-  assert.equal(bad.code, 1);
-  assert.match(bad.out, /stray.txt/u);
+  const settled = run(root, 'check');
+  assert.equal(settled.code, 0, 'a new file beside placed ones passes');
+  assert.match(settled.out, /settled without writing[\s\S]*stray\.txt/u);
+  const strict = run(root, 'check', '--strict');
+  assert.equal(strict.code, 1, '--strict still fails on it');
+  assert.match(strict.out, /stray\.txt/u);
+  mkdirSync(join(root, 'tools'), { recursive: true });
+  writeFileSync(join(root, 'tools/gen.ts'), 'export {};\n');
+  const top = run(root, 'check');
+  assert.equal(top.code, 1);
+  assert.match(top.out, /new top-level folder tools\/ is in no group/u);
   assert.ok(JSON.parse(readFileSync(join(root, '.readfirst/map.json'), 'utf8')).groups.length > 0);
 });
 
@@ -190,7 +198,8 @@ test('cli: fix writes the repaired map and says what is left', () => {
   writeFileSync(join(root, 'src/billing/refunds/refund.ts'), 'export {};\n');
   writeFileSync(join(root, 'src/brandnew.ts'), 'export {};\n');
   git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.');
-  assert.equal(run(root, 'check').code, 1);
+  assert.equal(run(root, 'check').code, 0, 'both new files have placed neighbours');
+  assert.equal(run(root, 'check', '--strict').code, 1);
   const r = run(root, 'fix');
   assert.equal(r.code, 0, r.out);
   assert.match(r.out, /added src\/brandnew\.ts/u);

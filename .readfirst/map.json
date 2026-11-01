@@ -164,7 +164,7 @@
           ]
         },
         {
-          "text": "readlist.mjs finds the group for an unplaced file by matching the text of fixMap's change messages (`groups.<id>: added <pattern>`); rewording those messages in fixMap silently drops the 'would add it to group' hint from the read list"
+          "text": "readlist.mjs and settleMap (map.mjs) read fixMap's change messages (`groups.<id>: added <pattern>`): readlist for the 'would add it to group' hint, settleMap to tell a new top-level folder from a file beside placed ones; rewording those messages silently breaks both"
         },
         {
           "text": "labels are personal: they live in .readfirst/local/, which keepLocal adds to .git/info/exclude; reading labels from anywhere else, or writing them into the map, would hand one person's notes to the whole team",
@@ -181,6 +181,14 @@
         },
         {
           "text": "the view page only has interface strings for en and ko, and the language switch only toggles between them: a labels file for any other language (e.g. `prompt --labels ja`) is read and inlined but never shown, and the plain/technical switch appears only when the current language's file has \"plain\""
+        },
+        {
+          "text": "check, read, diff, verify and the Action settle a map that is only behind the code the way fix would (settleMap) and pass; only what fix cannot place, broken rules and new top-level folders fail. Making them strict again breaks every PR that adds a file",
+          "files": [
+            "src/map.mjs",
+            "src/cli.mjs",
+            "src/action.mjs"
+          ]
         }
       ]
     },
