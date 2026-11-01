@@ -58,7 +58,7 @@
           ]
         },
         {
-          "text": "the MCP server answers by calling main() again with --root for each tool call, so anything a command prints to stdout becomes the tool's text; stdout is also the JSON-RPC channel, so `mcp` itself must never write anything else to stdout",
+          "text": "the MCP server answers by calling main() again with --root for each tool call, so anything a command prints to stdout becomes the tool's text; stdout is also the JSON-RPC channel, so `mcp` itself must never write anything else to stdout. `mcp` is handled before main() looks up the repository (so it starts outside a git repository): it must not use root, files or the map itself, and the repository is looked up at each tool call (--root, or git rev-parse in the current directory), where a failure comes back as an isError result 'not inside a git repository'",
           "files": [
             "src/mcp.mjs",
             "src/cli.mjs"
