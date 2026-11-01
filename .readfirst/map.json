@@ -231,7 +231,8 @@
         "README.md",
         "package.json",
         ".github/**",
-        "docs/**"
+        "docs/**",
+        "server.json"
       ],
       "checks": [
         {
@@ -255,6 +256,14 @@
           "text": "the README repeats the command list, the Action inputs table and a sample read list; update it when cli.mjs HELP, action.yml inputs or toMarkdown output change",
           "files": [
             "README.md"
+          ]
+        },
+        {
+          "text": "server.json lists readfirst in the official MCP Registry; its version and packages[0].version must equal package.json's version, and its name must equal package.json's mcpName, or the release job stops before publishing (bump all three together)",
+          "files": [
+            "server.json",
+            "package.json",
+            ".github/**"
           ]
         }
       ]
