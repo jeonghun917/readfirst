@@ -164,6 +164,9 @@
           "files": [
             "src/view-city.mjs"
           ]
+        },
+        {
+          "text": "the view page only has interface strings for en and ko, and the language switch only toggles between them: a labels file for any other language (e.g. `prompt --labels ja`) is read and inlined but never shown, and the plain/technical switch appears only when the current language's file has \"plain\""
         }
       ]
     },
