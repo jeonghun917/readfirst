@@ -1,0 +1,24 @@
+# Keeps the Action's major tag (v0) on the newest release, so `uses: jeonghun917/readfirst@v0` picks up fixes.
+# Runs when a release is published; can also be run by hand to move v0 to a given tag.
+name: major-tag
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag: { description: 'release tag to point v0 at (e.g. v0.2.0)', required: true }
+permissions:
+  contents: write
+jobs:
+  move:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Move the major tag
+        env:
+          TAG: ${{ inputs.tag || github.event.release.tag_name }}
+        run: |
+          case "$TAG" in v0.*.*) ;; *) echo "not a v0.x.y tag: $TAG"; exit 1 ;; esac
+          git tag -f v0 "$TAG^{commit}"
+          git push -f origin v0
