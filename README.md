@@ -12,6 +12,8 @@ No server, no account, no model calls. It reads your git checkout and `.readfirs
 
 ## Start
 
+Any language; needs Node 20+ for `npx`.
+
 ```sh
 npx readfirst init --agent   # first map from your folders, checks from your scripts, plus the line for CLAUDE.md / AGENTS.md
 npx readfirst prompt         # a brief for your coding agent to fill in titles, checks, risks and rules
@@ -157,7 +159,12 @@ On a PR from a fork, the token is read-only. The list then goes to the job summa
 - **rules**: promises the code must keep. A rule can span groups.
 
 Tests are found from imports: a test that imports the file directly, or through other files, is listed.
-Imports are read for JavaScript/TypeScript (`import`, `export … from`, `import()`, `require`) and Python.
+Imports are read for JavaScript/TypeScript, Python, Go, Rust, Elixir, C#, Java, Kotlin, Ruby (including Rails autoloaded
+constants) and PHP (through composer's PSR-4 map). `init` suggests the checks those projects already have: `npm test`,
+`pytest`, `go test ./...`, `cargo test`, `mix test`, `dotnet test`, `./gradlew test` or `mvn test`, `bundle exec rspec`,
+`composer test`.
+
+readfirst needs Node 20 or newer to run, whatever language the project is in. `npx` comes with Node.
 
 ## License
 
