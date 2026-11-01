@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: jeonghun917/readfirst@main
+      - uses: jeonghun917/readfirst@v0
 ```
 
 Each PR gets one comment, updated on every push, that lists:

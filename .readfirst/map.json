@@ -225,28 +225,6 @@
           ]
         }
       ]
-    },
-    {
-      "id": "docs",
-      "title": "design notes for the hosted (paid) version, in Korean",
-      "files": [
-        "docs/**"
-      ],
-      "checks": [],
-      "risks": [
-        {
-          "text": "section 7 records decisions the user confirmed (runner, models, prices, license, accounts); do not change them without the user",
-          "files": [
-            "docs/hosted-v0.md"
-          ]
-        },
-        {
-          "text": "the doc disagrees with itself about payments (Lemon Squeezy in section 4 and D5, Stripe in step H2); D5 is the confirmed decision",
-          "files": [
-            "docs/hosted-v0.md"
-          ]
-        }
-      ]
     }
   ],
   "rules": [
@@ -346,10 +324,9 @@
     {
       "id": "no-paid-logic-in-free-code",
       "rule": "the public code holds no hosted-version logic: the prompts and steps that fill the map stay on the server",
-      "why": "the free code is MIT and public; the paid value is the server's judgement",
+      "why": "the free code is MIT and public; the paid value is the server's judgement The hosted design lives in the private readfirst-cloud repository.",
       "files": [
-        "src/**",
-        "docs/hosted-v0.md"
+        "src/**"
       ]
     }
   ],
