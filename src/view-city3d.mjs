@@ -8,11 +8,11 @@ const THREE = 'https://cdn.jsdelivr.net/npm/three@0.160.0';
 export function viewHtmlCity3d(data) {
   const json = JSON.stringify(data).replace(/</gu, '\\u003c');
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>${esc(data.name)}: what to read before you change a file</title>
 <style>
 :root{--fg:#eef0f6;--muted:#9aa0b4;--red:#ff4757;--amber:#ffbe3d;--sky:#7ad7ff;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;--sans:system-ui,-apple-system,"Segoe UI",sans-serif}
-*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;background:#05060a;color:var(--fg);font:14px/1.5 var(--sans)}
+*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none;-webkit-text-size-adjust:100%;overscroll-behavior:none;background:#05060a;color:var(--fg);font:14px/1.5 var(--sans)}
 canvas{display:block;touch-action:none}
 #top{position:fixed;left:0;right:0;top:0;display:flex;flex-wrap:wrap;gap:6px 18px;align-items:center;padding:12px 16px;background:linear-gradient(#05060ae6,#05060a00);pointer-events:none;z-index:3}
 #top>*{pointer-events:auto}h1{font:600 15px var(--mono);margin:0}h1 span{color:var(--muted);font-weight:400}
@@ -22,8 +22,13 @@ canvas{display:block;touch-action:none}
 .hood small{display:block;text-align:center;font:500 10px var(--mono);letter-spacing:0;text-transform:none;color:#d6dbe8;text-shadow:0 1px 2px #000}
 .hood small .w{color:#ff8994}.hood small .r{color:var(--amber)}
 .street{position:absolute;transform:translate(-50%,-100%);font:600 11px var(--mono);color:#e9eefb;background:#0b0e18cc;border:1px solid #2c3550;border-radius:4px;padding:1px 6px;white-space:nowrap;pointer-events:auto;cursor:pointer}
-.panel{position:fixed;right:14px;top:58px;bottom:14px;width:360px;background:#0a0c14eb;border:1px solid #232a3d;border-radius:12px;padding:16px 18px;overflow:auto;z-index:3;backdrop-filter:blur(6px)}
-.panel h2{font:600 13px var(--mono);margin:0 0 4px;word-break:break-all}.panel .sub{color:var(--muted);font:12px var(--mono);margin-bottom:10px}
+.panel{position:fixed;right:14px;top:58px;bottom:14px;width:360px;background:#0a0c14eb;border:1px solid #232a3d;border-radius:12px;z-index:3;backdrop-filter:blur(6px);display:none;flex-direction:column}
+.panel.shown{display:flex}
+#ph{display:flex;align-items:center;gap:8px;padding:12px 12px 8px 18px}#pt{flex:1;font:600 13px var(--mono);word-break:break-all;-webkit-user-select:text;user-select:text}
+#ph button{flex:none;width:32px;height:32px;border-radius:8px;border:1px solid #39405a;background:#121624;color:#dfe5f5;font:15px var(--mono);cursor:pointer}#pm{display:none}
+#pb{padding:0 18px 16px;overflow:auto;touch-action:pan-y;-webkit-user-select:text;user-select:text}
+#lang{margin-left:auto;font:600 12px var(--mono);border:1px solid #39405a;background:#121624e6;color:#dfe5f5;border-radius:8px;padding:5px 10px;cursor:pointer}
+.panel .sub{color:var(--muted);font:12px var(--mono);margin-bottom:10px}
 .panel .label{background:#151a28;border:1px solid #29304a;border-radius:6px;padding:8px 10px;margin:8px 0 4px;color:#d9e2ff}
 .panel h3{font:600 12px var(--mono);margin:14px 0 6px;color:var(--sky)}.panel ul{margin:0;padding-left:16px}.panel li{margin:3px 0}
 .k{color:#8be9c9;font-family:var(--mono)}.rr{color:var(--amber);font-family:var(--mono)}.w{color:#ff8994}.hint{color:var(--muted)}
@@ -32,16 +37,28 @@ canvas{display:block;touch-action:none}
 .ctl button:hover{border-color:var(--sky)}
 .tip{position:fixed;left:14px;bottom:62px;font:12px var(--mono);color:var(--muted);z-index:3;pointer-events:none}
 #err{position:fixed;inset:0;display:none;place-items:center;text-align:center;color:var(--muted);font:13px var(--mono)}
-@media (max-width:820px){.panel{left:10px;right:10px;top:auto;bottom:10px;width:auto;max-height:38vh}.ctl{bottom:auto;top:96px;left:10px}.tip{display:none}}
+@media (max-width:820px){.panel{left:8px;right:8px;top:auto;bottom:8px;width:auto;max-height:52px;overflow:hidden;transition:max-height .25s ease}
+ .panel.open{max-height:55vh}#ph{padding:10px 10px 10px 14px;cursor:pointer}#pt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;word-break:normal}#pm{display:block}.panel.open #pm{transform:rotate(180deg)}
+ #pb{padding:0 14px 14px}.ctl{left:auto;right:8px;bottom:auto;top:84px;flex-direction:column}.ctl button{width:42px;height:42px}.tip{display:none}
+ #top{padding:10px 12px;gap:4px 10px}.legend{font-size:11px;gap:4px 10px;order:3;width:100%}.legend span:nth-child(3){display:none}h1 span{display:none}}
 </style>
 <script type="importmap">{"imports":{"three":"${THREE}/build/three.module.js","three/addons/":"${THREE}/examples/jsm/"}}</script>
 </head><body>
-<div id="top"><h1>${esc(data.name)} <span>· what to read before you change a file</span></h1>
-<div class="legend"><span><i style="background:var(--red);box-shadow:0 0 8px var(--red)"></i>risk on this building</span><span><i style="background:var(--amber);box-shadow:0 0 8px var(--amber)"></i>a rule covers it</span><span><i style="background:#fff;box-shadow:0 0 6px #fff"></i>traffic = imports between neighbourhoods</span></div></div>
-<div id="labels"></div><aside class="panel" id="side"></aside>
-<div class="tip">drag to move · right-drag or two fingers to turn · wheel or pinch to zoom · click a neighbourhood to fly there</div>
-<div class="ctl"><button id="rl" title="turn left">⟲</button><button id="rr" title="turn right">⟳</button><button id="zo" title="zoom out">−</button><button id="zi" title="zoom in">+</button><button id="home" title="whole city">⌂</button></div>
-<div id="err">This view needs WebGL and a connection to load three.js.</div>
+<div id="top"><h1>${esc(data.name)} <span data-t="sub"></span></h1>
+<div class="legend"><span><i style="background:var(--red);box-shadow:0 0 8px var(--red)"></i><b data-t="lRisk" style="font-weight:400"></b></span><span><i style="background:var(--amber);box-shadow:0 0 8px var(--amber)"></i><b data-t="lRule" style="font-weight:400"></b></span><span><i style="background:#fff;box-shadow:0 0 6px #fff"></i><b data-t="lCar" style="font-weight:400"></b></span></div><button id="lang"></button></div>
+<div id="labels"></div><aside class="panel" id="side"><div id="ph"><div id="pt"></div><button id="pm">▴</button><button id="px">×</button></div><div id="pb"></div></aside>
+<div class="tip" data-t="tip"></div>
+<div class="ctl"><button id="rl">⟲</button><button id="rr">⟳</button><button id="zo">−</button><button id="zi">+</button><button id="home">⌂</button></div>
+<div id="err" data-t="err"></div>
+<script>
+// Keep the browser's own zoom off this page: pinch, double tap, ctrl+wheel and ctrl +/- zoom the city instead.
+for(const t of ['gesturestart','gesturechange','gestureend'])document.addEventListener(t,e=>e.preventDefault(),{passive:false});
+document.addEventListener('touchmove',e=>{if(e.touches.length>1)e.preventDefault()},{passive:false});
+let lastTap=0;document.addEventListener('touchend',e=>{const n=Date.now();if(n-lastTap<320&&e.target.tagName==='CANVAS')e.preventDefault();lastTap=n},{passive:false});
+document.addEventListener('dblclick',e=>e.preventDefault(),{passive:false});
+addEventListener('wheel',e=>{if(e.ctrlKey||e.metaKey)e.preventDefault()},{passive:false});
+addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&['+','=','-','_','0'].includes(e.key))e.preventDefault()});
+</script>
 <script type="module">
 import * as T from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
@@ -51,6 +68,23 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 const D=${json};const L=D.labels||{};
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]);
+const S={en:{sub:'· what to read before you change a file',lRisk:'risk on this building',lRule:'a rule covers it',lCar:'traffic = imports between neighbourhoods',
+  tip:'drag to move · right-drag or two fingers to turn · wheel or pinch to zoom · click a neighbourhood to fly there',err:'This view needs WebGL and a connection to load three.js.',
+  rl:'turn left',rr:'turn right',zo:'zoom out',zi:'zoom in',home:'whole city',pm:'details',px:'close',lang:'한국어',
+  files:n=>n+' files',risk:n=>n+' risk',rule:n=>n+' rule',hood:'neighbourhood',bld:n=>n+' buildings',wRisk:n=>n+' with a risk',wRule:n=>n+' under a rule',
+  hint:'Point at or tap a building to see what to read before changing that file.',usedBy:n=>'used by '+n+' file'+(n>1?'s':''),
+  hRisk:'Watch out',hRule:'Rules that must keep holding',hCheck:'Run these checks',hTest:'Tests that reach this code',why:'why',none:'Nothing in the map is tied to this file yet.'},
+ ko:{sub:'· 파일을 고치기 전에 읽을 것',lRisk:'위험이 있는 건물',lRule:'규칙이 걸린 건물',lCar:'차량 = 구역 사이 코드 연결',
+  tip:'끌어서 이동 · 우클릭이나 두 손가락으로 회전 · 휠이나 꼬집기로 확대 · 구역 이름을 누르면 그곳으로 이동',err:'이 화면은 WebGL과 three.js를 불러올 인터넷 연결이 필요해요.',
+  rl:'왼쪽으로 돌기',rr:'오른쪽으로 돌기',zo:'축소',zi:'확대',home:'도시 전체',pm:'자세히',px:'닫기',lang:'English',
+  files:n=>'파일 '+n+'개',risk:n=>'위험 '+n,rule:n=>'규칙 '+n,hood:'구역',bld:n=>'건물 '+n+'채',wRisk:n=>'위험 '+n,wRule:n=>'규칙 '+n,
+  hint:'건물을 가리키거나 누르면 그 파일을 고치기 전에 읽을 것이 나와요.',usedBy:n=>n+'개 파일이 사용',
+  hRisk:'주의할 점',hRule:'지켜야 할 규칙',hCheck:'돌려야 할 검사',hTest:'이 코드에 닿는 테스트',why:'이유',none:'아직 지도에 이 파일과 이어진 내용이 없어요.'}};
+let lang=(()=>{const q=new URLSearchParams(location.search).get('lang');if(q&&S[q])return q;try{const v=localStorage.getItem('rf-lang');if(v&&S[v])return v}catch{}return /^ko/i.test(navigator.language)?'ko':'en'})();
+const t=k=>S[lang][k];
+function applyLang(){document.documentElement.lang=lang;document.querySelectorAll('[data-t]').forEach(e=>e.textContent=t(e.dataset.t));
+  for(const id of ['rl','rr','zo','zi','home','pm','px']){const e=document.getElementById(id);e.title=t(id);e.setAttribute('aria-label',t(id))}document.getElementById('lang').textContent=t('lang')}
+applyLang();
 const weight=r=>r.rules.length*2+r.own*3+r.risks.length;
 const status=r=>r.own?1:r.rules.length?2:0;
 const hash=s=>{let h=2166136261;for(const c of s){h^=c.charCodeAt(0);h=Math.imul(h,16777619)}return (h>>>0)/4294967295};
@@ -152,10 +186,10 @@ const bmat=new T.ShaderMaterial({uniforms:{uTime:{value:0},fogColor:{value:FOG},
   if(n.y>.5){col=wall*.8;vec2 uv=vL.xz+.5;float e=min(min(uv.x,1.-uv.x),min(uv.y,1.-uv.y));
     if(vStatus>.5){col+=sc*smoothstep(.09,.0,e)*2.6;col+=sc*.08*(.7+.3*sin(uTime*3.+sd));}else col+=vec3(.25,.3,.4)*smoothstep(.05,.0,e)*.15;}
   else{float u=abs(n.x)>.5?vPos.z:vPos.x;float v=vPos.y-.7;vec2 c=vec2(floor(u/1.7),floor(v/2.6));vec2 f=vec2(fract(u/1.7),fract(v/2.6));
-    float win=step(.18,f.x)*step(f.x,.82)*step(.28,f.y)*step(f.y,.78);float lit=step(vStatus<-.5?.72:.5,h(c+sd*7.));
+    float win=step(.18,f.x)*step(f.x,.82)*step(.28,f.y)*step(f.y,.78);float lit=step(vStatus<-.5?.9:.5,h(c+sd*7.));
     vec3 wc=mix(vec3(1.,.78,.46),vec3(.62,.82,1.),step(.62,h(c*1.9+sd)));if(vStatus>.5)wc=mix(wc,sc,.72);
-    float sh=abs(n.x)>.5?.72:1.;col=wall*sh+win*lit*wc*(.55+.5*h(c+3.1))*(vStatus<-.5?.7:1.)+win*(1.-lit)*vec3(.006,.008,.014);
-    col+=vec3(1.,.55,.25)*.08*smoothstep(2.2,0.,v);if(vStatus>.5)col+=sc*.1*smoothstep(6.,0.,abs(v-floor(v/40.)*40.)*0.);}
+    float sh=abs(n.x)>.5?.72:1.;col=wall*sh+win*lit*wc*(.55+.5*h(c+3.1))*(vStatus<-.5?.28:1.)+win*(1.-lit)*vec3(.006,.008,.014);
+    if(vStatus>-.5)col+=vec3(1.,.55,.25)*.08*smoothstep(2.2,0.,v);if(vStatus>.5)col+=sc*.1*smoothstep(6.,0.,abs(v-floor(v/40.)*40.)*0.);}
   if(vState>.5){float a=n.y>.5?max(abs(vL.x),abs(vL.z)):(abs(n.x)>.5?abs(vL.z):abs(vL.x));float rim=smoothstep(.44,.5,a)+(n.y>.5?0.:smoothstep(.985,1.,vL.y));col+=vec3(.3,.85,1.)*(rim*1.4+.02)*(vState>1.5?1.:.55);}
   float fg=smoothstep(fogNear,fogFar,vDepth);gl_FragColor=vec4(mix(col,fogColor,fg),1.);}\`});
 const bmesh=new T.InstancedMesh(bgeo,bmat,mats.length);mats.forEach((m,i)=>bmesh.setMatrixAt(i,m));
@@ -185,11 +219,11 @@ const composer=new EffectComposer(renderer);composer.addPass(new RenderPass(scen
 const bloom=new UnrealBloomPass(new T.Vector2(innerWidth/2,innerHeight/2),.85,.45,.6);composer.addPass(bloom);composer.addPass(new OutputPass());
 
 // ---- Labels: neighbourhood signs always; folder signs when the camera is close.
-const labels=document.getElementById('labels');const tags=[];
+const labels=document.getElementById('labels');const tags=[];const redraws=[];const touch=matchMedia('(pointer:coarse)').matches;const narrow=()=>matchMedia('(max-width:820px)').matches;
 const stat=fs=>{let red=0,amber=0;for(const f of fs){const s=status(D.files[f]);if(s===1)red++;else if(s===2)amber++}return {red,amber}};
 for(const g of groups){const [x,z,bs]=centre[g.id];const top=Math.max(...bfiles.filter(b=>b.block.g===g.id).map(b=>b.H));const s=stat(g.files);
-  const el=document.createElement('div');el.className='hood';el.innerHTML=esc(g.id)+'<small>'+g.files.length+' files'+(s.red?' · <span class="w">'+s.red+' risk</span>':'')+(s.amber?' · <span class="r">'+s.amber+' rule</span>':'')+'</small>';
-  el.onclick=()=>{flyTo(x,z,Math.sqrt(bs.length)*P*1.6+60);showHood(g)};el.onmouseenter=()=>showHood(g);labels.appendChild(el);tags.push({el,p:new T.Vector3(x,top+14,z),near:Infinity})}
+  const el=document.createElement('div');el.className='hood';const draw=()=>{el.innerHTML=esc(g.id)+'<small>'+t('files')(g.files.length)+(s.red?' · <span class="w">'+t('risk')(s.red)+'</span>':'')+(s.amber?' · <span class="r">'+t('rule')(s.amber)+'</span>':'')+'</small>'};draw();redraws.push(draw);
+  el.onclick=()=>{flyTo(x,z,Math.sqrt(bs.length)*P*1.6+60);showHood(g,true)};el.onmouseenter=()=>{if(!touch)showHood(g)};labels.appendChild(el);tags.push({el,p:new T.Vector3(x,top+14,z),near:Infinity})}
 for(const b of blocks){const name=b.dirs[0].split('/').pop()+(b.dirs.length>1?' +'+(b.dirs.length-1):'');const top=Math.max(...bfiles.filter(x=>x.block===b).map(x=>x.H));
   const el=document.createElement('div');el.className='street';el.textContent=name;el.title=b.dirs.join(', ');el.onclick=()=>flyTo(b.x+B/2,b.z+B/2,120);labels.appendChild(el);tags.push({el,p:new T.Vector3(b.x+B/2,top+6,b.z+B/2),near:260})}
 const v=new T.Vector3();
@@ -197,23 +231,27 @@ function placeLabels(){const dist=camera.position.distanceTo(controls.target);fo
   t.el.style.display=vis?'block':'none';if(vis){t.el.style.left=((v.x+1)/2*innerWidth)+'px';t.el.style.top=((1-v.y)/2*innerHeight)+'px'}}}
 
 // ---- Panel
-const side=document.getElementById('side');
-function showHood(g){const s=stat(g.files);side.innerHTML='<h2>'+esc(g.id)+'</h2><div class="sub">neighbourhood · '+g.files.length+' buildings · '+s.red+' with a risk · '+s.amber+' under a rule</div>'+((L[g.id]||g.title)?'<div class="label">'+esc(L[g.id]||g.title)+'</div>':'')+'<p class="hint">Point at a building to see what to read before changing that file.</p>'}
-function showFile(f){const r=D.files[f];let h='<h2>'+esc(f)+'</h2><div class="sub">'+esc(r.g)+(r.users?' · used by '+r.users+' file'+(r.users>1?'s':''):'')+'</div>';
+const side=document.getElementById('side'),pt=document.getElementById('pt'),pb=document.getElementById('pb');let current=null;
+// show: true opens the panel (a click or tap); false only refreshes it if it is already showing (hover).
+function setPanel(title,html,show){if(!show&&!side.classList.contains('shown'))return;pt.textContent=title;pb.innerHTML=html;pb.scrollTop=0;if(show)side.classList.add('shown')}
+document.getElementById('ph').onclick=e=>{if(e.target.id==='px'){side.classList.remove('shown','open');return}if(narrow())side.classList.toggle('open')};
+function showHood(g,show){current=()=>showHood(g,false);const s=stat(g.files);setPanel(g.id,'<div class="sub">'+t('hood')+' · '+t('bld')(g.files.length)+' · '+t('wRisk')(s.red)+' · '+t('wRule')(s.amber)+'</div>'+((L[g.id]||g.title)?'<div class="label">'+esc(L[g.id]||g.title)+'</div>':'')+'<p class="hint">'+t('hint')+'</p>',show)}
+function showFile(f,show){current=()=>showFile(f,false);const r=D.files[f];let h='<div class="sub">'+esc(r.g)+(r.users?' · '+t('usedBy')(r.users):'')+'</div>';
   if(L[f])h+='<div class="label">'+esc(L[f])+'</div>';
-  if(r.risks.length)h+='<h3>## Watch out</h3><ul>'+r.risks.map(x=>'<li class="w">'+esc(x)+'</li>').join('')+'</ul>';
-  if(r.rules.length)h+='<h3>## Rules that must keep holding</h3><ul>'+r.rules.map(x=>'<li><span class="rr">'+esc(x[0])+'</span>: '+esc(x[1])+(x[2]?' <span class="hint">— why: '+esc(x[2])+'</span>':'')+'</li>').join('')+'</ul>';
-  if(r.checks.length)h+='<h3>## Run these checks</h3><ul>'+r.checks.map(x=>'<li><span class="k">'+esc(x[0])+'</span>'+(x[1]?' <span class="hint">— '+esc(x[1])+'</span>':'')+'</li>').join('')+'</ul>';
-  if(r.tests.length)h+='<h3>## Tests that reach this code</h3><ul>'+r.tests.map(x=>'<li class="k">'+esc(x)+'</li>').join('')+'</ul>';
-  if(!r.risks.length&&!r.rules.length&&!r.checks.length&&!r.tests.length)h+='<p class="hint">Nothing in the map is tied to this file yet.</p>';side.innerHTML=h}
+  if(r.risks.length)h+='<h3>## '+t('hRisk')+'</h3><ul>'+r.risks.map(x=>'<li class="w">'+esc(x)+'</li>').join('')+'</ul>';
+  if(r.rules.length)h+='<h3>## '+t('hRule')+'</h3><ul>'+r.rules.map(x=>'<li><span class="rr">'+esc(x[0])+'</span>: '+esc(x[1])+(x[2]?' <span class="hint">— '+t('why')+': '+esc(x[2])+'</span>':'')+'</li>').join('')+'</ul>';
+  if(r.checks.length)h+='<h3>## '+t('hCheck')+'</h3><ul>'+r.checks.map(x=>'<li><span class="k">'+esc(x[0])+'</span>'+(x[1]?' <span class="hint">— '+esc(x[1])+'</span>':'')+'</li>').join('')+'</ul>';
+  if(r.tests.length)h+='<h3>## '+t('hTest')+'</h3><ul>'+r.tests.map(x=>'<li class="k">'+esc(x)+'</li>').join('')+'</ul>';
+  if(!r.risks.length&&!r.rules.length&&!r.checks.length&&!r.tests.length)h+='<p class="hint">'+t('none')+'</p>';setPanel(f,h,show)}
+document.getElementById('lang').onclick=()=>{lang=lang==='ko'?'en':'ko';try{localStorage.setItem('rf-lang',lang)}catch{}applyLang();redraws.forEach(d=>d());if(current)current()};
 
 // ---- Picking
 const ray=new T.Raycaster(),mouse=new T.Vector2();let hover=-1,picked=-1;
 const setState=(i,s)=>{if(i<0)return;stateAttr.setX(i,s);stateAttr.needsUpdate=true};
 function pick(e){const r=renderer.domElement.getBoundingClientRect();mouse.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(mouse,camera);const hit=ray.intersectObject(bmesh)[0];return hit&&hit.instanceId<nData?hit.instanceId:-1}
 let downAt=null;renderer.domElement.addEventListener('pointerdown',e=>{downAt=[e.clientX,e.clientY]});
-renderer.domElement.addEventListener('pointermove',e=>{if(e.buttons)return;const i=pick(e);if(i!==hover){if(hover!==picked)setState(hover,0);hover=i;if(i>=0&&i!==picked){setState(i,1);showFile(bfiles[i].f)}renderer.domElement.style.cursor=i>=0?'pointer':'grab'}});
-renderer.domElement.addEventListener('pointerup',e=>{if(!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>5)return;const i=pick(e);if(i<0)return;setState(picked,0);picked=i;setState(i,2);showFile(bfiles[i].f);const b=bfiles[i];flyTo(b.pos.x,b.pos.z,Math.max(90,b.H*2.2))});
+renderer.domElement.addEventListener('pointermove',e=>{if(e.buttons)return;const i=pick(e);if(i!==hover){if(hover!==picked)setState(hover,0);hover=i;if(i>=0&&i!==picked){setState(i,1);showFile(bfiles[i].f,false)}renderer.domElement.style.cursor=i>=0?'pointer':'grab'}});
+renderer.domElement.addEventListener('pointerup',e=>{if(!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>5)return;const i=pick(e);if(i<0){side.classList.remove('open');return}setState(picked,0);picked=i;setState(i,2);showFile(bfiles[i].f,true);const b=bfiles[i];flyTo(b.pos.x,b.pos.z,Math.max(90,b.H*2.2))});
 
 // ---- Camera moves
 let fly=null;function flyTo(x,z,dist){const tgt=new T.Vector3(x,0,z);const dir=camera.position.clone().sub(controls.target);dir.y=0;dir.normalize();dir.y=1.05;dir.normalize();fly={t:0,from:camera.position.clone(),to:tgt.clone().add(dir.multiplyScalar(dist)),ft:controls.target.clone(),tt:tgt}}
@@ -232,7 +270,7 @@ function frame(){const dt=Math.min(clock.getDelta(),.05);bmat.uniforms.uTime.val
   if(fly){fly.t=Math.min(1,fly.t+dt/.9);const k=ease(fly.t);camera.position.lerpVectors(fly.from,fly.to,k);controls.target.lerpVectors(fly.ft,fly.tt,k);if(fly.t>=1)fly=null}
   controls.update();composer.render();placeLabels();requestAnimationFrame(frame)}
 moveCars(0);frame();window.__city=1;
-const first=bfiles.map((b,i)=>[i,weight(D.files[b.f])]).sort((a,b)=>b[1]-a[1])[0];if(first){picked=first[0];setState(picked,2);showFile(bfiles[picked].f)}
+const first=bfiles.map((b,i)=>[i,weight(D.files[b.f])]).sort((a,b)=>b[1]-a[1])[0];if(first){picked=first[0];setState(picked,2);showFile(bfiles[picked].f,!narrow())}
 </script>
 <script>setTimeout(()=>{if(!window.__city)document.getElementById('err').style.display='grid'},12000)</script>
 </body></html>`;
