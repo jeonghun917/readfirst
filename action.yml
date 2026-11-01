@@ -1,5 +1,5 @@
-name: readfirst
-description: Comment on each pull request with the rules, risks and checks for the files it changes, and fail when the map falls behind the code.
+name: readfirst map check
+description: Comments on each PR with the rules, risks and checks for its changed files, and fails when the map falls behind.
 author: jeonghun917
 branding:
   icon: book-open
