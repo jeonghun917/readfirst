@@ -36,7 +36,7 @@ canvas{display:block;touch-action:none}
 #pb{padding:0 18px 16px;overflow:auto;touch-action:pan-y;-webkit-user-select:text;user-select:text}
 #mode{margin-left:auto}#mode+#lang{margin-left:0}#lang,#mode{font:600 12px var(--mono);border:1px solid #39405a;background:#121624e6;color:#dfe5f5;border-radius:8px;padding:5px 10px;cursor:pointer}
 .panel .sub{color:var(--muted);font:12px var(--mono);margin-bottom:10px}
-.panel .label small.mine{display:block;font:11px var(--mono);color:var(--muted);margin-bottom:3px}.panel .label{background:#151a28;border:1px solid #29304a;border-radius:6px;padding:8px 10px;margin:8px 0 4px;color:#d9e2ff}
+.panel .on{margin-top:2px;font:11px var(--mono);color:var(--muted)}.panel a.fl{color:#9fdcff;text-decoration:underline dotted;cursor:pointer;margin-right:6px}.panel .label small.mine{display:block;font:11px var(--mono);color:var(--muted);margin-bottom:3px}.panel .label{background:#151a28;border:1px solid #29304a;border-radius:6px;padding:8px 10px;margin:8px 0 4px;color:#d9e2ff}
 .panel h3{font:600 12px var(--mono);margin:14px 0 6px;color:var(--sky)}.panel ul{margin:0;padding-left:16px}.panel li{margin:3px 0}
 .k{color:#8be9c9;font-family:var(--mono)}.rr{color:var(--amber);font-family:var(--mono)}.w{color:#ff8994}.hint{color:var(--muted)}
 .ctl{position:absolute;left:14px;bottom:14px;display:flex;gap:6px;z-index:3}
@@ -258,10 +258,15 @@ const noLabels=()=>lang!=='en'&&!LL().text?'<p class="hint">'+t('noLabels')+'</p
 const note=x=>'<div class="label"><small class="mine">'+t('mine')+'</small>'+esc(x)+'</div>';
 const side=document.getElementById('side'),pt=document.getElementById('pt'),pb=document.getElementById('pb');let current=null;
 // show: true opens the panel (a click or tap); false only refreshes it if it is already showing (hover).
-function setPanel(title,html,show){if(!show&&!side.classList.contains('shown'))return;pt.textContent=title;pb.innerHTML=html;pb.scrollTop=0;if(show)side.classList.add('shown')}
+function setPanel(title,html,show){if(!show&&!side.classList.contains('shown'))return;pt.textContent=title;pb.innerHTML=html;pb.scrollTop=0;if(show){side.classList.add('shown');if(narrow())side.classList.add('open')}}
 document.getElementById('ph').onclick=e=>{if(e.target.id==='px'){side.classList.remove('shown','open');return}if(narrow())side.classList.toggle('open')};
 function focusOn(id){bmat.uniforms.uFocus.value=id==null?-1:groups.findIndex(x=>x.id===id)}
-function showHood(g,show){current=()=>showHood(g,false);const s=stat(g.files);setPanel(gname(g.id)?gname(g.id)+' · '+g.id:g.id,'<div class="sub">'+t('hood')+' · '+t('bld')(g.files.length)+' · '+t('wRisk')(s.red)+' · '+t('wRule')(s.amber)+'</div>'+(PL().groups?.[g.id]?.about?note(PL().groups[g.id].about):g.title?'<div class="label">'+esc(tr(g.title))+'</div>':'')+noLabels()+'<p class="hint">'+t('hint')+'</p>',show)}
+const fileLink=p=>D.files[p]?'<a class="fl" data-f="'+esc(p)+'">'+esc(p)+'</a>':'<span class="k">'+esc(p)+'</span>';
+function showHood(g,show){current=()=>showHood(g,false);const s=stat(g.files);let h='<div class="sub">'+t('hood')+' · '+t('bld')(g.files.length)+' · '+t('wRisk')(s.red)+' · '+t('wRule')(s.amber)+'</div>'+(PL().groups?.[g.id]?.about?note(PL().groups[g.id].about):g.title?'<div class="label">'+esc(tr(g.title))+'</div>':'')+noLabels();
+  if(g.risks.length)h+='<h3>## '+t('hRisk')+'</h3><ul>'+g.risks.map(([x,fs])=>'<li class="w" title="'+esc(x)+'">'+esc(tr(x))+(fs.length?'<div class="on">'+fs.map(fileLink).join(' ')+'</div>':'')+'</li>').join('')+'</ul>';
+  if(g.rules.length)h+='<h3>## '+t('hRule')+'</h3><ul>'+g.rules.map(x=>'<li><span class="rr">'+esc(x[0])+'</span>: '+esc(tr(x[1]))+(x[2]?' <span class="hint">— '+t('why')+': '+esc(tr(x[2]))+'</span>':'')+'</li>').join('')+'</ul>';
+  if(g.checks.length)h+='<h3>## '+t('hCheck')+'</h3><ul>'+g.checks.map(x=>'<li><span class="k">'+esc(x[0])+'</span>'+(x[1]?' <span class="hint">— '+esc(tr(x[1]))+'</span>':'')+'</li>').join('')+'</ul>';
+  setPanel(gname(g.id)?gname(g.id)+' · '+g.id:g.id,h+'<p class="hint">'+t('hint')+'</p>',show)}
 function showFile(f,show){current=()=>showFile(f,false);const r=D.files[f];let h='<div class="sub">'+esc(r.g)+(r.users?' · '+t('usedBy')(r.users):'')+'</div>';
   if(PL().files?.[f])h+=note(PL().files[f]);h+=noLabels();
   if(r.risks.length)h+='<h3>## '+t('hRisk')+'</h3><ul>'+r.risks.map(x=>'<li class="w" title="'+esc(x)+'">'+esc(tr(x))+'</li>').join('')+'</ul>';
@@ -278,6 +283,8 @@ const setState=(i,s)=>{if(i<0)return;stateAttr.setX(i,s);stateAttr.needsUpdate=t
 function pick(e){const r=renderer.domElement.getBoundingClientRect();mouse.set((e.clientX-r.left)/r.width*2-1,-(e.clientY-r.top)/r.height*2+1);ray.setFromCamera(mouse,camera);const hit=ray.intersectObject(bmesh)[0];return hit&&hit.instanceId<nData?hit.instanceId:-1}
 let downAt=null;renderer.domElement.addEventListener('pointerdown',e=>{downAt=[e.clientX,e.clientY]});
 renderer.domElement.addEventListener('pointermove',e=>{if(e.buttons)return;const i=pick(e);if(i!==hover){if(hover!==picked)setState(hover,0);hover=i;if(i>=0&&i!==picked){setState(i,1);showFile(bfiles[i].f,false)}renderer.domElement.style.cursor=i>=0?'pointer':'grab'}});
+function selectFile(i){setState(picked,0);picked=i;setState(i,2);showFile(bfiles[i].f,true);const b=bfiles[i];flyTo(b.pos.x,b.pos.z,Math.max(90,b.H*2.2))}
+pb.addEventListener('click',e=>{const f=e.target.closest('a.fl')?.dataset.f;if(!f)return;const i=bfiles.findIndex(b=>b.f===f);if(i>=0)selectFile(i)});
 renderer.domElement.addEventListener('pointerup',e=>{if(!downAt||Math.hypot(e.clientX-downAt[0],e.clientY-downAt[1])>5)return;const i=pick(e);if(i<0){side.classList.remove('open');focusOn(null);return}setState(picked,0);picked=i;setState(i,2);showFile(bfiles[i].f,true);const b=bfiles[i];flyTo(b.pos.x,b.pos.z,Math.max(90,b.H*2.2))});
 
 // ---- Camera moves

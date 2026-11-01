@@ -33,7 +33,16 @@ export function viewData({ map, files, imports, name = 'repository', limit = 5 }
   return {
     name,
     links: [...links].map(([k, n]) => { const [a, b] = k.split('\0'); return { a, b, n }; }),
-    groups: map.groups.map((g) => ({ id: g.id, title: g.title, files: byGroup.get(g.id) ?? [], risks: (g.risks ?? []).length, checks: (g.checks ?? []).length })).filter((g) => g.files.length),
+    groups: map.groups.map((g) => {
+      const mine = byGroup.get(g.id) ?? [];
+      return {
+        id: g.id, title: g.title, files: mine,
+        // The group's own risks (with the files they name, if any), its checks, and every rule that covers one of its files.
+        risks: (g.risks ?? []).map((r) => [r.text, r.files ?? []]),
+        checks: (g.checks ?? []).map((c) => [c.run, c.why ?? '']),
+        rules: (map.rules ?? []).filter((r) => mine.some(matcher(r.files))).map((r) => [r.id, r.rule, r.why ?? '']),
+      };
+    }).filter((g) => g.files.length),
     rules: (map.rules ?? []).length,
     files: fileRows,
   };
