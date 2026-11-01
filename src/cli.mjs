@@ -218,6 +218,23 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     if (out) io.out(`${out}\n`);
     return 0;
   }
+  if (cmd === 'mcp') {
+    // The server starts and answers initialize and tools/list anywhere, also outside a git repository (directories
+    // start it in an empty container to check it). The repository is looked up at each tool call.
+    const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+    const run = (argv) => {
+      let out = ''; let err = ''; let code;
+      try {
+        const root = args.root ?? (() => {
+          try { return git(process.cwd(), 'rev-parse', '--show-toplevel').trim(); } catch { throw new Error(`not inside a git repository (${process.cwd()}): start the server in your repository, or pass --root <dir>`); }
+        })();
+        code = main(['--root', root, ...argv], { out: (s) => { out += s; }, err: (s) => { err += s; } });
+      } catch (e) { code = 2; err += e.message; }
+      return { code, out, err };
+    };
+    serveMcp({ handle: mcpHandler({ run, version }), input: process.stdin, output: process.stdout });
+    return 0;
+  }
   const root = args.root ?? git(process.cwd(), 'rev-parse', '--show-toplevel').trim();
   const files = repoFiles(root);
   const commit = (() => { try { return git(root, 'rev-parse', 'HEAD').trim(); } catch { return null; } })();
@@ -296,16 +313,6 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
     const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
-    return 0;
-  }
-  if (cmd === 'mcp') {
-    const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
-    const run = (argv) => {
-      let out = ''; let err = ''; let code;
-      try { code = main(['--root', root, ...argv], { out: (s) => { out += s; }, err: (s) => { err += s; } }); } catch (e) { code = 2; err += e.message; }
-      return { code, out, err };
-    };
-    serveMcp({ handle: mcpHandler({ run, version }), input: process.stdin, output: process.stdout });
     return 0;
   }
   if (cmd === 'verify') {
