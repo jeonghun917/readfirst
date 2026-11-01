@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { main } from '../src/cli.mjs';
 import { importEdges } from '../src/imports.mjs';
-import { draftMap, MAP_FORMAT, mapProblems, patternToRegExp } from '../src/map.mjs';
+import { draftMap, fixMap, MAP_FORMAT, mapProblems, patternToRegExp } from '../src/map.mjs';
 import { readList, toMarkdown } from '../src/readlist.mjs';
 
 function repo(files) {
@@ -142,4 +142,58 @@ test('cli: init, check, prompt, read and diff on a real git repository', () => {
   assert.equal(bad.code, 1);
   assert.match(bad.out, /stray.txt/u);
   assert.ok(JSON.parse(readFileSync(join(root, '.readfirst/map.json'), 'utf8')).groups.length > 0);
+});
+
+test('fix: new files join their nearest neighbour group, a new folder joins whole, dead patterns are dropped', () => {
+  const map = {
+    format: MAP_FORMAT,
+    groups: [
+      { id: 'billing', title: 'billing', files: ['src/billing/**', 'src/old.js'], risks: [{ text: 'cents', files: ['src/billing/gone.ts'] }] },
+      { id: 'api', title: 'api', files: ['src/api/**'] },
+      { id: 'root', title: 'root', files: ['README.md'] },
+    ],
+    rules: [{ id: 'r', rule: 'x', files: ['src/api/**', 'src/api/deleted.js'] }],
+  };
+  const files = ['README.md', 'src/api/route.js', 'src/billing/charge.ts', 'src/billing/refund/a.ts', 'src/billing/refund/b.ts', 'src/new.js', 'top.txt'].sort();
+  // src/billing/refund/ is already matched by src/billing/**; src/new.js and top.txt are new.
+  const { map: fixed, changes, problems } = fixMap(map, files);
+  assert.deepEqual(problems, []);
+  assert.deepEqual(fixed.groups[0].files, ['src/billing/**']);
+  assert.equal(fixed.groups[0].risks[0].files, undefined, 'a risk whose files are all gone becomes a group-wide risk');
+  assert.deepEqual(fixed.rules[0].files, ['src/api/**']);
+  assert.ok(fixed.groups.some((g) => g.files.includes('top.txt')), 'a root file joins the root group');
+  assert.ok(changes.some((c) => /added src\/new\.js/u.test(c)));
+  assert.ok(changes.some((c) => /dropped src\/old\.js/u.test(c)));
+  assert.deepEqual(map.groups[0].files, ['src/billing/**', 'src/old.js'], 'the input map is left alone');
+
+  // A whole new folder becomes one pattern in the group of its parent's files.
+  const m2 = { format: MAP_FORMAT, groups: [{ id: 'src', title: 'src', files: ['src/a.js'] }] };
+  const r2 = fixMap(m2, ['src/a.js', 'src/feature/x.js', 'src/feature/deep/y.js']);
+  assert.deepEqual(r2.map.groups[0].files, ['src/a.js', 'src/feature/**']);
+  assert.deepEqual(r2.problems, []);
+
+  // Nothing to go on: the file stays a problem for a person.
+  const r3 = fixMap({ format: MAP_FORMAT, groups: [{ id: 'g', title: 'g', files: ['a/x.js'] }] }, ['a/x.js', 'b/y.js']);
+  assert.match(r3.problems.join(), /in no group/u);
+  // A group whose only pattern died is not emptied.
+  const r4 = fixMap({ format: MAP_FORMAT, groups: [{ id: 'g', title: 'g', files: ['gone/**'] }, { id: 'h', title: 'h', files: ['a.js'] }] }, ['a.js']);
+  assert.deepEqual(r4.map.groups[0].files, ['gone/**']);
+  assert.match(r4.problems.join(), /gone\/\*\* matches no tracked file/u);
+});
+
+test('cli: fix writes the repaired map and says what is left', () => {
+  const { root, git } = repo(FIXTURE);
+  run(root, 'init');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'map');
+  mkdirSync(join(root, 'src/billing/refunds'), { recursive: true });
+  writeFileSync(join(root, 'src/billing/refunds/refund.ts'), 'export {};\n');
+  writeFileSync(join(root, 'src/brandnew.ts'), 'export {};\n');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '.');
+  assert.equal(run(root, 'check').code, 1);
+  const r = run(root, 'fix');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /added src\/brandnew\.ts/u);
+  assert.match(run(root, 'check').out, /is good/u);
+  assert.match(run(root, 'fix').out, /nothing to fix automatically/u);
 });

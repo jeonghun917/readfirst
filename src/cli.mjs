@@ -2,6 +2,7 @@
 //   readfirst init                 write a first .readfirst/map.json from the file tree
 //   readfirst prompt               the brief for a coding agent to fill in titles, checks, risks and rules
 //   readfirst check                the map covers every tracked file and is well formed
+//   readfirst fix                  place new files and drop patterns for deleted ones, then check
 //   readfirst read <file>...       the read list for files you are about to change
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
@@ -9,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { importEdges } from './imports.mjs';
-import { assertMap, draftMap, MAP_PATH, mapProblems } from './map.mjs';
+import { assertMap, draftMap, fixMap, MAP_PATH, mapProblems } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { emptyList, readList, toMarkdown } from './readlist.mjs';
 
@@ -18,6 +19,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst init                 write a first ${MAP_PATH} from the file tree
   readfirst prompt               brief for your coding agent to fill in the map
   readfirst check                check the map covers every tracked file
+  readfirst fix                  place new files, drop patterns for deleted ones
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
 
@@ -94,6 +96,16 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const problems = mapProblems(readMapFile(root), files);
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems }, null, 2)}\n`);
     else io.out(problems.length ? `${MAP_PATH} has ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n` : `${MAP_PATH} is good: ${files.length} files.\n`);
+    return problems.length ? 1 : 0;
+  }
+  if (cmd === 'fix') {
+    const { map, changes, problems } = fixMap(readMapFile(root), files);
+    if (changes.length) writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`);
+    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, changes, problems }, null, 2)}\n`);
+    else {
+      io.out(changes.length ? `updated ${MAP_PATH}:\n- ${changes.join('\n- ')}\n` : 'nothing to fix automatically.\n');
+      io.out(problems.length ? `still to fix by hand:\n- ${problems.join('\n- ')}\n` : `${MAP_PATH} is good: ${files.length} files.\n`);
+    }
     return problems.length ? 1 : 0;
   }
   if (cmd === 'read' || cmd === 'diff') {

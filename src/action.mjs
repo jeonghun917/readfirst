@@ -4,7 +4,7 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { readMapFile, readText, repoFiles } from './cli.mjs';
 import { importEdges } from './imports.mjs';
-import { MAP_PATH, mapProblems } from './map.mjs';
+import { fixMap, MAP_PATH, mapProblems } from './map.mjs';
 import { readList, toMarkdown } from './readlist.mjs';
 
 export const MARKER = '<!-- readfirst:pr-comment -->';
@@ -30,11 +30,12 @@ async function pages(fetchImpl, env, path) {
   return all;
 }
 
-export function commentBody({ list, problems, removed, commit }) {
+export function commentBody({ list, problems, removed, commit, fixes = [] }) {
   const parts = [MARKER, '## readfirst', ''];
   if (problems.length) {
     parts.push(`> [!WARNING]\n> \`${MAP_PATH}\` no longer matches the code (${problems.length} problem${problems.length > 1 ? 's' : ''}). Run \`npx readfirst check\` and fix the map in this PR.`, '');
     parts.push(...problems.slice(0, 20).map((p) => `- ${p}`), ...(problems.length > 20 ? [`- …and ${problems.length - 20} more`] : []), '');
+    if (fixes.length) parts.push('`npx readfirst fix` would make these changes:', ...fixes.slice(0, 10).map((f) => `- ${f}`), ...(fixes.length > 10 ? [`- …and ${fixes.length - 10} more`] : []), '');
   }
   if (list) parts.push(toMarkdown(list, { checklist: true, heading: null }));
   else if (!problems.length) parts.push('No changed files to look up.', '');
@@ -66,7 +67,8 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const list = targets.length && !problems.length
     ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30) })
     : null;
-  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null });
+  const fixes = problems.length ? (() => { try { return fixMap(map, files).changes; } catch { return []; } })() : [];
+  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes });
   summary(body);
 
   if ((env.INPUT_COMMENT ?? 'true') !== 'false') {

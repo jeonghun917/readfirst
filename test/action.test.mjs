@@ -101,3 +101,10 @@ test('off a pull request only the map is checked', async () => {
   const r = await runAction({ env: envFor(root, undefined, { GITHUB_EVENT_PATH: '' }), fetchImpl: async () => { throw new Error('no calls'); }, log: () => {} });
   assert.equal(r.ok, true);
 });
+
+test('comment: when the map is stale, it says what `readfirst fix` would change', async () => {
+  const { commentBody } = await import('../src/action.mjs');
+  const body = commentBody({ list: null, problems: ['1 file(s) in no group and not ignored: src/new.js'], removed: [], commit: 'abc1234', fixes: ['groups.src: added src/new.js'] });
+  assert.match(body, /`npx readfirst fix` would make these changes:\n- groups.src: added src\/new.js/u);
+  assert.doesNotMatch(commentBody({ list: null, problems: ['x'], removed: [], commit: null }), /readfirst fix/u);
+});
