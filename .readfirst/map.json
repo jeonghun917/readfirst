@@ -207,13 +207,6 @@
           ]
         },
         {
-          "text": "package.json promises Node >=20 but CI tests only on Node 22, so a Node 22-only API passes CI and breaks for Node 20 users",
-          "files": [
-            "package.json",
-            ".github/**"
-          ]
-        },
-        {
           "text": "CI's readfirst job runs this checkout's own Action (uses: ./), so every PR fails when a new file is not in .readfirst/map.json or when src/action.mjs is broken",
           "files": [
             ".github/**"
