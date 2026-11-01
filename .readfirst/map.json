@@ -259,7 +259,7 @@
           ]
         },
         {
-          "text": "server.json lists readfirst in the official MCP Registry; its version and packages[0].version must equal package.json's version, and its name must equal package.json's mcpName, or the release job stops before publishing (bump all three together)",
+          "text": "server.json lists readfirst in the official MCP Registry (mcp-registry.yml, after a release is published and npm shows the version); its version and packages[0].version must equal package.json's version, and its name must equal package.json's mcpName, or the release or the listing fails (bump all three together)",
           "files": [
             "server.json",
             "package.json",

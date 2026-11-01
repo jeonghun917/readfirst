@@ -1,6 +1,6 @@
-# Publishes readfirst to npm when a version tag (v0.1.0, ...) is pushed, then lists that version in the official MCP
-# Registry (server.json) as io.github.jeonghun917/readfirst. Needs the repository secret NPM_TOKEN (an npm granular access
-# token with publish rights for the readfirst package); the registry login uses this workflow's GitHub OIDC token.
+# Publishes readfirst to npm when a version tag (v0.1.0, ...) is pushed. Needs the repository secret NPM_TOKEN (an npm
+# granular access token with publish rights for the readfirst package). mcp-registry.yml lists the version in the MCP
+# Registry once npm has it.
 name: release
 on:
   push:
@@ -26,12 +26,3 @@ jobs:
       - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      - name: List the version in the MCP Registry
-        env:
-          MCP_PUBLISHER_VERSION: v1.8.1
-        run: |
-          curl --fail --location --silent --show-error --output mcp-publisher.tar.gz \
-            "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
-          tar xzf mcp-publisher.tar.gz mcp-publisher
-          ./mcp-publisher login github-oidc
-          ./mcp-publisher publish
