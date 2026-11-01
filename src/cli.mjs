@@ -1,5 +1,5 @@
 // readfirst: what to read and check before changing a file.
-//   readfirst init                 write a first .readfirst/map.json from the file tree
+//   readfirst init [--agent]       write a first .readfirst/map.json from the file tree (and the agent-notes line)
 //   readfirst prompt               the brief for a coding agent to fill in titles, checks, risks and rules
 //   readfirst check                the map covers every tracked file and is well formed
 //   readfirst fix                  place new files and drop patterns for deleted ones, then check
@@ -16,14 +16,15 @@ import { emptyList, readList, toMarkdown } from './readlist.mjs';
 
 const HELP = `readfirst — what to read and check before changing a file
 
-  readfirst init                 write a first ${MAP_PATH} from the file tree
+  readfirst init [--agent]       write a first ${MAP_PATH} from the file tree
   readfirst prompt               brief for your coding agent to fill in the map
   readfirst check                check the map covers every tracked file
   readfirst fix                  place new files, drop patterns for deleted ones
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
 
-Options: --root <dir>, --json, --limit <n>, --force (init: replace the map)`;
+Options: --root <dir>, --json, --limit <n>, --force (init: replace the map),
+         --agent (init: add the read-first line to CLAUDE.md / AGENTS.md / .cursorrules)`;
 
 function parse(argv) {
   const args = { _: [], json: false };
@@ -31,6 +32,7 @@ function parse(argv) {
     const a = argv[i];
     if (a === '--json') args.json = true;
     else if (a === '--force') args.force = true;
+    else if (a === '--agent') args.agent = true;
     else if (a === '-h' || a === '--help') args.help = true;
     else if (a.startsWith('--')) { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); args[a.slice(2)] = v; }
     else args._.push(a);
@@ -60,6 +62,33 @@ function loadMap(root, files) {
   return assertMap(readMapFile(root), files);
 }
 
+// read and diff keep working while the map is only behind the code (new files in no group, patterns for deleted files):
+// they warn and point at `readfirst fix`. A map that is broken in itself still stops them.
+function loadMapLenient(root, files, io) {
+  const map = readMapFile(root);
+  const broken = mapProblems(map, files, { placement: false });
+  if (broken.length) throw new Error(`${MAP_PATH} has problems:\n- ${broken.join('\n- ')}`);
+  const behind = mapProblems(map, files);
+  if (behind.length) io.err(`note: ${MAP_PATH} is behind the code (${behind.length} problem${behind.length > 1 ? 's' : ''}); \`readfirst fix\` repairs most of it.\n`);
+  return map;
+}
+
+// The one line that makes a coding agent use readfirst, added to the agent notes the project already has (CLAUDE.md,
+// AGENTS.md, .cursorrules), or to a new AGENTS.md when it has none. A file that already mentions readfirst is left alone.
+export const AGENT_LINE = 'Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the checks it lists. Before you finish, run `npx readfirst diff` and run every check it lists. When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.';
+function addAgentLine(root) {
+  const notes = ['CLAUDE.md', 'AGENTS.md', '.cursorrules'].filter((f) => existsSync(join(root, f)));
+  const wrote = [];
+  for (const f of notes.length ? notes : ['AGENTS.md']) {
+    const at = join(root, f);
+    const now = existsSync(at) ? readFileSync(at, 'utf8') : '';
+    if (/readfirst/u.test(now)) continue;
+    writeFileSync(at, `${now}${now && !now.endsWith('\n') ? '\n' : ''}${now ? '\n' : ''}${AGENT_LINE}\n`);
+    wrote.push(f);
+  }
+  return wrote;
+}
+
 function changedFiles(root, base) {
   const ref = base ?? ['origin/main', 'main', 'origin/master', 'master'].find((r) => { try { git(root, 'rev-parse', '--verify', '--quiet', r); return true; } catch { return false; } });
   if (!ref) throw new Error('no base branch found: pass --base <ref>');
@@ -82,10 +111,16 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   if (cmd === 'init') {
     const at = join(root, MAP_PATH);
     if (existsSync(at) && args.force !== true) throw new Error(`${MAP_PATH} already exists (pass --force to replace it)`);
-    const map = draftMap(files);
+    const map = draftMap(files, readText(root));
     mkdirSync(join(root, '.readfirst'), { recursive: true });
     writeFileSync(at, `${JSON.stringify(map, null, 2)}\n`);
-    io.out(`wrote ${MAP_PATH}: ${map.groups.length} groups, ${map.ignore.length} ignored folders.\nNext: run \`readfirst prompt\` and give the brief to your coding agent, or fill in titles, checks, risks and rules by hand.\n`);
+    const checks = map.groups.find((g) => g.checks.length)?.checks ?? [];
+    io.out(`wrote ${MAP_PATH}: ${map.groups.length} groups${checks.length ? `, checks found: ${checks.map((c) => c.run).join(', ')}` : ''}.\n`);
+    if (args.agent) {
+      const wrote = addAgentLine(root);
+      io.out(wrote.length ? `added the read-first line to ${wrote.join(', ')}.\n` : 'your agent notes already mention readfirst.\n');
+    }
+    io.out(`Next: run \`readfirst prompt\` and give the brief to your coding agent, or fill in titles, checks, risks and rules by hand.${args.agent ? '' : '\nTip: `readfirst init --agent` also adds the one line your coding agent needs to CLAUDE.md or AGENTS.md.'}\n`);
     return 0;
   }
   if (cmd === 'prompt') {
@@ -109,7 +144,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     return problems.length ? 1 : 0;
   }
   if (cmd === 'read' || cmd === 'diff') {
-    const map = loadMap(root, files);
+    const map = loadMapLenient(root, files, io);
     let targets = rest;
     if (cmd === 'diff') {
       const changed = changedFiles(root, args.base);

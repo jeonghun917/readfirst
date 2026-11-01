@@ -6,7 +6,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { main } from '../src/cli.mjs';
 import { importEdges } from '../src/imports.mjs';
-import { draftMap, fixMap, MAP_FORMAT, mapProblems, patternToRegExp } from '../src/map.mjs';
+import { draftChecks, draftMap, fixMap, MAP_FORMAT, mapProblems, patternToRegExp } from '../src/map.mjs';
 import { readList, toMarkdown } from '../src/readlist.mjs';
 
 function repo(files) {
@@ -196,4 +196,51 @@ test('cli: fix writes the repaired map and says what is left', () => {
   assert.match(r.out, /added src\/brandnew\.ts/u);
   assert.match(run(root, 'check').out, /is good/u);
   assert.match(run(root, 'fix').out, /nothing to fix automatically/u);
+});
+
+test('draft checks come from the project build files; placeholders and media groups get none', () => {
+  const read = (files) => (p) => files[p] ?? null;
+  assert.deepEqual(draftChecks(['package.json'], read({ 'package.json': '{"scripts":{"test":"vitest","lint":"eslint .","typecheck":"tsc"}}' })),
+    [{ run: 'npm test', why: 'the test suite' }, { run: 'npm run typecheck', why: 'types' }, { run: 'npm run lint', why: 'lint rules' }]);
+  assert.deepEqual(draftChecks(['package.json', 'pnpm-lock.yaml'], read({ 'package.json': '{"scripts":{"test":"vitest"}}' })), [{ run: 'pnpm test', why: 'the test suite' }]);
+  assert.deepEqual(draftChecks(['package.json'], read({ 'package.json': '{"scripts":{"test":"echo \\"Error: no test specified\\" && exit 1"}}' })), []);
+  assert.deepEqual(draftChecks(['Makefile', 'go.mod'], read({ Makefile: 'build:\n\tgo build\ntest:\n\tgo test ./...\n' })).map((c) => c.run), ['make test', 'go test ./...']);
+  assert.deepEqual(draftChecks(['pyproject.toml', 'tests/test_app.py']).map((c) => c.run), ['pytest']);
+  const map = draftMap(['package.json', 'src/a.js', 'img/x.png'], read({ 'package.json': '{"scripts":{"test":"node --test"}}' }));
+  assert.deepEqual(map.groups.find((g) => g.id === 'src').checks, [{ run: 'npm test', why: 'the test suite' }]);
+  assert.deepEqual(map.groups.find((g) => g.id === 'img').checks, []);
+});
+
+test('cli: init --agent adds the line once; read keeps working on a map that is only behind and names the group fix would use', () => {
+  const { root } = repo({ ...FIXTURE, 'CLAUDE.md': '# notes\n' });
+  const init = run(root, 'init', '--agent');
+  assert.match(init.out, /checks found: npm test/u);
+  assert.match(init.out, /added the read-first line to CLAUDE\.md/u);
+  assert.match(readFileSync(join(root, 'CLAUDE.md'), 'utf8'), /^# notes\n\nBefore changing a file, run `npx readfirst read <file>`/u);
+  run(root, 'init', '--force', '--agent');
+  assert.equal(readFileSync(join(root, 'CLAUDE.md'), 'utf8').match(/readfirst read/gu).length, 1, 'not added twice');
+
+  writeFileSync(join(root, 'src/util/fresh.ts'), 'export {};\n');
+  mkdirSync(join(root, 'brandnew'), { recursive: true });
+  writeFileSync(join(root, 'brandnew/x.ts'), 'export {};\n');
+  let err = '';
+  const out = []; const code = main(['--root', root, 'read', '--json', 'src/util/fresh.ts'], { out: (s) => out.push(s), err: (s) => { err += s; } });
+  assert.equal(code, 0);
+  assert.match(err, /behind the code/u);
+  const list = JSON.parse(out.join(''));
+  assert.equal(list.targets[0].status, 'IN_MAP', 'a new file in a mapped folder is already covered by its folder pattern');
+  const lone = JSON.parse((() => { let o = ''; main(['--root', root, 'read', '--json', 'brandnew/x.ts'], { out: (s) => { o += s; }, err: () => {} }); return o; })());
+  assert.equal(lone.targets[0].status, 'NO_GROUP');
+  assert.match(lone.notCovered[0].why, /in no group/u);
+
+  // A map broken in itself still stops read.
+  writeFileSync(join(root, '.readfirst/map.json'), JSON.stringify({ format: 'readfirst/map@1', groups: [] }));
+  assert.throws(() => run(root, 'read', 'src/main.js'), /has problems/u);
+});
+
+test('read: a file in no group names the group `readfirst fix` would put it in', async () => {
+  const { readList } = await import('../src/readlist.mjs');
+  const map = { format: MAP_FORMAT, groups: [{ id: 'core', title: 'core', files: ['src/a.js'] }] };
+  const list = readList({ map, files: ['src/a.js', 'src/b.js'], imports: [], targets: ['src/b.js'] });
+  assert.match(list.notCovered[0].why, /`readfirst fix` would add it to group core/u);
 });

@@ -43,7 +43,7 @@ const checkList = (v, where, p) => {
 };
 
 // Problems with the map against the list of tracked files. An empty list means the map is good.
-export function mapProblems(map, files) {
+export function mapProblems(map, files, { placement = true } = {}) {
   const p = [];
   if (!isRecord(map)) return ['map: a JSON object'];
   only(map, ['format', 'groups', 'rules', 'ignore'], 'map', p);
@@ -90,7 +90,7 @@ export function mapProblems(map, files) {
     }
   }
   if (map.ignore !== undefined) strings(map.ignore, 'ignore', p);
-  if (p.length) return p;
+  if (p.length || !placement) return p;
 
   // Placement: each tracked file in exactly one group or ignored; each group pattern matches something.
   const ignored = matcher(map.ignore ?? []);
@@ -121,7 +121,7 @@ export const groupOf = (map, path) => map.groups.find((g) => matcher(g.files)(pa
 // that code belong there; "ignore" is left for a person to fill with what nothing depends on. Titles and risks are left
 // for a person or an agent to write.
 const MEDIA = /\.(?:png|jpe?g|gif|webp|svg|ico|mp3|wav|ogg|m4a|flac|mp4|webm|mov|woff2?|ttf|otf|eot|glb|gltf|fbx|blend|zip|pdf)$/iu;
-export function draftMap(files) {
+export function draftMap(files, read = () => null) {
   const nested = new Set(['src', 'lib', 'app', 'packages', 'apps']);
   const keyOf = (path) => {
     const parts = path.split('/');
@@ -133,6 +133,7 @@ export function draftMap(files) {
   const groups = new Map();
   const ignore = new Set();
   const byFolder = new Map();
+  const projectChecks = draftChecks(files, read);
   for (const f of files) {
     if (f === MAP_PATH) continue;
     const { key, pattern } = keyOf(f);
@@ -148,7 +149,7 @@ export function draftMap(files) {
     const title = media
       ? `TODO: what loads the media files in ${slot.pattern} (binary, not read)`
       : `TODO: what ${slot.pattern ?? 'the top-level files'} ${slot.pattern ? 'is' : 'are'} for`;
-    groups.set(id, { id, title, files: prev ? [...prev.files, ...patterns] : patterns, checks: [], risks: [] });
+    groups.set(id, { id, title, files: prev ? [...prev.files, ...patterns] : patterns, checks: media ? [] : projectChecks, risks: [] });
   }
   // A nested pattern ("src/a/**") and the parent's loose files ("src/x.js") must not overlap; loose files under a nested root
   // become their own group.
@@ -216,4 +217,28 @@ export function fixMap(map, files) {
     changes.push(`groups.${group.id}: added ${pat}`);
   }
   return { map: out, changes, problems: mapProblems(out, files) };
+}
+
+// The project's own check commands, found in its build files, so a first map already says what to run. Repository-wide
+// on purpose: narrowing a check to the group it covers is left to a person or an agent.
+export function draftChecks(files, read = () => null) {
+  const has = new Set(files);
+  const out = [];
+  const add = (run, why) => { if (!out.some((c) => c.run === run)) out.push({ run, why }); };
+  if (has.has('package.json')) {
+    let scripts = {};
+    try { scripts = JSON.parse(read('package.json') ?? '{}').scripts ?? {}; } catch { scripts = {}; }
+    const pm = has.has('pnpm-lock.yaml') ? 'pnpm' : has.has('yarn.lock') ? 'yarn' : has.has('bun.lockb') || has.has('bun.lock') ? 'bun' : 'npm';
+    const run = (name) => (pm === 'npm' ? (name === 'test' ? 'npm test' : `npm run ${name}`) : `${pm} ${name === 'test' && pm !== 'bun' ? 'test' : `run ${name}`}`);
+    const placeholder = /no test specified/u;
+    if (typeof scripts.test === 'string' && !placeholder.test(scripts.test)) add(run('test'), 'the test suite');
+    for (const name of ['typecheck', 'type-check', 'check-types', 'lint']) if (typeof scripts[name] === 'string') add(run(name), name === 'lint' ? 'lint rules' : 'types');
+  }
+  const makefile = has.has('Makefile') ? read('Makefile') ?? '' : '';
+  if (/^test:/mu.test(makefile)) add('make test', 'the test suite (Makefile)');
+  if (has.has('go.mod')) add('go test ./...', 'the Go tests');
+  if (has.has('Cargo.toml')) add('cargo test', 'the Rust tests');
+  const py = has.has('pyproject.toml') || has.has('setup.py') || has.has('pytest.ini');
+  if (py && files.some((f) => /(?:^|\/)(?:test_[^/]*|[^/]*_test)\.py$/u.test(f))) add('pytest', 'the Python tests');
+  return out;
 }
