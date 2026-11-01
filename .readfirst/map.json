@@ -29,7 +29,7 @@
           ]
         },
         {
-          "text": "parse() treats every --option except --json, --help, --force, --agent and --install as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
+          "text": "parse() treats every --option except --json, --help, --force, --agent, --install and --dry-run as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
           "files": [
             "src/cli.mjs"
           ]
