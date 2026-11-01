@@ -287,3 +287,39 @@ test('hook: the read list goes to Claude Code as context once per file per sessi
   assert.equal(main(['hook'], { out: (s) => { printed += s; }, err: () => {} }, () => ev({ session_id: `s5-${process.pid}-${Date.now()}` })), 0);
   assert.match(printed, /additionalContext/u);
 });
+
+test('view and labels: the page is written under .readfirst/local, which this clone keeps out of git; labels are read only from there', () => {
+  const { root, git } = repo({ 'src/a.js': "import './b.js'\n", 'src/b.js': '', 'test/a.test.js': "import '../src/a.js'\n" });
+  assert.equal(run(root, 'init').code, 0);
+  const map = JSON.parse(readFileSync(join(root, '.readfirst/map.json'), 'utf8'));
+  map.groups[0].risks = [{ text: 'b is generated', files: ['src/b.js'] }];
+  writeFileSync(join(root, '.readfirst/map.json'), JSON.stringify(map));
+
+  const brief = run(root, 'prompt', '--labels', 'ko');
+  assert.equal(brief.code, 0);
+  assert.match(brief.out, /\.readfirst\/local\/labels\/ko\.json/u);
+  assert.match(brief.out, /No metaphors, analogies/u);
+  assert.match(brief.out, /"b is generated"/u);
+  assert.match(brief.out, /"text": \{ "<string from the map/u);
+  assert.doesNotMatch(run(root, 'prompt', '--labels', 'en').out, /faithful English translation/u);
+  assert.throws(() => run(root, 'prompt', '--labels', '../x'), /language code/u);
+  // prompt never writes: the exclude line comes from view
+  assert.doesNotMatch(readFileSync(join(root, '.git/info/exclude'), 'utf8'), /readfirst/u);
+  assert.equal(run(root, 'view').code, 0);
+  assert.equal(run(root, 'view').code, 0);
+  const exclude = readFileSync(join(root, '.git/info/exclude'), 'utf8');
+  assert.equal(exclude.split('\n').filter((l) => l === '/.readfirst/local/').length, 1);
+
+  mkdirSync(join(root, '.readfirst/local/labels'), { recursive: true });
+  writeFileSync(join(root, '.readfirst/local/labels/ko.json'), JSON.stringify({ format: 'readfirst/labels@1', lang: 'ko', text: { 'b is generated': 'b는 생성 파일' }, plain: { groups: { [map.groups[0].id]: { name: '소스', about: '앱 코드' } } } }));
+  writeFileSync(join(root, '.readfirst/local/labels/broken.json'), '{');
+  const view = run(root, 'view');
+  assert.equal(view.code, 0);
+  assert.match(view.out, /with labels: ko/u);
+  const html = readFileSync(join(root, '.readfirst/local/view.html'), 'utf8');
+  assert.match(html, /b는 생성 파일/u);
+  assert.match(html, /"edges":\[\["src\/a\.js","src\/b\.js"\]/u);
+  // nothing personal shows up as a change or breaks the check
+  assert.equal(git('status', '--porcelain', '--untracked-files=all'), '?? .readfirst/map.json\n');
+  assert.equal(run(root, 'check').code, 0);
+});

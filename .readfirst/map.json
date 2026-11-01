@@ -106,7 +106,10 @@
       "files": [
         "src/map.mjs",
         "src/imports.mjs",
-        "src/readlist.mjs"
+        "src/readlist.mjs",
+        "src/view.mjs",
+        "src/view-city.mjs",
+        "src/labels.mjs"
       ],
       "checks": [
         {
@@ -148,6 +151,19 @@
         },
         {
           "text": "readlist.mjs finds the group for an unplaced file by matching the text of fixMap's change messages (`groups.<id>: added <pattern>`); rewording those messages in fixMap silently drops the 'would add it to group' hint from the read list"
+        },
+        {
+          "text": "labels are personal: they live in .readfirst/local/, which keepLocal adds to .git/info/exclude; reading labels from anywhere else, or writing them into the map, would hand one person's notes to the whole team",
+          "files": [
+            "src/labels.mjs",
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "the view page loads three.js 0.160.0 from cdn.jsdelivr.net through an import map; without network it shows only the WebGL/connection notice",
+          "files": [
+            "src/view-city.mjs"
+          ]
         }
       ]
     },
@@ -284,7 +300,7 @@
     },
     {
       "id": "only-init-and-fix-write",
-      "rule": "only `readfirst init`, `readfirst fix` and `readfirst hook --install` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; the plain `hook` writes only a state file in the temp folder; check, prompt, read and diff never change the checkout",
+      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; check, prompt (with or without --labels), read and diff never change the checkout",
       "why": "agents run read and diff freely before every change, and the hook runs before every edit, so it must not touch the working tree",
       "files": [
         "src/cli.mjs"
