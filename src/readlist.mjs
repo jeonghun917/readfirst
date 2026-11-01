@@ -1,6 +1,6 @@
 // The read list for files someone is about to change: the rules that cover them, the risks written for their group,
 // the checks to run (the group's commands, the rules' commands, and the tests that import them), and who uses them.
-import { groupOf, matcher, MAP_PATH } from './map.mjs';
+import { fixMap, groupOf, matcher, MAP_PATH } from './map.mjs';
 
 export const READ_LIST_FORMAT = 'readfirst/read-list@1';
 const TEST = /(^|\/)(?:tests?|__tests__|spec|e2e)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(^|\/)test[-_][^/]*\.(?:[cm]?[jt]sx?|py)$|_test\.(?:py|go)$/u;
@@ -26,6 +26,12 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
     out[kind].push(row);
   };
   const indirect = new Set();
+  // Where `readfirst fix` would put files that are in no group; worked out only when such a file is asked about.
+  let fixes = null;
+  const suggestFor = (target) => {
+    fixes ??= (() => { try { return fixMap(map, files).changes.map((c) => c.match(/^groups\.([^:]+): added (.+)$/u)).filter(Boolean).map((m) => ({ group: m[1], target: m[2] })); } catch { return []; } })();
+    return fixes.find((c) => target === c.target || (c.target.endsWith('/**') && target.startsWith(c.target.slice(0, -2))));
+  };
 
   for (const raw of targets) {
     const target = raw.replace(/^\.\//u, '').replace(/\\/gu, '/');
@@ -38,7 +44,8 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
     const group = groupOf(map, target);
     out.targets.push({ path: target, group: group?.id ?? null, status: group ? 'IN_MAP' : ignored(target) ? 'IGNORED' : 'NO_GROUP' });
     if (!group) {
-      out.notCovered.push({ path: target, why: ignored(target) ? 'ignored by the map' : 'in no group: run `readfirst check`' });
+      const suggest = ignored(target) ? null : suggestFor(target);
+      out.notCovered.push({ path: target, why: ignored(target) ? 'ignored by the map' : suggest ? `in no group: \`readfirst fix\` would add it to group ${suggest.group}` : 'in no group: run `readfirst check`' });
     } else {
       for (const r of group.risks ?? []) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text }, target);
       for (const c of group.checks ?? []) note('checks', c.run, { run: c.run, why: c.why ?? `checks for ${group.title}`, from: `group ${group.id}` }, target);

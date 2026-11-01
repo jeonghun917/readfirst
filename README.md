@@ -13,9 +13,9 @@ No server, no account, no model calls. It reads your git checkout and `.readfirs
 ## Start
 
 ```sh
-npx readfirst init      # first map from your folders: one group per folder, media folders ignored
-npx readfirst prompt    # a brief for your coding agent to fill in titles, checks, risks and rules
-npx readfirst check     # every tracked file is in exactly one group (or ignored); rules point at real files
+npx readfirst init --agent   # first map from your folders, checks from your scripts, plus the line for CLAUDE.md / AGENTS.md
+npx readfirst prompt         # a brief for your coding agent to fill in titles, checks, risks and rules
+npx readfirst check          # every tracked file is in exactly one group (or ignored); rules point at real files
 ```
 
 Commit `.readfirst/map.json`. From then on:
@@ -29,7 +29,7 @@ npx readfirst fix                # after moving code: place new files, drop patt
 
 ### Tell your agent to use it
 
-Add this to `CLAUDE.md`, `AGENTS.md` or `.cursorrules`:
+`init --agent` adds this to your `CLAUDE.md`, `AGENTS.md` or `.cursorrules` (or a new `AGENTS.md`); or add it yourself:
 
 ```md
 Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the
