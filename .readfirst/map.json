@@ -259,12 +259,15 @@
           ]
         },
         {
-          "text": "server.json lists readfirst in the official MCP Registry; its version and packages[0].version must equal package.json's version, and its name must equal package.json's mcpName, or the release job stops before publishing (bump all three together)",
+          "text": "server.json lists readfirst in the official MCP Registry; its version and packages[0].version must equal package.json's version, and its name must equal package.json's mcpName, or npm test and the release job's tag check fail before publishing (bump all three together)",
           "files": [
             "server.json",
             "package.json",
             ".github/**"
           ]
+        },
+        {
+          "text": "the MCP Registry step in release.yml runs after npm publish, so if it fails (OIDC login, mcp-publisher download, Registry validation of mcpName in the published package) the version is already on npm and the tag cannot simply be re-released; the step first runs on a real release tag"
         }
       ]
     }
