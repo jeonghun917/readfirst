@@ -161,3 +161,59 @@ export function draftMap(files) {
   }
   return { format: MAP_FORMAT, groups: [...groups.values()].sort((a, b) => a.id.localeCompare(b.id)), rules: [], ignore: [...ignore].sort() };
 }
+
+// Repairs the two ways a good map goes stale as code moves, without guessing at meaning:
+// - a tracked file in no group joins the group of its nearest neighbour (same folder, else the closest parent folder);
+//   a new folder whose files are all unplaced joins as "<folder>/**", a lone new file by its path;
+// - a pattern that no longer matches any file is dropped (from a group, a risk or a rule), unless it is the last one.
+// What it cannot decide (a file with no placed neighbour, a group or rule left with no files) stays for a person.
+// Returns the fixed map, the changes as sentences, and the problems still left.
+export function fixMap(map, files) {
+  const out = structuredClone(map);
+  const changes = [];
+  const live = (pat) => files.some(matcher([pat]));
+  for (const g of out.groups) {
+    const keep = g.files.filter(live);
+    for (const pat of g.files.filter((p) => !live(p))) {
+      if (keep.length) changes.push(`groups.${g.id}: dropped ${pat} (matches no file)`);
+    }
+    if (keep.length) g.files = keep;
+    for (const r of g.risks ?? []) if (Array.isArray(r.files)) {
+      const k = r.files.filter(live);
+      for (const pat of r.files.filter((p) => !live(p))) changes.push(`groups.${g.id} risk "${r.text.slice(0, 40)}": dropped ${pat}`);
+      if (k.length) r.files = k; else delete r.files;
+    }
+  }
+  for (const r of out.rules ?? []) {
+    const keep = r.files.filter(live);
+    for (const pat of r.files.filter((p) => !live(p))) if (keep.length) changes.push(`rules.${r.id}: dropped ${pat} (matches no file)`);
+    if (keep.length) r.files = keep;
+  }
+
+  const ignored = matcher(out.ignore ?? []);
+  const owner = (f) => out.groups.find((g) => matcher(g.files)(f));
+  const unplaced = files.filter((f) => f !== MAP_PATH && !ignored(f) && !owner(f));
+  const dir = (f) => (f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '');
+  const placedIn = (d) => files.filter((f) => f !== MAP_PATH && dir(f) === d && owner(f));
+  const doneDirs = new Set();
+  for (const f of unplaced) {
+    if (owner(f)) continue; // placed by a folder pattern added earlier in this loop
+    // The nearest folder, going up, that holds a placed file decides the group.
+    let d = dir(f);
+    let neighbours = placedIn(d);
+    while (!neighbours.length && d) { d = dir(d); neighbours = placedIn(d); }
+    if (!neighbours.length) continue;
+    const counts = new Map();
+    for (const n of neighbours) { const g = owner(n); counts.set(g, (counts.get(g) ?? 0) + 1); }
+    const group = [...counts].sort((a, b) => b[1] - a[1])[0][0];
+    // A whole new folder (nothing in it or under it placed or ignored) joins as one pattern.
+    const own = dir(f);
+    const under = files.filter((x) => x.startsWith(`${own}/`));
+    const fresh = own && own !== d && !doneDirs.has(own) && under.every((x) => unplaced.includes(x));
+    const pat = fresh ? `${own}/**` : f;
+    if (fresh) doneDirs.add(own);
+    group.files.push(pat);
+    changes.push(`groups.${group.id}: added ${pat}`);
+  }
+  return { map: out, changes, problems: mapProblems(out, files) };
+}

@@ -24,6 +24,7 @@ Commit `.readfirst/map.json`. From then on:
 npx readfirst read <file>...     # before changing files
 npx readfirst diff               # everything your branch changed since main
 npx readfirst diff --json        # the same, for tools and agents
+npx readfirst fix                # after moving code: place new files, drop patterns for deleted ones
 ```
 
 ### Tell your agent to use it
@@ -58,7 +59,7 @@ Each PR gets one comment, updated on every push, that lists:
 - the tests that reach the changed code.
 
 The check fails when `.readfirst/map.json` no longer covers the code, for example when a new file is in no group. So the
-map is fixed in the same PR.
+map is fixed in the same PR. The comment lists what `npx readfirst fix` would change, so the fix is usually one command.
 
 | Input | Default | Meaning |
 |---|---|---|
