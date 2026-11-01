@@ -16,7 +16,7 @@ import { basename, isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
 import { assertMap, draftMap, fixMap, MAP_PATH, mapProblems } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
-import { keepLocal, LABELS_DIR, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
+import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
 import { cityData, viewHtmlCity } from './view-city.mjs';
 import { emptyList, readList, toMarkdown } from './readlist.mjs';
@@ -202,8 +202,6 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const map = loadMap(root, files);
     if (args.labels) {
       if (!/^[a-z]{2,3}(-[A-Za-z0-9]+)?$/u.test(args.labels)) throw new Error('--labels needs a language code, e.g. ko or en');
-      if (keepLocal(root)) io.err(`note: added /${LOCAL_DIR}/ to .git/info/exclude, so labels stay on this machine.\n`);
-      mkdirSync(join(root, LABELS_DIR), { recursive: true });
       io.out(labelsBrief(map, args.labels));
       return 0;
     }

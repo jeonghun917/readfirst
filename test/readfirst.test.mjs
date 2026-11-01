@@ -303,9 +303,14 @@ test('view and labels: the page is written under .readfirst/local, which this cl
   assert.match(brief.out, /"text": \{ "<string from the map/u);
   assert.doesNotMatch(run(root, 'prompt', '--labels', 'en').out, /faithful English translation/u);
   assert.throws(() => run(root, 'prompt', '--labels', '../x'), /language code/u);
+  // prompt never writes: the exclude line comes from view
+  assert.doesNotMatch(readFileSync(join(root, '.git/info/exclude'), 'utf8'), /readfirst/u);
+  assert.equal(run(root, 'view').code, 0);
+  assert.equal(run(root, 'view').code, 0);
   const exclude = readFileSync(join(root, '.git/info/exclude'), 'utf8');
   assert.equal(exclude.split('\n').filter((l) => l === '/.readfirst/local/').length, 1);
 
+  mkdirSync(join(root, '.readfirst/local/labels'), { recursive: true });
   writeFileSync(join(root, '.readfirst/local/labels/ko.json'), JSON.stringify({ format: 'readfirst/labels@1', lang: 'ko', text: { 'b is generated': 'b는 생성 파일' }, plain: { groups: { [map.groups[0].id]: { name: '소스', about: '앱 코드' } } } }));
   writeFileSync(join(root, '.readfirst/local/labels/broken.json'), '{');
   const view = run(root, 'view');

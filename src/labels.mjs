@@ -63,8 +63,9 @@ export function labelsBrief(map, lang) {
   const translate = lang !== 'en';
   const strings = mapStrings(map);
   return `You are writing ${LABELS_DIR}/${lang}.json: ${name} labels for the readfirst map view (\`npx readfirst view\`).
-The file is for the person who asked for it and stays on this machine: ${LOCAL_DIR}/ is excluded from git in this clone.
-Do not commit it and do not change ${MAP_PATH}.
+The file is for the person who asked for it and stays on this machine. First run \`npx readfirst view\` once: it adds
+${LOCAL_DIR}/ to this clone's .git/info/exclude, so nothing in it can be committed. Do not commit the labels and do not
+change ${MAP_PATH}.
 
 Format:
 {
