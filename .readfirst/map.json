@@ -277,8 +277,8 @@
       ]
     },
     {
-      "id": "only-init-writes",
-      "rule": "only `readfirst init` writes a file, and it does not overwrite an existing map unless --force is given; check, prompt, read and diff never change the checkout",
+      "id": "only-init-and-fix-write",
+      "rule": "only `readfirst init` and `readfirst fix` write files: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; check, prompt, read and diff never change the checkout",
       "why": "agents run read and diff freely before every change",
       "files": [
         "src/cli.mjs"
