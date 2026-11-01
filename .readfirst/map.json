@@ -107,7 +107,8 @@
         "src/map.mjs",
         "src/imports.mjs",
         "src/readlist.mjs",
-        "src/view.mjs"
+        "src/view.mjs",
+        "src/view-city.mjs"
       ],
       "checks": [
         {
