@@ -30,13 +30,13 @@
           ]
         },
         {
-          "text": "parse() treats every --option except --json, --help, --force, --agent, --install and --dry-run as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
+          "text": "parse() treats every --option except --json, --help, --force, --agent, --install, --dry-run and --strict as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
           "files": [
             "src/cli.mjs"
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read and diff use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false)",
+          "text": "`check` settles a map that is only behind the code (settleMap) and passes, printing what it settled; it reports problems and exits 1 only for what fix cannot place, and with --strict for everything. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read and diff use loadMapLenient: they work on the settled map, note on stderr when problems are left (e.g. a new top-level folder) or when changes are not yet written, and still throw when the map is broken in itself (mapProblems with placement: false)",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -107,7 +107,7 @@
           ]
         },
         {
-          "text": "when the map has problems the comment shows the problems but no read list, and the job fails unless fail-on-map-problems is 'false'",
+          "text": "when the map has problems fix cannot settle (or any unwritten change under strict) the comment shows the problems but no read list, and the job fails unless fail-on-map-problems is 'false'; new files placed by their neighbours only get a collapsed note and the read list",
           "files": [
             "src/action.mjs"
           ]
@@ -261,7 +261,7 @@
           ]
         },
         {
-          "text": "CI's readfirst job runs this checkout's own Action (uses: ./), so every PR fails when a new file is not in .readfirst/map.json or when src/action.mjs is broken",
+          "text": "CI's readfirst job runs this checkout's own Action (uses: ./), so every PR fails when a new top-level folder or a file fix cannot place is not in .readfirst/map.json, when a rule is broken, or when src/action.mjs is broken; a new file beside placed ones passes",
           "files": [
             ".github/**"
           ]
@@ -309,8 +309,8 @@
     },
     {
       "id": "every-file-placed",
-      "rule": "every tracked file is in exactly one group or in ignore, and every group and rule pattern matches a tracked file; check fails otherwise",
-      "why": "this is what stops the map from quietly falling behind the code",
+      "rule": "every tracked file is in exactly one group or in ignore, and every group and rule pattern matches a tracked file; check fails otherwise, except that files beside placed ones and patterns for deleted files are settled in memory the way fix would (check --strict and the Action's strict input fail on them too)",
+      "why": "this is what stops the map from quietly falling behind the code; a new top-level folder or a file fix cannot place must still fail so a person gives it a group",
       "files": [
         "src/map.mjs"
       ],
