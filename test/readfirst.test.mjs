@@ -323,3 +323,49 @@ test('view and labels: the page is written under .readfirst/local, which this cl
   assert.equal(git('status', '--porcelain', '--untracked-files=all'), '?? .readfirst/map.json\n');
   assert.equal(run(root, 'check').code, 0);
 });
+
+test('verify: runs the checks for the changed files once each, reports pass, fail and timeout, and exits 1 on a failure', () => {
+  const { root } = repo({ 'a/x.js': '', 'a/y.js': '', 'b/z.js': '', 'c/w.js': '' });
+  const map = {
+    format: MAP_FORMAT,
+    groups: [
+      { id: 'a', title: 'a', files: ['a/**'], checks: [{ run: 'node -e "process.exit(0)"', why: 'a works' }] },
+      { id: 'b', title: 'b', files: ['b/**'], checks: [{ run: 'node -e "console.log(\'boom\');process.exit(3)"', why: 'b works' }, { run: 'node -e "process.exit(0)"' }] },
+      { id: 'c', title: 'c', files: ['c/**'], checks: [{ run: 'node -e "setTimeout(()=>{},20000)"' }] },
+    ],
+  };
+  mkdirSync(join(root, '.readfirst'), { recursive: true });
+  writeFileSync(join(root, '.readfirst/map.json'), JSON.stringify(map));
+  // nothing changed but the map itself, which no group covers: the map's own file is not a code change with checks
+  writeFileSync(join(root, 'a/x.js'), '1');
+  writeFileSync(join(root, 'a/y.js'), '2');
+  let r = run(root, 'verify');
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, /pass {2}node -e "process\.exit\(0\)"/u);
+  assert.equal(r.out.match(/running /gu).length, 1); // two changed files in a, one check
+
+  writeFileSync(join(root, 'b/z.js'), '3');
+  const dry = run(root, 'verify', '--dry-run');
+  assert.equal(dry.code, 0);
+  assert.match(dry.out, /checks for \d changed file/u);
+  assert.doesNotMatch(dry.out, /running /u);
+
+  r = run(root, 'verify', '--json');
+  assert.equal(r.code, 1);
+  const report = JSON.parse(r.out);
+  assert.equal(report.ok, false);
+  assert.deepEqual(report.checks.map((c) => c.status), ['pass', 'fail']); // the shared command runs once
+  assert.match(report.checks[1].output, /boom/u);
+  assert.equal(report.checks[1].code, 3);
+
+  writeFileSync(join(root, 'c/w.js'), '4');
+  r = run(root, 'verify', '--json', '--timeout', '1');
+  assert.equal(JSON.parse(r.out).checks.at(-1).status, 'timeout');
+});
+
+test('verify: no changes means nothing to run', () => {
+  const { root } = repo({ 'a/x.js': '', '.readfirst/map.json': JSON.stringify({ format: MAP_FORMAT, groups: [{ id: 'a', title: 'a', files: ['a/**', '.readfirst/**'], checks: [{ run: 'exit 1' }] }] }) });
+  const r = run(root, 'verify');
+  assert.equal(r.code, 0);
+  assert.match(r.out, /nothing to verify/u);
+});
