@@ -232,7 +232,8 @@
         "package.json",
         ".github/**",
         "docs/**",
-        "server.json"
+        "server.json",
+        "glama.json"
       ],
       "checks": [
         {
