@@ -29,7 +29,7 @@
           ]
         },
         {
-          "text": "parse() treats every --option except --json, --help, --force and --agent as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
+          "text": "parse() treats every --option except --json, --help, --force, --agent and --install as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
           "files": [
             "src/cli.mjs"
           ]
@@ -46,6 +46,9 @@
           "files": [
             "src/prompt.mjs"
           ]
+        },
+        {
+          "text": "runHook swallows every error and returns null (exit 0, no output), so a bug in it looks the same as 'nothing to say' and the edit goes ahead; only a test with real map data would catch it. It also uses repoFiles, readMapFile and mapProblems, so changes there change the hook"
         }
       ]
     },
@@ -183,6 +186,9 @@
           "files": [
             "test/readfirst.test.mjs"
           ]
+        },
+        {
+          "text": "the hook test calls main(['hook']) without a stateDir, so it writes to the real temp folder and relies on a unique session_id; reusing a fixed id would make the hook print nothing on later runs"
         }
       ]
     },
@@ -278,8 +284,8 @@
     },
     {
       "id": "only-init-and-fix-write",
-      "rule": "only `readfirst init` and `readfirst fix` write files: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; check, prompt, read and diff never change the checkout",
-      "why": "agents run read and diff freely before every change",
+      "rule": "only `readfirst init`, `readfirst fix` and `readfirst hook --install` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; the plain `hook` writes only a state file in the temp folder; check, prompt, read and diff never change the checkout",
+      "why": "agents run read and diff freely before every change, and the hook runs before every edit, so it must not touch the working tree",
       "files": [
         "src/cli.mjs"
       ]
