@@ -8,6 +8,7 @@
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
 //   readfirst verify [--base <ref>] run the checks the read list names for the changed files; exit 1 if one fails
 //   readfirst hook [--install]     a Claude Code PreToolUse hook: the read list for the file an Edit or Write is about to change
+//   readfirst mcp                  an MCP server on stdio: read_list, changed_read_list and check_map as tools for any agent
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -19,6 +20,7 @@ import { assertMap, draftMap, fixMap, MAP_PATH, mapProblems } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
+import { mcpHandler, serveMcp } from './mcp.mjs';
 import { cityData, viewHtmlCity } from './view-city.mjs';
 import { emptyList, readList, toMarkdown } from './readlist.mjs';
 
@@ -33,6 +35,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them)
   readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json)
   readfirst view [--out <file>]  the map as a city in one HTML page
+  readfirst mcp                  MCP server on stdio for Cursor, Codex, Windsurf and other agents
   readfirst prompt --labels <lang>  brief for your agent to write personal labels for the view (e.g. ko, en)
 
 Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; default 900), --force (init: replace the map),
@@ -107,7 +110,10 @@ function addAgentLine(root) {
 function changedFiles(root, base) {
   const ref = base ?? ['origin/main', 'main', 'origin/master', 'master'].find((r) => { try { git(root, 'rev-parse', '--verify', '--quiet', r); return true; } catch { return false; } });
   if (!ref) throw new Error('no base branch found: pass --base <ref>');
-  const since = git(root, 'merge-base', ref, 'HEAD').trim();
+  let since;
+  try { since = git(root, 'merge-base', ref, 'HEAD').trim(); } catch {
+    throw new Error(`cannot find where this branch left ${ref}, often because the clone is shallow: fetch more history (git fetch --deepen=100, or fetch-depth: 0 in actions/checkout) or pass --base <ref>`);
+  }
   const names = new Set([
     ...git(root, 'diff', '--name-only', since).split('\n'),
     ...git(root, 'ls-files', '--others', '--exclude-standard').split('\n'),
@@ -290,6 +296,16 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
     const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
+    return 0;
+  }
+  if (cmd === 'mcp') {
+    const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+    const run = (argv) => {
+      let out = ''; let err = ''; let code;
+      try { code = main(['--root', root, ...argv], { out: (s) => { out += s; }, err: (s) => { err += s; } }); } catch (e) { code = 2; err += e.message; }
+      return { code, out, err };
+    };
+    serveMcp({ handle: mcpHandler({ run, version }), input: process.stdin, output: process.stdout });
     return 0;
   }
   if (cmd === 'verify') {
