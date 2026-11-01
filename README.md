@@ -37,6 +37,15 @@ checks it lists. Before you finish, run `npx readfirst diff` and run every check
 When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.
 ```
 
+### Or let Claude Code pick it up by itself
+
+```sh
+npx readfirst hook --install
+```
+
+adds a hook to `.claude/settings.json`. Before each Edit or Write, Claude Code gets the rules, risks and checks for that
+file as context, once per file per session. Nothing to remember, and the edit is never blocked.
+
 ## On every pull request (GitHub Action)
 
 ```yaml
