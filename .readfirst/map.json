@@ -29,13 +29,13 @@
           ]
         },
         {
-          "text": "parse() treats every --option except --json, --help and --force as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
+          "text": "parse() treats every --option except --json, --help, --force and --agent as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
           "files": [
             "src/cli.mjs"
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1, but prompt, read and diff go through loadMap and throw (exit 2 from bin) on any map problem, so a broken map blocks the read list completely",
+          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read and diff use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false)",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -142,6 +142,9 @@
           "files": [
             "src/imports.mjs"
           ]
+        },
+        {
+          "text": "readlist.mjs finds the group for an unplaced file by matching the text of fixMap's change messages (`groups.<id>: added <pattern>`); rewording those messages in fixMap silently drops the 'would add it to group' hint from the read list"
         }
       ]
     },
