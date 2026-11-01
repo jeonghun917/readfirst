@@ -33,19 +33,6 @@
           "files": [
             "src/cli.mjs"
           ]
-        },
-        {
-          "text": "`check` reports map problems and exits 1, but prompt, read and diff go through loadMap and throw (exit 2 from bin) on any map problem, so a broken map blocks the read list completely",
-          "files": [
-            "src/cli.mjs",
-            "bin/**"
-          ]
-        },
-        {
-          "text": "the pattern syntax in the agent brief must match what map.mjs accepts; if you change the pattern rules, update the brief as well",
-          "files": [
-            "src/prompt.mjs"
-          ]
         }
       ]
     },
@@ -78,19 +65,6 @@
         },
         {
           "text": "a 403 from a comment write is treated as a fork PR and swallowed by matching ': 403 ' in the message built by api(); changing that error text turns fork PRs into failed jobs",
-          "files": [
-            "src/action.mjs"
-          ]
-        },
-        {
-          "text": "the script runs only when argv[1] ends with '/src/action.mjs', and action.yml calls it by that path; moving or renaming the file makes the Action exit successfully without doing anything",
-          "files": [
-            "src/action.mjs",
-            "action.yml"
-          ]
-        },
-        {
-          "text": "when the map has problems the comment shows the problems but no read list, and the job fails unless fail-on-map-problems is 'false'",
           "files": [
             "src/action.mjs"
           ]
@@ -129,19 +103,6 @@
           "files": [
             "src/map.mjs"
           ]
-        },
-        {
-          "text": "test files are recognised by two separate regexes (isTest in readlist.mjs and the tests-folder check in draftMap); change both together",
-          "files": [
-            "src/readlist.mjs",
-            "src/map.mjs"
-          ]
-        },
-        {
-          "text": "imports are read with regexes and only relative specifiers that resolve to a tracked file count, so path aliases and packages are not followed and tests reached through them are missing from the read list",
-          "files": [
-            "src/imports.mjs"
-          ]
         }
       ]
     },
@@ -153,7 +114,8 @@
       ],
       "checks": [
         {
-          "run": "npm test"
+          "run": "npm test",
+          "why": "all node:test suites: command, map, imports, read list, Action"
         }
       ],
       "risks": [
@@ -161,12 +123,6 @@
           "text": "npm test only runs test/*.test.mjs, so a test in a subfolder or with another file name never runs",
           "files": [
             "test/**"
-          ]
-        },
-        {
-          "text": "the CLI tests create and commit to real git repositories in the temp folder, so git must be on PATH",
-          "files": [
-            "test/readfirst.test.mjs"
           ]
         },
         {
@@ -196,16 +152,11 @@
       ],
       "checks": [
         {
-          "run": "npm test"
+          "run": "npm test",
+          "why": "whole suite, since package, CI and README changes affect every command"
         }
       ],
       "risks": [
-        {
-          "text": "package.json \"files\" decides what npm ships (bin, src, README.md); a new folder under src ships automatically, a new top-level folder the command needs must be added there",
-          "files": [
-            "package.json"
-          ]
-        },
         {
           "text": "package.json promises Node >=20 but CI tests only on Node 22, so a Node 22-only API passes CI and breaks for Node 20 users",
           "files": [
@@ -243,15 +194,6 @@
       ]
     },
     {
-      "id": "no-dependencies",
-      "rule": "no runtime dependencies: Node's standard library only",
-      "why": "npx readfirst must start fast and nothing third-party runs on users' code",
-      "files": [
-        "package.json",
-        "src/**"
-      ]
-    },
-    {
       "id": "every-file-placed",
       "rule": "every tracked file is in exactly one group or in ignore, and every group and rule pattern matches a tracked file; check fails otherwise",
       "why": "this is what stops the map from quietly falling behind the code",
@@ -260,7 +202,8 @@
       ],
       "checks": [
         {
-          "run": "npm test"
+          "run": "npm test",
+          "why": "check messages for unplaced files and unmatched patterns"
         }
       ]
     },
@@ -270,14 +213,6 @@
       "why": "map.json files live in users' repositories and CI fails on any map problem",
       "files": [
         "src/map.mjs"
-      ]
-    },
-    {
-      "id": "read-list-format-stable",
-      "rule": "the read list JSON keeps its field names under readfirst/read-list@1",
-      "why": "agents and tools read `readfirst read --json` and `diff --json`",
-      "files": [
-        "src/readlist.mjs"
       ]
     },
     {
@@ -297,7 +232,8 @@
       ],
       "checks": [
         {
-          "run": "npm test"
+          "run": "npm test",
+          "why": "post and update-in-place against a fake GitHub API"
         }
       ]
     },
@@ -310,24 +246,9 @@
       ],
       "checks": [
         {
-          "run": "npm test"
+          "run": "npm test",
+          "why": "read-only token path ends in the job summary, not a failure"
         }
-      ]
-    },
-    {
-      "id": "action-any-checkout-depth",
-      "rule": "the Action takes the PR's changed files from the GitHub API, not from git history",
-      "why": "actions/checkout defaults to a shallow clone, so any checkout depth must work",
-      "files": [
-        "src/action.mjs"
-      ]
-    },
-    {
-      "id": "no-paid-logic-in-free-code",
-      "rule": "the public code holds no hosted-version logic: the prompts and steps that fill the map stay on the server",
-      "why": "the free code is MIT and public; the paid value is the server's judgement. The hosted design lives in the private readfirst-cloud repository.",
-      "files": [
-        "src/**"
       ]
     }
   ],
