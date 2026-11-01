@@ -63,6 +63,31 @@ Labels for yourself: `npx readfirst prompt --labels ko` (or `en`, ...) gives you
 to the code. The view then has a switch between the two. `.readfirst/local/` is added to `.git/info/exclude`, so labels
 stay on your machine and never reach the team's map.
 
+### Any agent, through MCP
+
+`npx readfirst mcp` is an MCP server on stdio with three tools: `read_list` (files → what to read and check before
+changing them), `changed_read_list` (the same for everything changed on the branch) and `check_map`. It answers from the
+checkout as it is and writes nothing.
+
+```sh
+claude mcp add readfirst -- npx --yes readfirst mcp          # Claude Code
+```
+
+```json
+// Cursor: .cursor/mcp.json · Windsurf: ~/.codeium/windsurf/mcp_config.json
+{ "mcpServers": { "readfirst": { "command": "npx", "args": ["--yes", "readfirst", "mcp"] } } }
+```
+
+```toml
+# Codex: ~/.codex/config.toml
+[mcp_servers.readfirst]
+command = "npx"
+args = ["--yes", "readfirst", "mcp"]
+```
+
+The server reads the git repository it is started in. If your agent starts it elsewhere, add `"--root", "/path/to/repo"`
+to the arguments.
+
 ## On every pull request (GitHub Action)
 
 ```yaml

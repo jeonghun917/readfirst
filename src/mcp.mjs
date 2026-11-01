@@ -1,0 +1,77 @@
+// readfirst as an MCP server over stdio, so any agent that speaks MCP (Cursor, Codex, Windsurf, Claude Code...) can ask
+// what to read before it changes a file. JSON-RPC 2.0, one message per line, written by hand: no dependencies.
+// Every tool call runs the same code as the command line, on the checkout as it is at that moment, and writes nothing.
+const VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
+
+const TOOLS = [
+  {
+    name: 'read_list',
+    description: 'What to read and check before changing these files: the project rules and risks that apply, the checks to run, the tests that reach the code and the files that use it. Call it before editing.',
+    inputSchema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string' }, description: 'paths relative to the repository root' } }, required: ['files'] },
+    args: (a) => {
+      if (!Array.isArray(a.files) || !a.files.length || a.files.some((f) => typeof f !== 'string' || !f)) throw new Error('files must be a non-empty list of paths');
+      return ['read', ...a.files];
+    },
+  },
+  {
+    name: 'changed_read_list',
+    description: 'The same read list for every file changed on this branch since the base (default origin/main, else main). Call it before finishing, then run the checks it lists.',
+    inputSchema: { type: 'object', properties: { base: { type: 'string', description: 'git ref to compare against' } } },
+    args: (a) => ['diff', ...(typeof a.base === 'string' && a.base ? ['--base', a.base] : [])],
+  },
+  {
+    name: 'check_map',
+    description: 'Whether .readfirst/map.json still covers the code: files in no group, patterns that match nothing, broken rules.',
+    inputSchema: { type: 'object', properties: {} },
+    args: () => ['check'],
+  },
+];
+
+// One request in, one response out (null for notifications). run(argv) runs the CLI and returns { code, out, err }.
+export function mcpHandler({ run, version }) {
+  return (msg) => {
+    const reply = (result) => ({ jsonrpc: '2.0', id: msg.id, result });
+    const fail = (code, message) => ({ jsonrpc: '2.0', id: msg.id ?? null, error: { code, message } });
+    if (!msg || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') return fail(-32600, 'invalid request');
+    if (msg.id === undefined) return null; // notifications (initialized, cancelled) need no answer
+    if (msg.method === 'initialize') {
+      const asked = msg.params?.protocolVersion;
+      return reply({
+        protocolVersion: VERSIONS.includes(asked) ? asked : VERSIONS[0],
+        capabilities: { tools: {} },
+        serverInfo: { name: 'readfirst', version },
+        instructions: 'Before changing a file, call read_list with it and follow what it says. Before you finish, call changed_read_list and run the checks it lists (or run `npx readfirst verify`).',
+      });
+    }
+    if (msg.method === 'ping') return reply({});
+    if (msg.method === 'tools/list') return reply({ tools: TOOLS.map(({ args, ...t }) => t) });
+    if (msg.method === 'tools/call') {
+      const tool = TOOLS.find((t) => t.name === msg.params?.name);
+      if (!tool) return fail(-32602, `unknown tool ${msg.params?.name}`);
+      let r;
+      try { r = run(tool.args(msg.params?.arguments ?? {})); } catch (e) { r = { code: 2, out: '', err: e.message }; }
+      const text = [r.out.trimEnd(), r.err.trimEnd()].filter(Boolean).join('\n\n') || '(nothing)';
+      return reply({ content: [{ type: 'text', text }], isError: r.code === 2 });
+    }
+    return fail(-32601, `unknown method ${msg.method}`);
+  };
+}
+
+// Reads newline-delimited JSON-RPC from input and writes answers to output until input ends.
+export function serveMcp({ handle, input, output }) {
+  let buf = '';
+  input.setEncoding('utf8');
+  input.on('data', (chunk) => {
+    buf += chunk;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let msg;
+      try { msg = JSON.parse(line); } catch { output.write(`${JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'parse error' } })}\n`); continue; }
+      const res = handle(msg);
+      if (res) output.write(`${JSON.stringify(res)}\n`);
+    }
+  });
+}

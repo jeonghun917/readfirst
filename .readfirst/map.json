@@ -7,7 +7,8 @@
       "files": [
         "bin/**",
         "src/cli.mjs",
-        "src/prompt.mjs"
+        "src/prompt.mjs",
+        "src/mcp.mjs"
       ],
       "checks": [
         {
@@ -53,6 +54,13 @@
         {
           "text": "verify runs the map's check commands with the shell in the repository root; it must stay an explicit command, never called from the hook or the Action, because a map is repository content and its commands run with the user's rights",
           "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "the MCP server answers by calling main() again with --root for each tool call, so anything a command prints to stdout becomes the tool's text; stdout is also the JSON-RPC channel, so `mcp` itself must never write anything else to stdout",
+          "files": [
+            "src/mcp.mjs",
             "src/cli.mjs"
           ]
         }
@@ -306,7 +314,7 @@
     },
     {
       "id": "only-init-and-fix-write",
-      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; check, prompt (with or without --labels), read and diff never change the checkout; verify writes nothing itself and only runs the commands the map lists, which may write as they would when run by hand",
+      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; check, prompt (with or without --labels), read, diff and the mcp server never change the checkout; verify writes nothing itself and only runs the commands the map lists, which may write as they would when run by hand",
       "why": "agents run read and diff freely before every change, and the hook runs before every edit, so it must not touch the working tree",
       "files": [
         "src/cli.mjs"

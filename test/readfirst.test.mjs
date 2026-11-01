@@ -369,3 +369,43 @@ test('verify: no changes means nothing to run', () => {
   assert.equal(r.code, 0);
   assert.match(r.out, /nothing to verify/u);
 });
+
+test('mcp: initialize, tools/list and tools/call over stdio answer from the checkout as it is', async () => {
+  const { root } = repo({ 'src/a.js': "import './b.js'\n", 'src/b.js': '' });
+  run(root, 'init');
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, [join(dirname(new URL(import.meta.url).pathname), '../bin/readfirst.mjs'), 'mcp', '--root', root], { stdio: ['pipe', 'pipe', 'inherit'] });
+  const lines = []; let buf = '';
+  child.stdout.on('data', (d) => { buf += d; let i; while ((i = buf.indexOf('\n')) >= 0) { lines.push(JSON.parse(buf.slice(0, i))); buf = buf.slice(i + 1); } });
+  const send = (m) => child.stdin.write(`${JSON.stringify(m)}\n`);
+  send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 't', version: '0' } } });
+  send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+  send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+  send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'read_list', arguments: { files: ['src/b.js'] } } });
+  send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'read_list', arguments: { files: [] } } });
+  send({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'check_map', arguments: {} } });
+  send({ jsonrpc: '2.0', id: 6, method: 'nope' });
+  child.stdin.write('not json\n');
+  await new Promise((resolve, reject) => { const t = setTimeout(() => reject(new Error(`only ${lines.length} answers`)), 10000); const iv = setInterval(() => { if (lines.length >= 7) { clearInterval(iv); clearTimeout(t); resolve(); } }, 20); });
+  child.kill();
+  const by = Object.fromEntries(lines.filter((l) => l.id != null).map((l) => [l.id, l]));
+  assert.equal(by[1].result.protocolVersion, '2025-03-26');
+  assert.equal(by[1].result.serverInfo.name, 'readfirst');
+  assert.deepEqual(by[2].result.tools.map((t) => t.name), ['read_list', 'changed_read_list', 'check_map']);
+  assert.match(by[3].result.content[0].text, /Read first: `src\/b\.js`/u);
+  assert.match(by[3].result.content[0].text, /src\/a\.js/u); // a uses b
+  assert.equal(by[3].result.isError, false);
+  assert.equal(by[4].result.isError, true);
+  assert.match(by[5].result.content[0].text, /is good/u);
+  assert.equal(by[6].error.code, -32601);
+  assert.equal(lines.find((l) => l.id === null).error.code, -32700);
+  assert.equal(lines.length, 7); // the notification got no answer
+});
+
+test('diff and verify explain a shallow clone instead of failing with a git error', () => {
+  const { root, git } = repo({ 'a.js': '' });
+  git('checkout', '-q', '--orphan', 'other');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '-m', 'unrelated');
+  run(root, 'init');
+  assert.throws(() => run(root, 'diff', '--base', 'main'), /shallow[\s\S]*--base/u);
+});
