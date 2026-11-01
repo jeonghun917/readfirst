@@ -44,7 +44,8 @@ function parse(argv) {
   return args;
 }
 
-const git = (root, ...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+// stderr is captured, not shown: a repository with no commits yet makes `rev-parse HEAD` complain, and that is expected.
+const git = (root, ...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
 
 export function repoFiles(root) {
   // Tracked files plus new files not ignored by .gitignore, so a file being added can be looked up before its commit.
@@ -181,7 +182,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     mkdirSync(join(root, '.readfirst'), { recursive: true });
     writeFileSync(at, `${JSON.stringify(map, null, 2)}\n`);
     const checks = map.groups.find((g) => g.checks.length)?.checks ?? [];
-    io.out(`wrote ${MAP_PATH}: ${map.groups.length} groups${checks.length ? `, checks found: ${checks.map((c) => c.run).join(', ')}` : ''}.\n`);
+    io.out(`wrote ${MAP_PATH}: ${map.groups.length} group${map.groups.length === 1 ? "" : "s"}${checks.length ? `, checks found: ${checks.map((c) => c.run).join(', ')}` : ''}.\n`);
     if (args.agent) {
       const wrote = addAgentLine(root);
       io.out(wrote.length ? `added the read-first line to ${wrote.join(', ')}.\n` : 'your agent notes already mention readfirst.\n');
