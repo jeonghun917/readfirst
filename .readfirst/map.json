@@ -259,7 +259,7 @@
           ]
         },
         {
-          "text": "the README repeats the command list, the Action inputs table and a sample read list; update it when cli.mjs HELP, action.yml inputs or toMarkdown output change",
+          "text": "the README repeats the command list, the Action inputs table, a sample read list, and the lists of languages whose imports are read and of checks `init` suggests; update it when cli.mjs HELP, action.yml inputs, toMarkdown output, the readers in langs.mjs or draftChecks in map.mjs change",
           "files": [
             "README.md"
           ]
