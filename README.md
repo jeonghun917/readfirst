@@ -6,29 +6,7 @@ Coding agents can follow imports. What they don't know is what your team knows: 
 "this table is read by the mobile app, keep old columns", "run the payment e2e after touching this". readfirst keeps that
 knowledge in one file next to the code and hands it out, file by file, at the moment someone is about to change something.
 
-```text
-$ npx readfirst read src/billing/charge.ts
-
-# Read first: `src/billing/charge.ts`
-
-## Rules that must keep holding
-- **no-double-charge**: a charge runs once per order — why: refunds are manual
-
-## Watch out
-- amounts are in cents _(group src-billing)_
-
-## Run these checks
-- `npm test -- billing` — charges
-- `npm run e2e:pay` — keeps rule no-double-charge
-
-## Tests that reach this code
-- `test/charge.test.ts`
-- `test/route.test.js` (through `src/api/route.js`)
-
-## Used by
-- `src/billing/index.ts:1`
-2 more file(s) use this code indirectly.
-```
+![npx readfirst read src/imports.mjs prints the rules, risks, checks, tests and callers for that file](docs/readfirst-read.gif)
 
 No server, no account, no model calls. It reads your git checkout and `.readfirst/map.json`.
 
