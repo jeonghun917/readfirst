@@ -6,10 +6,11 @@
 //   readfirst fix                  place new files and drop patterns for deleted ones, then check
 //   readfirst read <file>...       the read list for files you are about to change
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
+//   readfirst verify [--base <ref>] run the checks the read list names for the changed files; exit 1 if one fails
 //   readfirst hook [--install]     a Claude Code PreToolUse hook: the read list for the file an Edit or Write is about to change
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, relative } from 'node:path';
@@ -29,11 +30,12 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst fix                  place new files, drop patterns for deleted ones
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
+  readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them)
   readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json)
   readfirst view [--out <file>]  the map as a city in one HTML page
   readfirst prompt --labels <lang>  brief for your agent to write personal labels for the view (e.g. ko, en)
 
-Options: --root <dir>, --json, --limit <n>, --force (init: replace the map),
+Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; default 900), --force (init: replace the map),
          --agent (init: add the read-first line to CLAUDE.md / AGENTS.md / .cursorrules)`;
 
 function parse(argv) {
@@ -44,6 +46,7 @@ function parse(argv) {
     else if (a === '--force') args.force = true;
     else if (a === '--agent') args.agent = true;
     else if (a === '--install') args.install = true;
+    else if (a === '--dry-run') args.dryRun = true;
     else if (a === '-h' || a === '--help') args.help = true;
     else if (a.startsWith('--')) { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); args[a.slice(2)] = v; }
     else args._.push(a);
@@ -87,7 +90,7 @@ function loadMapLenient(root, files, io) {
 
 // The one line that makes a coding agent use readfirst, added to the agent notes the project already has (CLAUDE.md,
 // AGENTS.md, .cursorrules), or to a new AGENTS.md when it has none. A file that already mentions readfirst is left alone.
-export const AGENT_LINE = 'Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the checks it lists. Before you finish, run `npx readfirst diff` and run every check it lists. When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.';
+export const AGENT_LINE = 'Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the checks it lists. Before you finish, run `npx readfirst verify`: it runs the checks the map lists for everything you changed; fix what fails. When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.';
 function addAgentLine(root) {
   const notes = ['CLAUDE.md', 'AGENTS.md', '.cursorrules'].filter((f) => existsSync(join(root, f)));
   const wrote = [];
@@ -110,6 +113,37 @@ function changedFiles(root, base) {
     ...git(root, 'ls-files', '--others', '--exclude-standard').split('\n'),
   ].filter(Boolean));
   return { ref, files: [...names].sort() };
+}
+
+// Runs each check with the shell in the repository root, one after another, and keeps the end of the output of the ones
+// that fail. readfirst writes nothing itself; the commands are the map's own and may write, as they would by hand.
+export function verifyChecks(root, checks, { dryRun = false, timeout = 900, progress = () => {} } = {}) {
+  const out = [];
+  for (const c of checks) {
+    const row = { run: c.run, why: c.why, for: c.for ?? [] };
+    if (dryRun) { out.push({ ...row, status: 'listed' }); continue; }
+    progress(`running ${c.run}\n`);
+    const started = Date.now();
+    const r = spawnSync(c.run, { cwd: root, shell: true, encoding: 'utf8', timeout: timeout * 1000, maxBuffer: 64 * 1024 * 1024, env: { ...process.env, CI: process.env.CI ?? '1' } });
+    const seconds = Math.round((Date.now() - started) / 100) / 10;
+    const timedOut = r.error?.code === 'ETIMEDOUT';
+    const status = timedOut ? 'timeout' : r.status === 0 ? 'pass' : 'fail';
+    const tail = status === 'pass' ? undefined : `${r.stdout ?? ''}${r.stderr ?? ''}${r.error && !timedOut ? r.error.message : ''}`.trimEnd().split('\n').slice(-30).join('\n');
+    out.push({ ...row, status, code: r.status, seconds, ...(tail !== undefined ? { output: tail } : {}) });
+  }
+  return out;
+}
+
+function verifyText(report, dryRun) {
+  if (!report.files.length) return `no files changed since ${report.base}: nothing to verify.\n`;
+  if (!report.checks.length) return `${report.files.length} changed file(s) since ${report.base}; the map lists no checks for them.\n`;
+  if (dryRun) return `checks for ${report.files.length} changed file(s) since ${report.base}:\n${report.checks.map((c) => `- ${c.run}${c.why ? ` — ${c.why}` : ''}`).join('\n')}\n`;
+  const mark = { pass: 'pass', fail: 'FAIL', timeout: 'TIMEOUT' };
+  let s = `\nverify: ${report.checks.length} check(s) for ${report.files.length} changed file(s) since ${report.base}\n`;
+  for (const c of report.checks) s += `${mark[c.status]}  ${c.run}  (${c.seconds}s)\n`;
+  for (const c of report.checks.filter((x) => x.status !== 'pass')) s += `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''}); last lines:\n${c.output}\n`;
+  s += report.ok ? '\nall checks passed.\n' : `\n${report.checks.filter((c) => c.status !== 'pass').length} check(s) failed.\n`;
+  return s;
 }
 
 // The read list as a few factual lines for an agent's context: rules, risks and checks, nothing else.
@@ -257,6 +291,20 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
     return 0;
+  }
+  if (cmd === 'verify') {
+    const map = loadMapLenient(root, files, io);
+    const changed = changedFiles(root, args.base);
+    const list = changed.files.length
+      ? readList({ map, files, imports: importEdges(files, readText(root)), targets: changed.files, commit, limit: 1 })
+      : emptyList(commit);
+    const timeout = Number(args.timeout ?? 900);
+    if (!(timeout > 0)) throw new Error('--timeout needs a number of seconds above 0');
+    const result = verifyChecks(root, list.checks, { dryRun: args.dryRun, timeout, progress: args.json ? () => {} : io.out });
+    const report = { format: 'readfirst/verify@1', commit, base: changed.ref, files: changed.files, ok: result.every((c) => c.status === 'pass' || c.status === 'listed'), checks: result };
+    if (args.json) io.out(`${JSON.stringify(report, null, 2)}\n`);
+    else io.out(verifyText(report, args.dryRun));
+    return report.ok ? 0 : 1;
   }
   throw new Error(`unknown command ${cmd}\n\n${HELP}`);
 }

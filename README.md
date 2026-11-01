@@ -24,6 +24,7 @@ Commit `.readfirst/map.json`. From then on:
 npx readfirst read <file>...     # before changing files
 npx readfirst diff               # everything your branch changed since main
 npx readfirst diff --json        # the same, for tools and agents
+npx readfirst verify             # run the checks the map lists for everything your branch changed (exit 1 if one fails)
 npx readfirst fix                # after moving code: place new files, drop patterns for deleted ones
 ```
 
@@ -33,7 +34,8 @@ npx readfirst fix                # after moving code: place new files, drop patt
 
 ```md
 Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the
-checks it lists. Before you finish, run `npx readfirst diff` and run every check it lists.
+checks it lists. Before you finish, run `npx readfirst verify`: it runs the checks the map lists for everything you
+changed; fix what fails.
 When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.
 ```
 
