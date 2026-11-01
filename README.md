@@ -111,12 +111,15 @@ Each PR gets one comment, updated on every push, that lists:
 - the rules, risks and checks for the files the PR changes, with the checks as boxes to tick;
 - the tests that reach the changed code.
 
-The check fails when `.readfirst/map.json` no longer covers the code, for example when a new file is in no group. So the
-map is fixed in the same PR. The comment lists what `npx readfirst fix` would change, so the fix is usually one command.
+A new file next to files the map already places joins their group without anyone touching the map: the check passes
+and the comment notes where it went (`npx readfirst fix` writes it down whenever you like). The check fails only on what
+needs a person: a new top-level folder, a rule whose files are all gone, a map that is broken in itself. The comment
+lists what `npx readfirst fix` would change.
 
 | Input | Default | Meaning |
 |---|---|---|
 | `fail-on-map-problems` | `true` | `false` reports map problems without failing |
+| `strict` | `false` | `true` also fails on new files that are only placed by their neighbours |
 | `comment` | `true` | `false` writes only the job summary |
 | `limit` | `30` | most tests and users listed per section |
 

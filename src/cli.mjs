@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
-import { assertMap, draftMap, fixMap, MAP_PATH, mapProblems } from './map.mjs';
+import { assertMap, draftMap, fixMap, MAP_PATH, mapProblems, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
@@ -28,7 +28,7 @@ const HELP = `readfirst — what to read and check before changing a file
 
   readfirst init [--agent]       write a first ${MAP_PATH} from the file tree
   readfirst prompt               brief for your coding agent to fill in the map
-  readfirst check                check the map covers every tracked file
+  readfirst check [--strict]     check the map covers every tracked file (new files beside placed ones pass; --strict fails on them)
   readfirst fix                  place new files, drop patterns for deleted ones
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
@@ -50,6 +50,7 @@ function parse(argv) {
     else if (a === '--agent') args.agent = true;
     else if (a === '--install') args.install = true;
     else if (a === '--dry-run') args.dryRun = true;
+    else if (a === '--strict') args.strict = true;
     else if (a === '-h' || a === '--help') args.help = true;
     else if (a.startsWith('--')) { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); args[a.slice(2)] = v; }
     else args._.push(a);
@@ -86,9 +87,10 @@ function loadMapLenient(root, files, io) {
   const map = readMapFile(root);
   const broken = mapProblems(map, files, { placement: false });
   if (broken.length) throw new Error(`${MAP_PATH} has problems:\n- ${broken.join('\n- ')}`);
-  const behind = mapProblems(map, files);
+  const { map: settled, problems: behind, settled: placed } = settleMap(map, files);
   if (behind.length) io.err(`note: ${MAP_PATH} is behind the code (${behind.length} problem${behind.length > 1 ? 's' : ''}); \`readfirst fix\` repairs most of it.\n`);
-  return map;
+  else if (placed.length) io.err(`note: ${placed.length} change${placed.length > 1 ? 's' : ''} not yet written in ${MAP_PATH} (new files placed by their neighbours); \`readfirst fix\` writes ${placed.length > 1 ? 'them' : 'it'} down.\n`);
+  return settled;
 }
 
 // The one line that makes a coding agent use readfirst, added to the agent notes the project already has (CLAUDE.md,
@@ -279,9 +281,16 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     return 0;
   }
   if (cmd === 'check') {
-    const problems = mapProblems(readMapFile(root), files);
-    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems }, null, 2)}\n`);
-    else io.out(problems.length ? `${MAP_PATH} has ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n` : `${MAP_PATH} is good: ${files.length} files.\n`);
+    // Placing new files next to their neighbours and dropping patterns for deleted files is what `fix` does; check
+    // settles those the same way and passes. --strict fails on them too.
+    const map = readMapFile(root);
+    const { problems, settled } = args.strict ? { problems: mapProblems(map, files), settled: [] } : settleMap(map, files);
+    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems, settled }, null, 2)}\n`);
+    else {
+      if (problems.length) io.out(`${MAP_PATH} has ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n`);
+      else io.out(`${MAP_PATH} is good: ${files.length} files.\n`);
+      if (settled.length) io.out(`settled without writing (\`readfirst fix\` writes it down):\n- ${settled.join('\n- ')}\n`);
+    }
     return problems.length ? 1 : 0;
   }
   if (cmd === 'hook') {

@@ -4,7 +4,7 @@
 import { appendFileSync, readFileSync } from 'node:fs';
 import { readMapFile, readText, repoFiles } from './cli.mjs';
 import { importEdges } from './imports.mjs';
-import { fixMap, MAP_PATH, mapProblems } from './map.mjs';
+import { MAP_PATH, settleMap } from './map.mjs';
 import { readList, toMarkdown } from './readlist.mjs';
 
 export const MARKER = '<!-- readfirst:pr-comment -->';
@@ -30,12 +30,14 @@ async function pages(fetchImpl, env, path) {
   return all;
 }
 
-export function commentBody({ list, problems, removed, commit, fixes = [] }) {
+export function commentBody({ list, problems, removed, commit, fixes = [], settled = [] }) {
   const parts = [MARKER, '## readfirst', ''];
   if (problems.length) {
     parts.push(`> [!WARNING]\n> \`${MAP_PATH}\` no longer matches the code (${problems.length} problem${problems.length > 1 ? 's' : ''}). Run \`npx readfirst check\` and fix the map in this PR.`, '');
     parts.push(...problems.slice(0, 20).map((p) => `- ${p}`), ...(problems.length > 20 ? [`- …and ${problems.length - 20} more`] : []), '');
     if (fixes.length) parts.push('`npx readfirst fix` would make these changes:', ...fixes.slice(0, 10).map((f) => `- ${f}`), ...(fixes.length > 10 ? [`- …and ${fixes.length - 10} more`] : []), '');
+  } else if (settled.length) {
+    parts.push(`<details><summary>New files placed by their neighbours (${settled.length})</summary>`, '', ...settled.slice(0, 20).map((f) => `- ${f}`), ...(settled.length > 20 ? [`- …and ${settled.length - 20} more`] : []), '', '`npx readfirst fix` writes this into the map; nothing to do for this PR.', '</details>', '');
   }
   if (list) parts.push(toMarkdown(list, { checklist: true, heading: null }));
   else if (!problems.length) parts.push('No changed files to look up.', '');
@@ -48,8 +50,17 @@ export function commentBody({ list, problems, removed, commit, fixes = [] }) {
 
 export async function runAction({ env = process.env, fetchImpl = fetch, root = env.GITHUB_WORKSPACE ?? process.cwd(), log = (s) => process.stdout.write(`${s}\n`) } = {}) {
   const files = repoFiles(root);
-  const map = readMapFile(root);
-  const problems = mapProblems(map, files);
+  // New files beside placed ones and patterns for deleted files are settled as `fix` would; only the rest fails.
+  const strict = (env.INPUT_STRICT ?? 'false') === 'true';
+  const raw = readMapFile(root);
+  const s = settleMap(raw, files);
+  // Strict: what fix would settle still counts as a problem, and the map is used as written.
+  const strictOff = !strict || !s.settled.length;
+  const map = strictOff ? s.map : raw;
+  const problems = strictOff ? s.problems : [...s.problems, ...s.settled.map((c) => `not yet written in the map: ${c}`)];
+  // With problems left, what fix would change is the help; without, it is a note.
+  const settled = problems.length ? [] : s.settled;
+  const fixes = problems.length ? s.settled : [];
   const failOnProblems = (env['INPUT_FAIL-ON-MAP-PROBLEMS'] ?? env.INPUT_FAIL_ON_MAP_PROBLEMS ?? 'true') !== 'false';
   const event = env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8')) : {};
   const pr = event.pull_request;
@@ -67,8 +78,7 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const list = targets.length && !problems.length
     ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30) })
     : null;
-  const fixes = problems.length ? (() => { try { return fixMap(map, files).changes; } catch { return []; } })() : [];
-  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes });
+  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled });
   summary(body);
 
   if ((env.INPUT_COMMENT ?? 'true') !== 'false') {

@@ -12,8 +12,11 @@ inputs:
     description: Post or update the PR comment ("false" only writes the job summary).
     default: 'true'
   fail-on-map-problems:
-    description: Fail the check when .readfirst/map.json no longer covers every tracked file.
+    description: Fail the check when .readfirst/map.json has problems `readfirst fix` cannot settle (new files beside placed ones are settled and pass).
     default: 'true'
+  strict:
+    description: '"true" also fails when new files are only placed by their neighbours, not yet written in the map.'
+    default: 'false'
   limit:
     description: Most tests and users listed per section.
     default: '30'
@@ -27,3 +30,4 @@ runs:
         INPUT_COMMENT: ${{ inputs.comment }}
         INPUT_FAIL_ON_MAP_PROBLEMS: ${{ inputs.fail-on-map-problems }}
         INPUT_LIMIT: ${{ inputs.limit }}
+        INPUT_STRICT: ${{ inputs.strict }}
