@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -447,4 +447,47 @@ test('mcp: starts and lists its tools outside a git repository; a tool call ther
   assert.equal(lines[1].result.tools.length, 3);
   assert.equal(lines[2].result.isError, true);
   assert.match(lines[2].result.content[0].text, /not inside a git repository/u);
+});
+
+test('hook --stop: before Claude Code finishes, the checks for files it edited run; a failure blocks once', async () => {
+  const { runHook, runStopHook, installHook, STOP_HOOK_COMMAND } = await import('../src/cli.mjs');
+  const { root, git } = repo(FIXTURE);
+  run(root, 'init');
+  const mapAt = join(root, '.readfirst/map.json');
+  const map = JSON.parse(readFileSync(mapAt, 'utf8'));
+  for (const g of map.groups) g.checks = g.id === 'src-billing' ? [{ run: 'test -f ok.flag', why: 'the flag' }] : [];
+  writeFileSync(mapAt, JSON.stringify(map));
+  git('add', '.');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'map');
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-stop-'));
+  const stop = (over = {}) => runStopHook(JSON.stringify({ session_id: 's1', cwd: root, hook_event_name: 'Stop', stop_hook_active: false, ...over }), { stateDir, timeout: 30 });
+
+  assert.equal(stop(), null, 'nothing edited in this session');
+  runHook(JSON.stringify({ session_id: 's1', cwd: root, tool_name: 'Edit', tool_input: { file_path: join(root, 'src/billing/charge.ts') } }), { stateDir });
+  assert.equal(stop(), null, 'seen but not changed');
+  writeFileSync(join(root, 'src/billing/charge.ts'), `${readFileSync(join(root, 'src/billing/charge.ts'), 'utf8')}\n// edited\n`);
+  const blocked = JSON.parse(stop());
+  assert.equal(blocked.decision, 'block');
+  assert.match(blocked.reason, /1 of 1 check\(s\).*failed/u);
+  assert.match(blocked.reason, /test -f ok\.flag \(fail, exit 1\) covers the flag/u);
+  assert.equal(stop({ stop_hook_active: true }), null, 'the second stop of the turn lets go');
+  writeFileSync(join(root, 'ok.flag'), '');
+  assert.match(JSON.parse(stop()).systemMessage, /1 check\(s\) passed for 1 edited file/u);
+  assert.equal(stop({ session_id: 'other' }), null, 'another session edited nothing');
+
+  // A branch that changes a check command: the new command is named, never run, until the base branch has it.
+  git('checkout', '-q', '-b', 'pr');
+  const branchMap = JSON.parse(readFileSync(mapAt, 'utf8'));
+  branchMap.groups.find((g) => g.id === 'src-billing').checks = [{ run: 'touch pwned.flag', why: 'nothing good' }];
+  writeFileSync(mapAt, JSON.stringify(branchMap));
+  const named = JSON.parse(stop({ session_id: 's1' }));
+  assert.equal(named.decision, undefined);
+  assert.match(named.systemMessage, /0 check\(s\) passed.*Not run, because the base branch's map does not list them yet: `touch pwned\.flag`/u);
+  assert.equal(existsSync(join(root, 'pwned.flag')), false, 'the branch command did not run');
+
+  assert.equal(installHook(root, { verify: true }), true);
+  assert.equal(installHook(root, { verify: true }), false);
+  const settings = JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf8'));
+  assert.equal(settings.hooks.PreToolUse.length, 1);
+  assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }]);
 });

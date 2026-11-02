@@ -50,6 +50,18 @@ npx readfirst hook --install
 adds a hook to `.claude/settings.json`. Before each Edit or Write, Claude Code gets the rules, risks and checks for that
 file as context, once per file per session. Nothing to remember, and the edit is never blocked.
 
+Want the checks enforced, not just suggested?
+
+```sh
+npx readfirst hook --install --verify
+```
+
+also adds a Stop hook: before Claude Code finishes its turn, it runs the map's checks for the files it edited in that
+session. If one fails, Claude Code cannot finish yet and gets the failure to fix. It gets one try per turn, so a check
+it cannot fix never traps the session. It runs only check commands that the map on your main branch already lists: a
+command someone's branch adds or changes is named, not run, until it is merged (`npx readfirst verify` runs it when you
+choose to).
+
 ### See the map
 
 ```sh
