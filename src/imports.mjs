@@ -109,6 +109,14 @@ export function importEdges(files, read) {
     const base = posix.join(baseDir, ...dotted.split('.').filter(Boolean));
     return [`${base}.py`, `${base}/__init__.py`].find((c) => tracked.has(c));
   };
+  const pyRoots = pythonRoots(files);
+  // An absolute import: from a source root, else, in a Python 2 file, from the importing file's folder (Python 2's
+  // implicit relative import). In Python 3 code, "import logging" next to a logging.py is still the standard library.
+  const pyAbsolute = (dotted, from, py2) => {
+    for (const root of pyRoots) { const to = pyModule(dotted, root); if (to) return to; }
+    const here = posix.dirname(from);
+    return py2 && here !== '.' ? pyModule(dotted, here) : undefined;
+  };
   let bare = null;
   for (const from of [...files].sort()) {
     if (JS.test(from)) {
@@ -130,41 +138,61 @@ export function importEdges(files, read) {
     } else if (PY.test(from)) {
       const body = read(from);
       if (body === null) continue;
+      const py2 = isPython2(body);
       for (const m of body.matchAll(PY_IMPORT)) {
         const line = lineAt(body, m.index + m[0].search(/\S/u));
         if (m[1] !== undefined) {
           const dots = m[1].match(/^\.*/u)[0].length;
           const mod = m[1].slice(dots);
           // Relative: one dot is this package. Absolute: from the repository root, or from a src/ layout.
-          const roots = dots ? [posix.join(posix.dirname(from), ...Array(dots - 1).fill('..'))] : ['', 'src'];
-          for (const root of roots) {
-            const target = mod ? pyModule(mod, root) : null;
-            if (target) { add(from, target, line); }
+          const names = m[2].replace(/[()]|#[^\n]*/gu, '').split(',').map((s) => s.trim().split(/\s+/u)[0]).filter((s) => s && s !== '*');
+          if (dots) {
+            const root = posix.join(posix.dirname(from), ...Array(dots - 1).fill('..'));
+            if (mod) add(from, pyModule(mod, root), line);
             // "from pkg import mod" may name sub-modules.
-            for (const name of m[2].replace(/[()]|#[^\n]*/gu, '').split(',').map((s) => s.trim().split(/\s+/u)[0]).filter((s) => s && s !== '*'))
-              add(from, pyModule(mod ? `${mod}.${name}` : name, root), line);
-            if (target) break;
+            for (const name of names) add(from, pyModule(mod ? `${mod}.${name}` : name, root), line);
+          } else {
+            add(from, pyAbsolute(mod, from, py2), line);
+            for (const name of names) add(from, pyAbsolute(`${mod}.${name}`, from, py2), line);
           }
         } else {
           for (const name of m[3].split(',').map((s) => s.trim().split(/\s+/u)[0]).filter(Boolean))
-            add(from, pyModule(name, '') ?? pyModule(name, 'src'), line);
+            add(from, pyAbsolute(name, from, py2), line);
         }
       }
     }
   }
-  dottedEdges(files, tracked, read, pyModule, add);
+  dottedEdges(files, read, pyModule, pyRoots, add);
   moreEdges([...files].sort(), read, add);
   return out;
+}
+
+// Syntax only Python 2 accepts: a print statement, "except E, e:", "raise E, msg", "<>", a backquote repr. A file
+// that opts into absolute imports is read as Python 3 whatever else it holds.
+const PY2_ONLY = /^[ \t]*print[ \t]+(?![ \t]*[(=])\S|^[ \t]*except[ \t]+[\w.]+[ \t]*,[ \t]*\w+[ \t]*:|^[ \t]*raise[ \t]+[\w.]+[ \t]*,|[\w)\]][ \t]*<>[ \t]*[\w(\['"]|`\w+`/mu;
+function isPython2(body) {
+  return !/^from[ \t]+__future__[ \t]+import[^\n]*\babsolute_import\b/mu.test(body) && PY2_ONLY.test(body.replace(/(['"])\1\1[\s\S]*?\1\1\1/gu, '').replace(/#[^\n]*/gu, ''));
+}
+
+// Where absolute Python imports start: the repository root, src/, and each folder that holds a Django manage.py
+// (backend/manage.py means "from feeds.models import Feed" is backend/feeds/models.py).
+function pythonRoots(files) {
+  const roots = new Set(['', 'src']);
+  for (const f of files) {
+    const m = f.match(/^(.+)\/manage\.py$/u);
+    if (m && !f.includes('node_modules/')) roots.add(m[1]);
+  }
+  return [...roots];
 }
 
 // Python projects name code by dotted path in strings: Frappe hooks.py ("app.module.function"), frappe.call from
 // JavaScript, Django settings and urls, Celery task names. A string counts when its first part is a top-level Python
 // package of the repository and the longest leading part names one of its modules.
-function dottedEdges(files, tracked, read, pyModule, add) {
+function dottedEdges(files, read, pyModule, pyRoots, add) {
   const top = new Map();
   for (const f of files) {
-    const m = f.match(/^(?:(src)\/)?([A-Za-z_]\w*)\/__init__\.py$/u);
-    if (m) top.set(m[2], m[1] ?? '');
+    const m = f.match(/^(?:(.*)\/)?([A-Za-z_]\w*)\/__init__\.py$/u);
+    if (m && pyRoots.includes(m[1] ?? '') && !top.has(m[2])) top.set(m[2], m[1] ?? '');
   }
   if (!top.size) return;
   const DOTTED = /["'`]([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)["'`]/gu;
