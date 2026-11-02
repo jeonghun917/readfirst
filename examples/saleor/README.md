@@ -15,6 +15,8 @@ Where it came from:
 Found while making it: `update_discounted_prices_for_promotion(only_dirty_products=True)` is documented to recalculate
 only the listings marked dirty, but the `.filter(discounted_price_dirty=True)` on line 71 is never assigned, so every
 listing is recalculated (`saleor/product/utils/variant_prices.py:40-41, 70-71`). It is in the map as a risk.
+Reported as [saleor/saleor#19983](https://github.com/saleor/saleor/issues/19983), with a fix and a test that fails
+without it in [saleor/saleor#19984](https://github.com/saleor/saleor/pull/19984).
 
 ## Before editing a product task
 
