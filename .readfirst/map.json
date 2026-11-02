@@ -49,7 +49,7 @@
           ]
         },
         {
-          "text": "runHook swallows every error and returns null (exit 0, no output), so a bug in it looks the same as 'nothing to say' and the edit goes ahead; only a test with real map data would catch it. It also uses repoFiles, readMapFile and mapProblems, so changes there change the hook"
+          "text": "runHook and runStopHook swallow every error and return null (exit 0, no output), so a bug in them looks the same as 'nothing to say': the edit goes ahead, or Claude Code stops without its checks having run; only a test with real map data would catch it. They also use repoFiles, readMapFile and mapProblems, so changes there change the hooks"
         },
         {
           "text": "verify runs the map's check commands with the shell in the repository root; a map is repository content and its commands run with the user's rights, so verify stays an explicit command, never called from the PreToolUse hook or the Action. The one exception is the opt-in Stop hook (`hook --install --verify`), and it runs only commands the base branch's map already lists (trustedRuns): a command a branch adds or changes is named, never run, so checking out someone's branch cannot run their new command",
@@ -63,6 +63,9 @@
             "src/mcp.mjs",
             "src/cli.mjs"
           ]
+        },
+        {
+          "text": "the Stop hook only knows which files to verify from the state file the PreToolUse hook writes in the temp folder (seenFile, one per session_id); changing that file's name or format in runHook breaks `hook --stop` silently, because it returns null when the file is missing"
         }
       ]
     },
@@ -191,6 +194,9 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "dotted-string edges are a heuristic: any quoted `a.b.c` in a .py, .js, .ts or .json file whose first part is a top-level Python package (a folder with __init__.py, directly or under src/) counts as a use of that module, so a string that only looks like a path adds a false edge; they apply only when the repository has such a package, and every such file is read again for them"
         }
       ]
     },
