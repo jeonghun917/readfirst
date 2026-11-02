@@ -165,7 +165,7 @@
           ]
         },
         {
-          "text": "imports are read with regexes: JS/TS and Python in imports.mjs, Go, Rust, Elixir, C#, Java/Kotlin, Ruby and PHP in langs.mjs. Only edges that resolve to a tracked file count (workspace packages and tsconfig paths aliases included), so packages from outside, aliases set up elsewhere (bundler config, tsconfig extends) and names the approximation misses (Rails constants used unqualified inside a module, C# types reached without a using) leave tests out of the read list",
+          "text": "imports are read with regexes: JS/TS and Python in imports.mjs, Go, Rust, Elixir, C#, Java/Kotlin, Ruby and PHP in langs.mjs. Only edges that resolve to a tracked file count (workspace packages and tsconfig paths aliases included), so packages from outside, aliases set up elsewhere (bundler config, tsconfig extends), Python code under a source root other than the repository root, `src/` or a folder holding `manage.py`, and names the approximation misses (Rails constants used unqualified inside a module, C# types reached without a using, Python 2 implicit relative imports in a file with no Python 2 syntax) leave tests out of the read list",
           "files": [
             "src/imports.mjs",
             "src/langs.mjs"
@@ -197,6 +197,9 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "the Python folder lookup (`import utils` finding the `utils.py` next to the file) runs only for files that look like Python 2 (print statement, `except E, e:`, `raise E, msg`, `<>`, backquotes) and never with `from __future__ import absolute_import`; applying it to every file links `import logging` or `import jwt` to a same-named local module"
         }
       ]
     },
