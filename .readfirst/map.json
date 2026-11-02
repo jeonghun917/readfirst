@@ -287,6 +287,9 @@
             "package.json",
             ".github/**"
           ]
+        },
+        {
+          "text": "SECURITY.md names the supported version line (0.8.x) and describes what each part of readfirst runs (read-only CLI, MCP server and hook; verify and the Stop hook run map commands; the Action's API use and auto-fix); update it when the minor version is bumped or when a command, hook or the Action starts running or calling something new"
         }
       ]
     }
