@@ -41,6 +41,14 @@ export function parseJsonc(text) {
 
 // Bare specifiers that point back into the repository: a workspace package by the name in its package.json
 // ("@acme/db", "@acme/db/schema"), or a "paths" alias from the tsconfig/jsconfig that covers the importing file ("@/lib/x").
+// When a bare import is not a workspace package, ask the npm registry for its entry point.
+export async function registryEntry(name) {
+  const res = await fetch(`https://registry.npmjs.org/${encodeURIComponent(name)}/latest`);
+  if (!res.ok) return null;
+  const pkg = await res.json();
+  return pkg.module ?? pkg.main ?? null;
+}
+
 function jsResolver(files, tracked, read) {
   const jsCandidates = (base) => [...JS_EXT.map((e) => base + e), base.replace(/\.(m|c)?js$/u, '.$1ts'), base.replace(/\.js$/u, '.tsx')];
   const firstTracked = (bases) => {
