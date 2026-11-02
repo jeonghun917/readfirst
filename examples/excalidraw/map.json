@@ -1,0 +1,379 @@
+{
+  "format": "readfirst/map@1",
+  "groups": [
+    {
+      "id": "codesandbox",
+      "title": "CodeSandbox config",
+      "files": [
+        ".codesandbox/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "dev-docs",
+      "title": "developer docs site (docs.excalidraw.com)",
+      "files": [
+        "dev-docs/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn workspace docs run typecheck",
+          "why": "types of docs"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "examples",
+      "title": "integration examples: Next.js, browser script",
+      "files": [
+        "examples/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "excalidraw-app",
+      "title": "the excalidraw.com app: collaboration, Firebase storage, share links",
+      "files": [
+        "excalidraw-app/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": [
+        {
+          "text": "app-only features belong here; editor features go in packages/* (CLAUDE.md:14-15)"
+        }
+      ]
+    },
+    {
+      "id": "firebase-project",
+      "title": "Firebase rules and config for excalidraw.com",
+      "files": [
+        "firebase-project/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "github",
+      "title": "CI workflows",
+      "files": [
+        ".github/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "husky",
+      "title": "git hooks",
+      "files": [
+        ".husky/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "packages",
+      "title": "shared tsconfig and ESLint bases for the packages",
+      "files": [
+        "packages/eslintrc.base.json",
+        "packages/tsconfig.base.json"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-common",
+      "title": "@excalidraw/common: Excalidraw common functions, constants, etc.",
+      "files": [
+        "packages/common/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": [
+        {
+          "text": "@excalidraw/excalidraw depends on this package, so code here imports only types from @excalidraw/excalidraw/types; a runtime import would be a cycle (package.json dependencies; packages/element/src/utils.ts:36)"
+        }
+      ]
+    },
+    {
+      "id": "packages-element",
+      "title": "@excalidraw/element: Excalidraw elements-related logic",
+      "files": [
+        "packages/element/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": [
+        {
+          "text": "@excalidraw/excalidraw depends on this package, so code here imports only types from @excalidraw/excalidraw/types; a runtime import would be a cycle (package.json dependencies; packages/element/src/utils.ts:36)"
+        }
+      ]
+    },
+    {
+      "id": "packages-excalidraw",
+      "title": "@excalidraw/excalidraw: Excalidraw as a React component",
+      "files": [
+        "packages/excalidraw/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": [
+        {
+          "text": "this is the npm package @excalidraw/excalidraw; its exported API is what embedders build on (CLAUDE.md:7)",
+          "files": [
+            "packages/excalidraw/index.tsx"
+          ]
+        },
+        {
+          "text": "snapshot tests live in __snapshots__; yarn test:update rewrites them, so review the snapshot diff instead of accepting it (CLAUDE.md:16, 23)"
+        }
+      ]
+    },
+    {
+      "id": "packages-fractional-indexing",
+      "title": "@excalidraw/fractional-indexing: Provides functions for generating ordering strings",
+      "files": [
+        "packages/fractional-indexing/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-laser-pointer",
+      "title": "@excalidraw/laser-pointer: Generate outline for laser pointer tool",
+      "files": [
+        "packages/laser-pointer/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-math",
+      "title": "@excalidraw/math: Excalidraw math functions",
+      "files": [
+        "packages/math/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": [
+        {
+          "text": "@excalidraw/excalidraw depends on this package, so code here imports only types from @excalidraw/excalidraw/types; a runtime import would be a cycle (package.json dependencies; packages/element/src/utils.ts:36)"
+        }
+      ]
+    },
+    {
+      "id": "packages-utils",
+      "title": "@excalidraw/utils: Excalidraw utility functions",
+      "files": [
+        "packages/utils/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "public",
+      "title": "static assets for excalidraw.com",
+      "files": [
+        "public/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "root",
+      "title": "workspace root: manifests, Vite and Vitest config, path aliases",
+      "files": [
+        ".dockerignore",
+        ".editorconfig",
+        ".env.development",
+        ".env.production",
+        ".env.test",
+        ".eslintignore",
+        ".eslintrc.json",
+        ".gitattributes",
+        ".gitignore",
+        ".lintstagedrc.js",
+        ".npmrc",
+        ".prettierignore",
+        ".watchmanconfig",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "CONTRIBUTING.md",
+        "Dockerfile",
+        "LICENSE",
+        "README.md",
+        "crowdin.yml",
+        "docker-compose.yml",
+        "package.json",
+        "setupTests.ts",
+        "tsconfig.json",
+        "vercel.json",
+        "vitest.config.mts",
+        "yarn.lock"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": [
+        {
+          "text": "internal packages resolve through the path aliases in vitest.config.mts; a new package or entry point needs an alias there (CLAUDE.md:32)",
+          "files": [
+            "vitest.config.mts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "scripts",
+      "title": "build and release scripts",
+      "files": [
+        "scripts/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck",
+          "why": "TypeScript across the monorepo"
+        },
+        {
+          "run": "yarn test:update",
+          "why": "all tests, snapshots updated (CLAUDE.md:16)"
+        }
+      ],
+      "risks": []
+    }
+  ],
+  "rules": [
+    {
+      "id": "owner-document",
+      "rule": "new DOM or browser API use goes through app.ownerDocument and app.ownerWindow, or the mounted node's ownerDocument and defaultView, never the globals",
+      "why": "AGENTS.md:3",
+      "files": [
+        "packages/excalidraw/**",
+        "packages/element/src/**",
+        "packages/common/src/**"
+      ]
+    },
+    {
+      "id": "merge-type",
+      "rule": "override properties of an existing type with Merge<Base, Overrides> from @excalidraw/common/utility-types, not Omit<Base, keyof Overrides> & Overrides",
+      "why": "AGENTS.md:4",
+      "files": [
+        "packages/**",
+        "excalidraw-app/**"
+      ]
+    },
+    {
+      "id": "tests-before-commit",
+      "rule": "run yarn test:update and yarn test:typecheck before committing",
+      "why": "CLAUDE.md:16-17",
+      "files": [
+        "packages/**",
+        "excalidraw-app/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test:typecheck"
+        },
+        {
+          "run": "yarn test:update"
+        }
+      ]
+    }
+  ],
+  "ignore": []
+}

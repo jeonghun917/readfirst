@@ -1,0 +1,2054 @@
+{
+  "format": "readfirst/map@1",
+  "groups": [
+    {
+      "id": "agents",
+      "title": "skills and notes for coding agents",
+      "files": [
+        ".agents/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-docs",
+      "title": "ai-sdk-docs: Documentation site for the AI SDK (ai-sdk.dev), built with @vercel/geistdocs.",
+      "files": [
+        "apps/docs/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        },
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "architecture",
+      "title": "architecture notes and decision records",
+      "files": [
+        "architecture/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "assets",
+      "title": "images used by the docs and READMEs",
+      "files": [
+        "assets/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "changeset",
+      "title": "changesets that become each package's changelog",
+      "files": [
+        ".changeset/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": [
+        {
+          "text": "changesets are patch only: no minor or major, and never select example packages, they're not published (AGENTS.md:268-273, 321)"
+        }
+      ]
+    },
+    {
+      "id": "claude",
+      "title": "Claude Code settings for this repo",
+      "files": [
+        ".claude/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "codex",
+      "title": "Codex settings for this repo",
+      "files": [
+        ".codex/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "content",
+      "title": "the documentation pages (ai-sdk.dev)",
+      "files": [
+        "content/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        },
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": [
+        {
+          "text": "content/docs/08-migration-guides is not edited as part of a broader change (AGENTS.md:325)",
+          "files": [
+            "content/docs/08-migration-guides/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "contributing",
+      "title": "contributor guides: new providers, models, testing, secure URL handling",
+      "files": [
+        "contributing/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "cursor",
+      "title": "Cursor rules",
+      "files": [
+        ".cursor/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "examples",
+      "title": "runnable examples for every AI function and framework",
+      "files": [
+        "examples/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        },
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": [
+        {
+          "text": "examples/ai-functions keeps one folder per function with a file per provider; no flat top-level provider files like src/stream-text/openai.ts (AGENTS.md:90-95)"
+        }
+      ]
+    },
+    {
+      "id": "github",
+      "title": "CI and release workflows",
+      "files": [
+        ".github/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "husky",
+      "title": "git hooks",
+      "files": [
+        ".husky/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-ai",
+      "title": "ai: generateText, streamText, tools and agents (the package users import)",
+      "files": [
+        "packages/ai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter ai test",
+          "why": "the test suite of ai"
+        },
+        {
+          "run": "pnpm --filter ai run type-check",
+          "why": "types of ai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "errors extend AISDKError from @ai-sdk/provider and use the marker pattern for instanceof checks (AGENTS.md:173)"
+        }
+      ]
+    },
+    {
+      "id": "packages-alibaba",
+      "title": "@ai-sdk/alibaba: the alibaba provider",
+      "files": [
+        "packages/alibaba/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/alibaba test",
+          "why": "the test suite of @ai-sdk/alibaba"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/alibaba run type-check",
+          "why": "types of @ai-sdk/alibaba"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-amazon-bedrock",
+      "title": "@ai-sdk/amazon-bedrock: the amazon-bedrock provider",
+      "files": [
+        "packages/amazon-bedrock/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/amazon-bedrock test",
+          "why": "the test suite of @ai-sdk/amazon-bedrock"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/amazon-bedrock run type-check",
+          "why": "types of @ai-sdk/amazon-bedrock"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-angular",
+      "title": "@ai-sdk/angular: Angular implementation of ai-sdk.",
+      "files": [
+        "packages/angular/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/angular test",
+          "why": "the test suite of @ai-sdk/angular"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/angular run type-check",
+          "why": "types of @ai-sdk/angular"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-anthropic",
+      "title": "@ai-sdk/anthropic: the anthropic provider",
+      "files": [
+        "packages/anthropic/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/anthropic test",
+          "why": "the test suite of @ai-sdk/anthropic"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/anthropic run type-check",
+          "why": "types of @ai-sdk/anthropic"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-anthropic-aws",
+      "title": "@ai-sdk/anthropic-aws: the anthropic-aws provider",
+      "files": [
+        "packages/anthropic-aws/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/anthropic-aws test",
+          "why": "the test suite of @ai-sdk/anthropic-aws"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/anthropic-aws run type-check",
+          "why": "types of @ai-sdk/anthropic-aws"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-assemblyai",
+      "title": "@ai-sdk/assemblyai: the assemblyai provider",
+      "files": [
+        "packages/assemblyai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/assemblyai test",
+          "why": "the test suite of @ai-sdk/assemblyai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/assemblyai run type-check",
+          "why": "types of @ai-sdk/assemblyai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-azure",
+      "title": "@ai-sdk/azure: the azure provider",
+      "files": [
+        "packages/azure/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/azure test",
+          "why": "the test suite of @ai-sdk/azure"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/azure run type-check",
+          "why": "types of @ai-sdk/azure"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-baseten",
+      "title": "@ai-sdk/baseten: the baseten provider",
+      "files": [
+        "packages/baseten/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/baseten test",
+          "why": "the test suite of @ai-sdk/baseten"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/baseten run type-check",
+          "why": "types of @ai-sdk/baseten"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-black-forest-labs",
+      "title": "@ai-sdk/black-forest-labs: the black-forest-labs provider",
+      "files": [
+        "packages/black-forest-labs/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/black-forest-labs test",
+          "why": "the test suite of @ai-sdk/black-forest-labs"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/black-forest-labs run type-check",
+          "why": "types of @ai-sdk/black-forest-labs"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-bytedance",
+      "title": "@ai-sdk/bytedance: the bytedance provider",
+      "files": [
+        "packages/bytedance/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/bytedance test",
+          "why": "the test suite of @ai-sdk/bytedance"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/bytedance run type-check",
+          "why": "types of @ai-sdk/bytedance"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-cartesia",
+      "title": "@ai-sdk/cartesia: the cartesia provider",
+      "files": [
+        "packages/cartesia/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/cartesia test",
+          "why": "the test suite of @ai-sdk/cartesia"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/cartesia run type-check",
+          "why": "types of @ai-sdk/cartesia"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-cerebras",
+      "title": "@ai-sdk/cerebras: The **Cerebras provider** for the [AI SDK](https://ai-sdk.dev/docs) contains language model support for [Cerebras](https://cerebras.ai), offering high-speed AI model inference powere",
+      "files": [
+        "packages/cerebras/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/cerebras test",
+          "why": "the test suite of @ai-sdk/cerebras"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/cerebras run type-check",
+          "why": "types of @ai-sdk/cerebras"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-code-mode",
+      "title": "@ai-sdk/code-mode: QuickJS-backed code mode tool for AI SDK",
+      "files": [
+        "packages/code-mode/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/code-mode test",
+          "why": "the test suite of @ai-sdk/code-mode"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/code-mode run type-check",
+          "why": "types of @ai-sdk/code-mode"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-codemod",
+      "title": "@ai-sdk/codemod",
+      "files": [
+        "packages/codemod/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/codemod test",
+          "why": "the test suite of @ai-sdk/codemod"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/codemod run type-check",
+          "why": "types of @ai-sdk/codemod"
+        }
+      ],
+      "risks": [
+        {
+          "text": "packages/codemod is not modified as part of a broader change (AGENTS.md:325)"
+        }
+      ]
+    },
+    {
+      "id": "packages-cohere",
+      "title": "@ai-sdk/cohere: the cohere provider",
+      "files": [
+        "packages/cohere/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/cohere test",
+          "why": "the test suite of @ai-sdk/cohere"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/cohere run type-check",
+          "why": "types of @ai-sdk/cohere"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-deepgram",
+      "title": "@ai-sdk/deepgram: the deepgram provider",
+      "files": [
+        "packages/deepgram/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/deepgram test",
+          "why": "the test suite of @ai-sdk/deepgram"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/deepgram run type-check",
+          "why": "types of @ai-sdk/deepgram"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-deepinfra",
+      "title": "@ai-sdk/deepinfra: the deepinfra provider",
+      "files": [
+        "packages/deepinfra/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/deepinfra test",
+          "why": "the test suite of @ai-sdk/deepinfra"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/deepinfra run type-check",
+          "why": "types of @ai-sdk/deepinfra"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-deepseek",
+      "title": "@ai-sdk/deepseek: the deepseek provider",
+      "files": [
+        "packages/deepseek/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/deepseek test",
+          "why": "the test suite of @ai-sdk/deepseek"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/deepseek run type-check",
+          "why": "types of @ai-sdk/deepseek"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-devtools",
+      "title": "@ai-sdk/devtools: UI bindings for devtools",
+      "files": [
+        "packages/devtools/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/devtools test",
+          "why": "the test suite of @ai-sdk/devtools"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-elevenlabs",
+      "title": "@ai-sdk/elevenlabs: the elevenlabs provider",
+      "files": [
+        "packages/elevenlabs/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/elevenlabs test",
+          "why": "the test suite of @ai-sdk/elevenlabs"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/elevenlabs run type-check",
+          "why": "types of @ai-sdk/elevenlabs"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-fal",
+      "title": "@ai-sdk/fal: the fal provider",
+      "files": [
+        "packages/fal/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/fal test",
+          "why": "the test suite of @ai-sdk/fal"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/fal run type-check",
+          "why": "types of @ai-sdk/fal"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-fireworks",
+      "title": "@ai-sdk/fireworks: the fireworks provider",
+      "files": [
+        "packages/fireworks/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/fireworks test",
+          "why": "the test suite of @ai-sdk/fireworks"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/fireworks run type-check",
+          "why": "types of @ai-sdk/fireworks"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-fish-audio",
+      "title": "@ai-sdk/fish-audio: the fish-audio provider",
+      "files": [
+        "packages/fish-audio/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/fish-audio test",
+          "why": "the test suite of @ai-sdk/fish-audio"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/fish-audio run type-check",
+          "why": "types of @ai-sdk/fish-audio"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-gateway",
+      "title": "@ai-sdk/gateway: the Vercel AI Gateway provider",
+      "files": [
+        "packages/gateway/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/gateway test",
+          "why": "the test suite of @ai-sdk/gateway"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/gateway run type-check",
+          "why": "types of @ai-sdk/gateway"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-gladia",
+      "title": "@ai-sdk/gladia: the gladia provider",
+      "files": [
+        "packages/gladia/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/gladia test",
+          "why": "the test suite of @ai-sdk/gladia"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/gladia run type-check",
+          "why": "types of @ai-sdk/gladia"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-gmicloud",
+      "title": "@ai-sdk/gmicloud: The **GMI Cloud provider** for the [AI SDK](https://ai-sdk.dev/docs) contains language model support for [GMI Cloud](https://www.gmicloud.ai), offering GPU inference for open-weight ",
+      "files": [
+        "packages/gmicloud/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/gmicloud test",
+          "why": "the test suite of @ai-sdk/gmicloud"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/gmicloud run type-check",
+          "why": "types of @ai-sdk/gmicloud"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-google",
+      "title": "@ai-sdk/google: the google provider",
+      "files": [
+        "packages/google/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/google test",
+          "why": "the test suite of @ai-sdk/google"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/google run type-check",
+          "why": "types of @ai-sdk/google"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-google-vertex",
+      "title": "@ai-sdk/google-vertex: the google-vertex provider",
+      "files": [
+        "packages/google-vertex/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/google-vertex test",
+          "why": "the test suite of @ai-sdk/google-vertex"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/google-vertex run type-check",
+          "why": "types of @ai-sdk/google-vertex"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-groq",
+      "title": "@ai-sdk/groq: the groq provider",
+      "files": [
+        "packages/groq/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/groq test",
+          "why": "the test suite of @ai-sdk/groq"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/groq run type-check",
+          "why": "types of @ai-sdk/groq"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-harness",
+      "title": "@ai-sdk/harness: runs the shared coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness test",
+          "why": "the test suite of @ai-sdk/harness"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness run type-check",
+          "why": "types of @ai-sdk/harness"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-acp",
+      "title": "@ai-sdk/harness-acp: runs the acp coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-acp/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-acp test",
+          "why": "the test suite of @ai-sdk/harness-acp"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-acp run type-check",
+          "why": "types of @ai-sdk/harness-acp"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-claude-code",
+      "title": "@ai-sdk/harness-claude-code: runs the claude-code coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-claude-code/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-claude-code test",
+          "why": "the test suite of @ai-sdk/harness-claude-code"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-claude-code run type-check",
+          "why": "types of @ai-sdk/harness-claude-code"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-cline",
+      "title": "@ai-sdk/harness-cline: runs the cline coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-cline/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-cline test",
+          "why": "the test suite of @ai-sdk/harness-cline"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-cline run type-check",
+          "why": "types of @ai-sdk/harness-cline"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-codex",
+      "title": "@ai-sdk/harness-codex: runs the codex coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-codex/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-codex test",
+          "why": "the test suite of @ai-sdk/harness-codex"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-codex run type-check",
+          "why": "types of @ai-sdk/harness-codex"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-cursor",
+      "title": "@ai-sdk/harness-cursor: runs the cursor coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-cursor/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-cursor test",
+          "why": "the test suite of @ai-sdk/harness-cursor"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-cursor run type-check",
+          "why": "types of @ai-sdk/harness-cursor"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-deepagents",
+      "title": "@ai-sdk/harness-deepagents: runs the deepagents coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-deepagents/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-deepagents test",
+          "why": "the test suite of @ai-sdk/harness-deepagents"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-deepagents run type-check",
+          "why": "types of @ai-sdk/harness-deepagents"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-fx",
+      "title": "@ai-sdk/harness-fx: runs the fx coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-fx/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-fx test",
+          "why": "the test suite of @ai-sdk/harness-fx"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-fx run type-check",
+          "why": "types of @ai-sdk/harness-fx"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-github-copilot",
+      "title": "@ai-sdk/harness-github-copilot: runs the github-copilot coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-github-copilot/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-github-copilot test",
+          "why": "the test suite of @ai-sdk/harness-github-copilot"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-github-copilot run type-check",
+          "why": "types of @ai-sdk/harness-github-copilot"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-grok-build",
+      "title": "@ai-sdk/harness-grok-build: runs the grok-build coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-grok-build/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-grok-build test",
+          "why": "the test suite of @ai-sdk/harness-grok-build"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-grok-build run type-check",
+          "why": "types of @ai-sdk/harness-grok-build"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-opencode",
+      "title": "@ai-sdk/harness-opencode: runs the opencode coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-opencode/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-opencode test",
+          "why": "the test suite of @ai-sdk/harness-opencode"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-opencode run type-check",
+          "why": "types of @ai-sdk/harness-opencode"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-harness-pi",
+      "title": "@ai-sdk/harness-pi: runs the pi coding agent behind the AI SDK harness API",
+      "files": [
+        "packages/harness-pi/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/harness-pi test",
+          "why": "the test suite of @ai-sdk/harness-pi"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/harness-pi run type-check",
+          "why": "types of @ai-sdk/harness-pi"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-heygen",
+      "title": "@ai-sdk/heygen: the heygen provider",
+      "files": [
+        "packages/heygen/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/heygen test",
+          "why": "the test suite of @ai-sdk/heygen"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/heygen run type-check",
+          "why": "types of @ai-sdk/heygen"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-huggingface",
+      "title": "@ai-sdk/huggingface: the huggingface provider",
+      "files": [
+        "packages/huggingface/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/huggingface test",
+          "why": "the test suite of @ai-sdk/huggingface"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/huggingface run type-check",
+          "why": "types of @ai-sdk/huggingface"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-hume",
+      "title": "@ai-sdk/hume: the hume provider",
+      "files": [
+        "packages/hume/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/hume test",
+          "why": "the test suite of @ai-sdk/hume"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/hume run type-check",
+          "why": "types of @ai-sdk/hume"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-klingai",
+      "title": "@ai-sdk/klingai: the klingai provider",
+      "files": [
+        "packages/klingai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/klingai test",
+          "why": "the test suite of @ai-sdk/klingai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/klingai run type-check",
+          "why": "types of @ai-sdk/klingai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-langchain",
+      "title": "@ai-sdk/langchain",
+      "files": [
+        "packages/langchain/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/langchain test",
+          "why": "the test suite of @ai-sdk/langchain"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/langchain run type-check",
+          "why": "types of @ai-sdk/langchain"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-llamaindex",
+      "title": "@ai-sdk/llamaindex",
+      "files": [
+        "packages/llamaindex/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/llamaindex test",
+          "why": "the test suite of @ai-sdk/llamaindex"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/llamaindex run type-check",
+          "why": "types of @ai-sdk/llamaindex"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-luma",
+      "title": "@ai-sdk/luma: the luma provider",
+      "files": [
+        "packages/luma/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/luma test",
+          "why": "the test suite of @ai-sdk/luma"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/luma run type-check",
+          "why": "types of @ai-sdk/luma"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-mcp",
+      "title": "@ai-sdk/mcp",
+      "files": [
+        "packages/mcp/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/mcp test",
+          "why": "the test suite of @ai-sdk/mcp"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/mcp run type-check",
+          "why": "types of @ai-sdk/mcp"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-minimax",
+      "title": "@ai-sdk/minimax: the minimax provider",
+      "files": [
+        "packages/minimax/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/minimax test",
+          "why": "the test suite of @ai-sdk/minimax"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/minimax run type-check",
+          "why": "types of @ai-sdk/minimax"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-mistral",
+      "title": "@ai-sdk/mistral: the mistral provider",
+      "files": [
+        "packages/mistral/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/mistral test",
+          "why": "the test suite of @ai-sdk/mistral"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/mistral run type-check",
+          "why": "types of @ai-sdk/mistral"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-moonshotai",
+      "title": "@ai-sdk/moonshotai: the moonshotai provider",
+      "files": [
+        "packages/moonshotai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/moonshotai test",
+          "why": "the test suite of @ai-sdk/moonshotai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/moonshotai run type-check",
+          "why": "types of @ai-sdk/moonshotai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-open-responses",
+      "title": "@ai-sdk/open-responses",
+      "files": [
+        "packages/open-responses/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/open-responses test",
+          "why": "the test suite of @ai-sdk/open-responses"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/open-responses run type-check",
+          "why": "types of @ai-sdk/open-responses"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-openai",
+      "title": "@ai-sdk/openai: the openai provider",
+      "files": [
+        "packages/openai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/openai test",
+          "why": "the test suite of @ai-sdk/openai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/openai run type-check",
+          "why": "types of @ai-sdk/openai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-openai-compatible",
+      "title": "@ai-sdk/openai-compatible",
+      "files": [
+        "packages/openai-compatible/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/openai-compatible test",
+          "why": "the test suite of @ai-sdk/openai-compatible"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/openai-compatible run type-check",
+          "why": "types of @ai-sdk/openai-compatible"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-otel",
+      "title": "@ai-sdk/otel",
+      "files": [
+        "packages/otel/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/otel test",
+          "why": "the test suite of @ai-sdk/otel"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/otel run type-check",
+          "why": "types of @ai-sdk/otel"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-perplexity",
+      "title": "@ai-sdk/perplexity: the perplexity provider",
+      "files": [
+        "packages/perplexity/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/perplexity test",
+          "why": "the test suite of @ai-sdk/perplexity"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/perplexity run type-check",
+          "why": "types of @ai-sdk/perplexity"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-policy-opa",
+      "title": "@ai-sdk/policy-opa",
+      "files": [
+        "packages/policy-opa/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/policy-opa test",
+          "why": "the test suite of @ai-sdk/policy-opa"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/policy-opa run type-check",
+          "why": "types of @ai-sdk/policy-opa"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-prodia",
+      "title": "@ai-sdk/prodia: the prodia provider",
+      "files": [
+        "packages/prodia/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/prodia test",
+          "why": "the test suite of @ai-sdk/prodia"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/prodia run type-check",
+          "why": "types of @ai-sdk/prodia"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-provider",
+      "title": "@ai-sdk/provider: the model specifications (LanguageModelV4 and friends) every provider implements",
+      "files": [
+        "packages/provider/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/provider run type-check",
+          "why": "types of @ai-sdk/provider"
+        }
+      ],
+      "risks": [
+        {
+          "text": "errors extend AISDKError from @ai-sdk/provider and use the marker pattern for instanceof checks (AGENTS.md:173)"
+        }
+      ]
+    },
+    {
+      "id": "packages-provider-utils",
+      "title": "@ai-sdk/provider-utils: shared code for implementing providers (fetching, parseJSON, schemas)",
+      "files": [
+        "packages/provider-utils/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/provider-utils test",
+          "why": "the test suite of @ai-sdk/provider-utils"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/provider-utils run type-check",
+          "why": "types of @ai-sdk/provider-utils"
+        }
+      ],
+      "risks": [
+        {
+          "text": "errors extend AISDKError from @ai-sdk/provider and use the marker pattern for instanceof checks (AGENTS.md:173)"
+        }
+      ]
+    },
+    {
+      "id": "packages-quiverai",
+      "title": "@ai-sdk/quiverai: the quiverai provider",
+      "files": [
+        "packages/quiverai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/quiverai test",
+          "why": "the test suite of @ai-sdk/quiverai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/quiverai run type-check",
+          "why": "types of @ai-sdk/quiverai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-react",
+      "title": "@ai-sdk/react: UI bindings for react",
+      "files": [
+        "packages/react/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/react test",
+          "why": "the test suite of @ai-sdk/react"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/react run type-check",
+          "why": "types of @ai-sdk/react"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-replicate",
+      "title": "@ai-sdk/replicate: the replicate provider",
+      "files": [
+        "packages/replicate/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/replicate test",
+          "why": "the test suite of @ai-sdk/replicate"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/replicate run type-check",
+          "why": "types of @ai-sdk/replicate"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-revai",
+      "title": "@ai-sdk/revai: the revai provider",
+      "files": [
+        "packages/revai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/revai test",
+          "why": "the test suite of @ai-sdk/revai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/revai run type-check",
+          "why": "types of @ai-sdk/revai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-rsc",
+      "title": "@ai-sdk/rsc: UI bindings for rsc",
+      "files": [
+        "packages/rsc/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/rsc test",
+          "why": "the test suite of @ai-sdk/rsc"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/rsc run type-check",
+          "why": "types of @ai-sdk/rsc"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-sandbox-just-bash",
+      "title": "TODO: what packages/sandbox-just-bash/** is for",
+      "files": [
+        "packages/sandbox-just-bash/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/sandbox-just-bash test",
+          "why": "the test suite of @ai-sdk/sandbox-just-bash"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/sandbox-just-bash run type-check",
+          "why": "types of @ai-sdk/sandbox-just-bash"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-sandbox-vercel",
+      "title": "TODO: what packages/sandbox-vercel/** is for",
+      "files": [
+        "packages/sandbox-vercel/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/sandbox-vercel test",
+          "why": "the test suite of @ai-sdk/sandbox-vercel"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/sandbox-vercel run type-check",
+          "why": "types of @ai-sdk/sandbox-vercel"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-svelte",
+      "title": "@ai-sdk/svelte: UI bindings for svelte",
+      "files": [
+        "packages/svelte/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/svelte test",
+          "why": "the test suite of @ai-sdk/svelte"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/svelte run type-check",
+          "why": "types of @ai-sdk/svelte"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-test-server",
+      "title": "@ai-sdk/test-server",
+      "files": [
+        "packages/test-server/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/test-server test",
+          "why": "the test suite of @ai-sdk/test-server"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/test-server run type-check",
+          "why": "types of @ai-sdk/test-server"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-togetherai",
+      "title": "@ai-sdk/togetherai: the togetherai provider",
+      "files": [
+        "packages/togetherai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/togetherai test",
+          "why": "the test suite of @ai-sdk/togetherai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/togetherai run type-check",
+          "why": "types of @ai-sdk/togetherai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-tool-bash",
+      "title": "@ai-sdk/tool-bash: Provider-independent bash tool for the AI SDK",
+      "files": [
+        "packages/tool-bash/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/tool-bash test",
+          "why": "the test suite of @ai-sdk/tool-bash"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/tool-bash run type-check",
+          "why": "types of @ai-sdk/tool-bash"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-tool-web-fetch",
+      "title": "@ai-sdk/tool-web-fetch: Provider-independent web fetch tool for the AI SDK",
+      "files": [
+        "packages/tool-web-fetch/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/tool-web-fetch test",
+          "why": "the test suite of @ai-sdk/tool-web-fetch"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/tool-web-fetch run type-check",
+          "why": "types of @ai-sdk/tool-web-fetch"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-topaz",
+      "title": "@ai-sdk/topaz: the topaz provider",
+      "files": [
+        "packages/topaz/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/topaz test",
+          "why": "the test suite of @ai-sdk/topaz"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/topaz run type-check",
+          "why": "types of @ai-sdk/topaz"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-tui",
+      "title": "@ai-sdk/tui: Run AI SDK agents in a terminal UI.",
+      "files": [
+        "packages/tui/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/tui test",
+          "why": "the test suite of @ai-sdk/tui"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/tui run type-check",
+          "why": "types of @ai-sdk/tui"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-typesafe-ai",
+      "title": "@ai-sdk/typesafe-ai: the typesafe-ai provider",
+      "files": [
+        "packages/typesafe-ai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/typesafe-ai test",
+          "why": "the test suite of @ai-sdk/typesafe-ai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/typesafe-ai run type-check",
+          "why": "types of @ai-sdk/typesafe-ai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-valibot",
+      "title": "@ai-sdk/valibot",
+      "files": [
+        "packages/valibot/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/valibot run type-check",
+          "why": "types of @ai-sdk/valibot"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-voyage",
+      "title": "@ai-sdk/voyage: the voyage provider",
+      "files": [
+        "packages/voyage/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/voyage test",
+          "why": "the test suite of @ai-sdk/voyage"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/voyage run type-check",
+          "why": "types of @ai-sdk/voyage"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-vue",
+      "title": "@ai-sdk/vue: UI bindings for vue",
+      "files": [
+        "packages/vue/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/vue test",
+          "why": "the test suite of @ai-sdk/vue"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/vue run type-check",
+          "why": "types of @ai-sdk/vue"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-workflow",
+      "title": "@ai-sdk/workflow: WorkflowAgent for building AI agents with AI SDK",
+      "files": [
+        "packages/workflow/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/workflow test",
+          "why": "the test suite of @ai-sdk/workflow"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/workflow run type-check",
+          "why": "types of @ai-sdk/workflow"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-workflow-harness",
+      "title": "@ai-sdk/workflow-harness",
+      "files": [
+        "packages/workflow-harness/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/workflow-harness test",
+          "why": "the test suite of @ai-sdk/workflow-harness"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/workflow-harness run type-check",
+          "why": "types of @ai-sdk/workflow-harness"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-xai",
+      "title": "@ai-sdk/xai: the xai provider",
+      "files": [
+        "packages/xai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/xai test",
+          "why": "the test suite of @ai-sdk/xai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/xai run type-check",
+          "why": "types of @ai-sdk/xai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "packages-zai",
+      "title": "@ai-sdk/zai: The Z.AI provider for the AI SDK contains language model support for Z.AI's GLM models.",
+      "files": [
+        "packages/zai/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @ai-sdk/zai test",
+          "why": "the test suite of @ai-sdk/zai"
+        },
+        {
+          "run": "pnpm --filter @ai-sdk/zai run type-check",
+          "why": "types of @ai-sdk/zai"
+        }
+      ],
+      "risks": [
+        {
+          "text": "response schemas use .nullish() and only the properties you need; provider options schemas use .optional() and stay as restrictive as possible (AGENTS.md:229-237)"
+        }
+      ]
+    },
+    {
+      "id": "root",
+      "title": "workspace root: manifests, tsconfig references, lint and format config",
+      "files": [
+        ".gitignore",
+        ".kodiak.toml",
+        ".npmrc",
+        ".oxfmtrc.jsonc",
+        ".oxlintrc.json",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "socket.yaml",
+        "tsconfig.json",
+        "tsconfig.with-examples.json",
+        "turbo.json"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        },
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": [
+        {
+          "text": "a new package goes in packages/<name> and into the root tsconfig.json references; dependencies between packages need pnpm update-references (AGENTS.md:251-255)",
+          "files": [
+            "tsconfig.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "skills",
+      "title": "agent skills shipped with the repo",
+      "files": [
+        "skills/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "tools",
+      "title": "repo tooling",
+      "files": [
+        "tools/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "vscode",
+      "title": "editor settings",
+      "files": [
+        ".vscode/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm run type-check",
+          "why": "types"
+        }
+      ],
+      "risks": []
+    }
+  ],
+  "rules": [
+    {
+      "id": "no-json-parse",
+      "rule": "production code never calls JSON.parse directly; it uses parseJSON or safeParseJSON from @ai-sdk/provider-utils",
+      "why": "security (AGENTS.md:151-154)",
+      "files": [
+        "packages/*/src/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm check"
+        }
+      ]
+    },
+    {
+      "id": "validate-url",
+      "rule": "every getFromApi call sets validateUrl explicitly: true for URLs from a provider response body, false only for URLs built from a configured baseURL; pass credentialedOrigin when the first hop may carry the API key",
+      "why": "omitting it skips validation; the ai-sdk/require-validate-url oxlint rule fails pnpm check (AGENTS.md:239-249, contributing/secure-url-handling.md)",
+      "files": [
+        "packages/*/src/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm check"
+        }
+      ]
+    },
+    {
+      "id": "changeset-per-pr",
+      "rule": "every PR that changes production code under packages/ carries a patch changeset",
+      "why": "AGENTS.md:270",
+      "files": [
+        "packages/*/src/**",
+        ".changeset/**"
+      ]
+    },
+    {
+      "id": "public-api-docs",
+      "rule": "a public API change updates the documentation in content/docs in the same PR",
+      "why": "AGENTS.md:322",
+      "files": [
+        "packages/ai/src/**",
+        "packages/provider/src/**",
+        "content/docs/**"
+      ]
+    },
+    {
+      "id": "type-check-full",
+      "rule": "after a change, the whole workspace type-checks, examples included",
+      "why": "AGENTS.md:156-164",
+      "files": [
+        "packages/*/src/**",
+        "examples/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm type-check:full"
+        }
+      ]
+    },
+    {
+      "id": "zod-imports",
+      "rule": "Zod 3 only through zod/v3 for compatibility code, Zod 4 through zod/v4 with z4.core.$ZodType for type references",
+      "why": "the SDK supports both (AGENTS.md:138-149)",
+      "files": [
+        "packages/*/src/**"
+      ]
+    }
+  ],
+  "ignore": []
+}
