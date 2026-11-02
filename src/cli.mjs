@@ -202,10 +202,24 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
   }
 }
 
+// The check commands of the map as the base branch has it. The Stop hook runs a command without anyone asking, so it
+// runs only these: a command a branch adds or changes in the map is repository content nobody has merged yet.
+function trustedRuns(root) {
+  try {
+    const { ref } = changedFiles(root);
+    const since = git(root, 'merge-base', ref, 'HEAD').trim();
+    const map = JSON.parse(git(root, 'show', `${since}:${MAP_PATH}`));
+    return new Set([...(map.groups ?? []), ...(map.rules ?? [])].flatMap((x) => (x.checks ?? []).map((c) => c.run)));
+  } catch {
+    return new Set();
+  }
+}
+
 // Claude Code Stop hook (opt-in, `hook --install --verify`): before Claude Code ends its turn, run the map's checks for the
 // files it edited in this session that are still changed. A failing check blocks the stop once, with the failure as the
 // reason, so the agent fixes it; on the second stop of the same turn it lets go, so a check it cannot fix never traps
-// the session. Nothing edited, nothing changed or no checks: no output.
+// the session. Only commands the base branch's map already lists run; others are named for `readfirst verify`, which
+// someone runs on purpose. Nothing edited, nothing changed or no checks: no output.
 export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) {
   let event;
   try { event = JSON.parse(input); } catch { return null; }
@@ -225,11 +239,14 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     if (mapProblems(map, files, { placement: false }).length) return null;
     const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, limit: 1 });
     if (!list.checks.length) return null;
-    const result = verifyChecks(root, list.checks, { timeout });
+    const trusted = trustedRuns(root);
+    const skipped = list.checks.filter((c) => !trusted.has(c.run)).map((c) => c.run);
+    const result = verifyChecks(root, list.checks.filter((c) => trusted.has(c.run)), { timeout });
     const failed = result.filter((c) => c.status !== 'pass');
-    if (!failed.length) return JSON.stringify({ systemMessage: `readfirst verify: ${result.length} check(s) passed for ${targets.length} edited file(s)` });
+    const notRun = skipped.length ? ` Not run, because the base branch's map does not list them yet: ${skipped.map((r) => `\`${r}\``).join(', ')}; run \`npx readfirst verify\` to run them on purpose.` : '';
+    if (!failed.length) return JSON.stringify({ systemMessage: `readfirst verify: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}` });
     const reason = [
-      `readfirst verify: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.`,
+      `readfirst verify: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}`,
       ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}`),
     ].join('\n');
     return JSON.stringify({ decision: 'block', reason });

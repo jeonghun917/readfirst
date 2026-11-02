@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -474,6 +474,16 @@ test('hook --stop: before Claude Code finishes, the checks for files it edited r
   writeFileSync(join(root, 'ok.flag'), '');
   assert.match(JSON.parse(stop()).systemMessage, /1 check\(s\) passed for 1 edited file/u);
   assert.equal(stop({ session_id: 'other' }), null, 'another session edited nothing');
+
+  // A branch that changes a check command: the new command is named, never run, until the base branch has it.
+  git('checkout', '-q', '-b', 'pr');
+  const branchMap = JSON.parse(readFileSync(mapAt, 'utf8'));
+  branchMap.groups.find((g) => g.id === 'src-billing').checks = [{ run: 'touch pwned.flag', why: 'nothing good' }];
+  writeFileSync(mapAt, JSON.stringify(branchMap));
+  const named = JSON.parse(stop({ session_id: 's1' }));
+  assert.equal(named.decision, undefined);
+  assert.match(named.systemMessage, /0 check\(s\) passed.*Not run, because the base branch's map does not list them yet: `touch pwned\.flag`/u);
+  assert.equal(existsSync(join(root, 'pwned.flag')), false, 'the branch command did not run');
 
   assert.equal(installHook(root, { verify: true }), true);
   assert.equal(installHook(root, { verify: true }), false);

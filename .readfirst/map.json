@@ -30,7 +30,7 @@
           ]
         },
         {
-          "text": "parse() treats every --option except --json, --help, --force, --agent, --install and --dry-run as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
+          "text": "parse() treats every --option except --json, --help, --force, --agent, --install, --dry-run, --strict, --verify and --stop as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
           "files": [
             "src/cli.mjs"
           ]
@@ -52,7 +52,7 @@
           "text": "runHook swallows every error and returns null (exit 0, no output), so a bug in it looks the same as 'nothing to say' and the edit goes ahead; only a test with real map data would catch it. It also uses repoFiles, readMapFile and mapProblems, so changes there change the hook"
         },
         {
-          "text": "verify runs the map's check commands with the shell in the repository root; it must stay an explicit command, never called from the hook or the Action, because a map is repository content and its commands run with the user's rights",
+          "text": "verify runs the map's check commands with the shell in the repository root; a map is repository content and its commands run with the user's rights, so verify stays an explicit command, never called from the PreToolUse hook or the Action. The one exception is the opt-in Stop hook (`hook --install --verify`), and it runs only commands the base branch's map already lists (trustedRuns): a command a branch adds or changes is named, never run, so checking out someone's branch cannot run their new command",
           "files": [
             "src/cli.mjs"
           ]
@@ -338,7 +338,7 @@
     },
     {
       "id": "only-init-and-fix-write",
-      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; check, prompt (with or without --labels), read, diff and the mcp server never change the checkout; verify writes nothing itself and only runs the commands the map lists, which may write as they would when run by hand",
+      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; `hook --stop` writes nothing itself and runs only the base branch's check commands, like verify; check, prompt (with or without --labels), read, diff and the mcp server never change the checkout; verify writes nothing itself and only runs the commands the map lists, which may write as they would when run by hand",
       "why": "agents run read and diff freely before every change, and the hook runs before every edit, so it must not touch the working tree",
       "files": [
         "src/cli.mjs"
