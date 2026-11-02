@@ -1,0 +1,819 @@
+{
+  "format": "readfirst/map@1",
+  "groups": [
+    {
+      "id": "agents",
+      "title": "rules, skills and the knowledge base for coding agents",
+      "files": [
+        "agents/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "apps-api",
+      "title": "public API v1 and v2 (NestJS)",
+      "files": [
+        "apps/api/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": [
+        {
+          "text": "apps/api/v2 does not import @calcom/features or @calcom/trpc directly: its tsconfig has no path mapping for them, so re-export from packages/platform/libraries/index.ts and import @calcom/platform-libraries (AGENTS.md:193-208)",
+          "files": [
+            "apps/api/v2/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "apps-docs",
+      "title": "developer documentation site",
+      "files": [
+        "apps/docs/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-web",
+      "title": "the main Next.js app (App Router routes in apps/web/app)",
+      "files": [
+        "apps/web/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn workspace @calcom/web run type-check",
+          "why": "types of @calcom/web"
+        },
+        {
+          "run": "yarn workspace @calcom/web run lint",
+          "why": "lint rules of @calcom/web"
+        }
+      ],
+      "risks": [
+        {
+          "text": "permission checks go in page.tsx, never in layout.tsx (AGENTS.md:17)",
+          "files": [
+            "apps/web/app/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "changeset",
+      "title": "changesets",
+      "files": [
+        ".changeset/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "checks",
+      "title": "Checkly synthetic checks",
+      "files": [
+        "__checks__/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "claude",
+      "title": "Claude Code settings",
+      "files": [
+        ".claude/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "cursor",
+      "title": "Cursor rules",
+      "files": [
+        ".cursor/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "deploy",
+      "title": "deployment scripts",
+      "files": [
+        "deploy/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "docs",
+      "title": "repository docs",
+      "files": [
+        "docs/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "example-apps",
+      "title": "example apps for the platform API",
+      "files": [
+        "example-apps/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "github",
+      "title": "CI workflows",
+      "files": [
+        ".github/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "husky",
+      "title": "git hooks",
+      "files": [
+        ".husky/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "opencode",
+      "title": "opencode settings",
+      "files": [
+        ".opencode/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "packages-app-store",
+      "title": "third-party integrations (calendars, video, payments, CRMs)",
+      "files": [
+        "packages/app-store/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn workspace @calcom/app-store run type-check",
+          "why": "types of @calcom/app-store"
+        },
+        {
+          "run": "yarn workspace @calcom/app-store run lint",
+          "why": "lint rules of @calcom/app-store"
+        }
+      ],
+      "risks": [
+        {
+          "text": "*.generated.ts files are written by app-store-cli; never edit them by hand (AGENTS.md:28)"
+        }
+      ]
+    },
+    {
+      "id": "packages-app-store-cli",
+      "title": "app-store-cli: generates the *.generated.ts app registries",
+      "files": [
+        "packages/app-store-cli/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-config",
+      "title": "shared config",
+      "files": [
+        "packages/config/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-coss-ui",
+      "title": "@coss/ui components",
+      "files": [
+        "packages/coss-ui/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn workspace @coss/ui run type-check",
+          "why": "types of @coss/ui"
+        },
+        {
+          "run": "yarn workspace @coss/ui run lint",
+          "why": "lint rules of @coss/ui"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-dayjs",
+      "title": "@calcom/dayjs: Cal.diy's Day.js shared library",
+      "files": [
+        "packages/dayjs/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-debugging",
+      "title": "@calcom/debugging: Debugging utilities",
+      "files": [
+        "packages/debugging/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-emails",
+      "title": "transactional email templates",
+      "files": [
+        "packages/emails/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-embeds",
+      "title": "embed snippets and the embed runtime",
+      "files": [
+        "packages/embeds/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-features",
+      "title": "@calcom/features: Cal.diy's main collocation of features",
+      "files": [
+        "packages/features/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn workspace @calcom/features run lint",
+          "why": "lint rules of @calcom/features"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-i18n",
+      "title": "@calcom/i18n: Internationalization (i18n) utilities and translations for Cal.diy",
+      "files": [
+        "packages/i18n/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": [
+        {
+          "text": "every UI string has an entry in packages/i18n/locales/en/common.json (AGENTS.md:15)",
+          "files": [
+            "packages/i18n/locales/en/common.json"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packages-kysely",
+      "title": "Kysely database client",
+      "files": [
+        "packages/kysely/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-lib",
+      "title": "shared utilities",
+      "files": [
+        "packages/lib/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn workspace @calcom/lib run lint",
+          "why": "lint rules of @calcom/lib"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-platform",
+      "title": "platform libraries, atoms and the API v2 re-export layer",
+      "files": [
+        "packages/platform/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": [
+        {
+          "text": "packages/platform/libraries/index.ts is how apps/api/v2 reaches @calcom/features and @calcom/trpc; a new export there is what API v2 imports (AGENTS.md:197)",
+          "files": [
+            "packages/platform/libraries/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packages-prisma",
+      "title": "database schema (schema.prisma) and migrations",
+      "files": [
+        "packages/prisma/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": [
+        {
+          "text": "schema changes to packages/prisma/schema.prisma are an ask-first change (AGENTS.md:99-104)",
+          "files": [
+            "packages/prisma/schema.prisma"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packages-sms",
+      "title": "SMS sending",
+      "files": [
+        "packages/sms/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-testing",
+      "title": "test helpers",
+      "files": [
+        "packages/testing/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn workspace @calcom/testing run lint",
+          "why": "lint rules of @calcom/testing"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-trpc",
+      "title": "@calcom/trpc: Shared tRPC library for Cal.diy",
+      "files": [
+        "packages/trpc/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn workspace @calcom/trpc run lint",
+          "why": "lint rules of @calcom/trpc"
+        }
+      ],
+      "risks": [
+        {
+          "text": "TRPCError only in tRPC routers; services, repositories and utilities throw ErrorWithCode (AGENTS.md:10)"
+        }
+      ]
+    },
+    {
+      "id": "packages-tsconfig",
+      "title": "shared tsconfig bases",
+      "files": [
+        "packages/tsconfig/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-types",
+      "title": "shared types",
+      "files": [
+        "packages/types/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-ui",
+      "title": "shared UI components",
+      "files": [
+        "packages/ui/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn workspace @calcom/ui run type-check",
+          "why": "types of @calcom/ui"
+        },
+        {
+          "run": "yarn workspace @calcom/ui run lint",
+          "why": "lint rules of @calcom/ui"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "root",
+      "title": "workspace root: manifests, Biome, turbo, env samples",
+      "files": [
+        ".dockerignore",
+        ".editorconfig",
+        ".env.appStore.example",
+        ".env.example",
+        ".gitattributes",
+        ".gitignore",
+        ".gitpod.yml",
+        ".kodiak.toml",
+        ".npmrc",
+        ".yarnrc.yml",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "Dockerfile",
+        "LICENSE",
+        "PERMISSIONS.md",
+        "Procfile",
+        "README.md",
+        "SECURITY.md",
+        "SPEC-WORKFLOW.md",
+        "app.json",
+        "biome-staged.json",
+        "biome.json",
+        "checkly.config.ts",
+        "docker-compose.yml",
+        "gh.env",
+        "headless-routing-to-booking-flow.md",
+        "i18n-unused.config.js",
+        "i18n.json",
+        "i18n.lock",
+        "lint-staged.config.mjs",
+        "package.json",
+        "playwright.config.ts",
+        "setupVitest.ts",
+        "turbo.json",
+        "vitest.config.mts",
+        "vitest.workspace.ts",
+        "yarn.lock"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "scripts",
+      "title": "repo scripts",
+      "files": [
+        "scripts/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "snaplet",
+      "title": "seed data",
+      "files": [
+        ".snaplet/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "specs",
+      "title": "opt-in specs for spec-driven work",
+      "files": [
+        "specs/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "vitest-mocks",
+      "title": "shared Vitest mocks",
+      "files": [
+        "vitest-mocks/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn test",
+          "why": "the test suite"
+        },
+        {
+          "run": "yarn run type-check",
+          "why": "types"
+        },
+        {
+          "run": "yarn run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "vscode",
+      "title": "editor settings",
+      "files": [
+        ".vscode/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "well-known",
+      "title": "well-known files",
+      "files": [
+        ".well-known/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "yarn",
+      "title": "Yarn release and plugins",
+      "files": [
+        ".yarn/**"
+      ],
+      "checks": [],
+      "risks": []
+    }
+  ],
+  "rules": [
+    {
+      "id": "prisma-select",
+      "rule": "Prisma queries use select, not include",
+      "why": "include fetches every field, sensitive ones included (AGENTS.md:7, 157-179)",
+      "files": [
+        "packages/**",
+        "apps/api/**",
+        "apps/web/**"
+      ]
+    },
+    {
+      "id": "no-credential-key",
+      "rule": "credential.key is never selected into a query result or exposed in an API response",
+      "why": "AGENTS.md:26, 108",
+      "files": [
+        "packages/app-store/**",
+        "packages/features/credentials/**",
+        "packages/trpc/**",
+        "apps/api/**"
+      ]
+    },
+    {
+      "id": "no-barrel-imports",
+      "rule": "import from the source file (@calcom/ui/components/button), never from a package's index.ts barrel; types through import type",
+      "why": "AGENTS.md:8, 14, 30, 181-191",
+      "files": [
+        "apps/**",
+        "packages/**"
+      ]
+    },
+    {
+      "id": "logic-in-services",
+      "rule": "repositories only read and write data; business logic lives in services",
+      "why": "AGENTS.md:29",
+      "files": [
+        "**/*Repository.ts",
+        "**/*Service.ts"
+      ]
+    },
+    {
+      "id": "no-as-any",
+      "rule": "no as any casts",
+      "why": "AGENTS.md:25, 109",
+      "files": [
+        "apps/**",
+        "packages/**"
+      ]
+    },
+    {
+      "id": "type-check-before-push",
+      "rule": "type-check before pushing, and before calling a CI failure unrelated",
+      "why": "AGENTS.md:13, 31, 83",
+      "files": [
+        "apps/**",
+        "packages/**"
+      ],
+      "checks": [
+        {
+          "run": "yarn type-check:ci --force"
+        }
+      ]
+    }
+  ],
+  "ignore": []
+}
