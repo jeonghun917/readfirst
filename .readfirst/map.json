@@ -289,6 +289,18 @@
           ]
         }
       ]
+    },
+    {
+      "id": "examples",
+      "title": "example maps for public repositories, with sample read output",
+      "files": [
+        "examples/**"
+      ],
+      "risks": [
+        {
+          "text": "each example names the commit it was made at; regenerate the sample output when the read format changes"
+        }
+      ]
     }
   ],
   "rules": [

@@ -1,0 +1,390 @@
+{
+  "format": "readfirst/map@1",
+  "groups": [
+    {
+      "id": "wiring",
+      "title": "hooks.py: where every override, client script, bundle, patch and scheduled job is registered",
+      "files": [
+        "india_compliance/hooks.py",
+        "india_compliance/boot.py",
+        "india_compliance/install.py",
+        "india_compliance/uninstall.py",
+        "india_compliance/setup_wizard.py",
+        "india_compliance/__init__.py",
+        "india_compliance/modules.txt",
+        "india_compliance/exceptions.py"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.tests.test_patches",
+          "why": "install and patch wiring"
+        }
+      ],
+      "risks": [
+        {
+          "text": "doctype_js list order is load order: a script that calls setup_e_waybill_actions must come after e_waybill_actions.js, or the form dies with a ReferenceError and registers no handlers (.claude/skills/ic-feature-creation/SKILL.md:43)",
+          "files": [
+            "india_compliance/hooks.py"
+          ]
+        },
+        {
+          "text": "settings, state options and registered companies reach the browser through boot.py set_bootinfo; client code reads them from boot, not with frappe.call (ic-feature-creation/SKILL.md:46)",
+          "files": [
+            "india_compliance/boot.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fields-and-setters",
+      "title": "custom fields and property setters added to ERPNext doctypes",
+      "files": [
+        "india_compliance/gst_india/constants/**",
+        "india_compliance/gst_india/setup/**",
+        "india_compliance/income_tax_india/constants/**"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.tests.test_patches",
+          "why": "every patch runs on a fresh site"
+        }
+      ],
+      "risks": [
+        {
+          "text": "field names and code lists are read from these constant classes everywhere; a raw string key elsewhere is a house-rule violation (ic-feature-creation/SKILL.md:19)"
+        }
+      ]
+    },
+    {
+      "id": "patches",
+      "title": "migrations that existing sites run on bench migrate",
+      "files": [
+        "india_compliance/patches/**",
+        "india_compliance/patches.txt"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.tests.test_patches",
+          "why": "test_every_patch_runs, test_patches_exists"
+        }
+      ],
+      "risks": [
+        {
+          "text": "a line in patches.txt runs once per site; to run the same patch again the line must change, which is why create_custom_fields carries a counter (#79)",
+          "files": [
+            "india_compliance/patches.txt"
+          ]
+        },
+        {
+          "text": "[pre_model_sync] patches run before doctype JSON is synced, [post_model_sync] after; a patch reading a new field belongs after the sync",
+          "files": [
+            "india_compliance/patches.txt"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "overrides",
+      "title": "doc_events and override_* handlers on ERPNext and Frappe doctypes",
+      "files": [
+        "india_compliance/gst_india/overrides/**"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_india.overrides.test_transaction",
+          "why": "GST on every transaction type"
+        },
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_india.overrides.test_sales_invoice"
+        },
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_india.overrides.test_purchase_invoice"
+        }
+      ],
+      "risks": [
+        {
+          "text": "a hidden button is not a permission check: whatever a client script gates, the same guard must exist here on the server (ic-feature-creation/SKILL.md:29)"
+        }
+      ]
+    },
+    {
+      "id": "client",
+      "title": "Desk form scripts and front-end bundles",
+      "files": [
+        "india_compliance/gst_india/client_scripts/**",
+        "india_compliance/public/**"
+      ],
+      "checks": [
+        {
+          "run": "pre-commit run --files $(git diff --name-only origin/develop...)",
+          "why": "eslint and prettier"
+        }
+      ],
+      "risks": [
+        {
+          "text": "one file per doctype with const DOCTYPE at the top; link filters go in setup(frm) through frm.set_query, not refresh (ic-feature-creation/SKILL.md:41,48)",
+          "files": [
+            "india_compliance/gst_india/client_scripts/**"
+          ]
+        },
+        {
+          "text": "every user-facing string goes through __() / _() (ic-feature-creation/SKILL.md:49)"
+        }
+      ]
+    },
+    {
+      "id": "e-docs",
+      "title": "e-invoice, e-waybill, GSTIN lookups and the GSP/NIC API clients",
+      "files": [
+        "india_compliance/gst_india/api_classes/**",
+        "india_compliance/gst_india/utils/e_invoice.py",
+        "india_compliance/gst_india/utils/e_waybill.py",
+        "india_compliance/gst_india/utils/gstin_info.py",
+        "india_compliance/gst_india/utils/cryptography.py",
+        "india_compliance/gst_india/utils/api.py",
+        "india_compliance/gst_india/utils/test_e_invoice.py",
+        "india_compliance/gst_india/utils/test_e_invoice_e_waybill_workflow.py",
+        "india_compliance/gst_india/utils/test_e_waybill.py",
+        "india_compliance/gst_india/utils/test_gstin_info.py",
+        "india_compliance/gst_india/utils/test_gstin_permission.py"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_india.utils.test_e_invoice_e_waybill_workflow",
+          "why": "the whole user workflow"
+        },
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_india.utils.test_e_waybill"
+        },
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_india.utils.test_e_invoice"
+        }
+      ],
+      "risks": [
+        {
+          "text": "tests mock NIC/GSP with responses; a test must never hit a real API (ic-feature-creation/SKILL.md:60)"
+        }
+      ]
+    },
+    {
+      "id": "gst-returns",
+      "title": "GSTR-1, GSTR-2A/2B, GSTR-3B, ITC-04 data and the shared mapping steps",
+      "files": [
+        "india_compliance/gst_returns/**",
+        "india_compliance/gst_india/utils/gstr_1/**",
+        "india_compliance/gst_india/utils/gstr_2/**",
+        "india_compliance/gst_india/utils/gstr3b/**",
+        "india_compliance/gst_india/utils/itc_04/**",
+        "india_compliance/gst_india/utils/gstr_utils.py",
+        "india_compliance/gst_india/utils/gstr_mapper_utils.py"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_returns.test_steps"
+        },
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_returns.test_frappe_free"
+        }
+      ],
+      "risks": [
+        {
+          "text": "a new return section is a mapping table plus the shared take/pick/decode steps from gst_returns/steps.py, not new code; see gst_india/utils/gstr_2/sections/isd.py (ic-feature-creation/SKILL.md:16)"
+        }
+      ]
+    },
+    {
+      "id": "gst-utils",
+      "title": "tax computation on transactions, ISD, ITC claims and shared GST helpers",
+      "files": [
+        "india_compliance/gst_india/utils/__init__.py",
+        "india_compliance/gst_india/utils/custom_transaction_controller.py",
+        "india_compliance/gst_india/utils/exporter.py",
+        "india_compliance/gst_india/utils/isd.py",
+        "india_compliance/gst_india/utils/isd_controller.py",
+        "india_compliance/gst_india/utils/itc_claim.py",
+        "india_compliance/gst_india/utils/jinja.py",
+        "india_compliance/gst_india/utils/taxes_controller.py",
+        "india_compliance/gst_india/utils/test_exporter.py",
+        "india_compliance/gst_india/utils/test_itc_claim.py",
+        "india_compliance/gst_india/utils/test_utils.py",
+        "india_compliance/gst_india/utils/tests.py",
+        "india_compliance/gst_india/utils/transaction_data.py"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_india.utils.test_utils"
+        },
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_india.overrides.test_transaction",
+          "why": "taxes_controller feeds every transaction"
+        }
+      ],
+      "risks": [
+        {
+          "text": "one call site \u2192 inline it; don't grow gst_india/utils/__init__.py for a single caller (ic-feature-creation/SKILL.md:26)",
+          "files": [
+            "india_compliance/gst_india/utils/__init__.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gst-other",
+      "title": "GST doctypes, reports, print formats and the remaining GST utilities",
+      "files": [
+        "india_compliance/gst_india/data/**",
+        "india_compliance/gst_india/doctype/**",
+        "india_compliance/gst_india/number_card/**",
+        "india_compliance/gst_india/page/**",
+        "india_compliance/gst_india/print_format/**",
+        "india_compliance/gst_india/report/**",
+        "india_compliance/gst_india/web_template/**",
+        "india_compliance/gst_india/workspace/**",
+        "india_compliance/gst_india/__init__.py",
+        "india_compliance/gst_india/uninstall.py"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.gst_india.doctype.gst_return_export.test_returns_export"
+        }
+      ],
+      "risks": [
+        {
+          "text": "report SQL runs on MariaDB and PostgreSQL; the PostgreSQL job only runs when the PR has the postgres label (.github/POSTGRES_COMPATIBILITY.md:5)",
+          "files": [
+            "india_compliance/gst_india/report/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "income-tax",
+      "title": "TDS, income tax reports and Schedule III templates",
+      "files": [
+        "india_compliance/income_tax_india/__init__.py",
+        "india_compliance/income_tax_india/data/**",
+        "india_compliance/income_tax_india/doctype/**",
+        "india_compliance/income_tax_india/financial_report_template/**",
+        "india_compliance/income_tax_india/overrides/**",
+        "india_compliance/income_tax_india/report/**",
+        "india_compliance/income_tax_india/setup.py",
+        "india_compliance/income_tax_india/uninstall.py",
+        "india_compliance/income_tax_india/workspace/**"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.income_tax_india.financial_report_template.test_schedule_iii"
+        }
+      ]
+    },
+    {
+      "id": "audit-trail",
+      "title": "audit trail: locks on custom fields, property setters and versions",
+      "files": [
+        "india_compliance/audit_trail/**"
+      ],
+      "checks": [
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.audit_trail.overrides.test_custom_field"
+        },
+        {
+          "run": "bench --site test_site run-tests --app india_compliance --module india_compliance.audit_trail.overrides.test_property_setter"
+        }
+      ]
+    },
+    {
+      "id": "other-modules",
+      "title": "VAT, shared utils, workspace, templates and web pages",
+      "files": [
+        "india_compliance/vat_india/**",
+        "india_compliance/utils/**",
+        "india_compliance/config/**",
+        "india_compliance/desktop_icon/**",
+        "india_compliance/templates/**",
+        "india_compliance/workspace_sidebar/**",
+        "india_compliance/www/**"
+      ]
+    },
+    {
+      "id": "tests",
+      "title": "shared test helpers and records",
+      "files": [
+        "india_compliance/tests/**"
+      ],
+      "risks": [
+        {
+          "text": "test data lives in setup and tests/test_records.json, not inline dicts in assertions (ic-feature-creation/SKILL.md:56)"
+        }
+      ]
+    },
+    {
+      "id": "tooling",
+      "title": "CI, agent rules, lint and packaging",
+      "files": [
+        ".github/**",
+        ".claude/**",
+        ".greptile/**",
+        "*"
+      ],
+      "risks": [
+        {
+          "text": "CLAUDE.md stays under 80 lines; a rule longer than 3 lines becomes a skill under .claude/skills/ (CLAUDE.md:5)",
+          "files": [
+            "CLAUDE.md"
+          ]
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "bump-field-patch",
+      "rule": "a new or changed custom field or property setter bumps the numbered create_custom_fields / create_property_setters line in patches.txt",
+      "why": "existing sites never receive the field otherwise (ic-feature-creation/SKILL.md:31)",
+      "files": [
+        "india_compliance/gst_india/constants/custom_fields.py",
+        "india_compliance/gst_india/setup/property_setters.py",
+        "india_compliance/income_tax_india/constants/custom_fields.py",
+        "india_compliance/patches.txt"
+      ]
+    },
+    {
+      "id": "extend-dont-fork",
+      "rule": "ERPNext or Frappe behaviour changes through a doc_events / override_* entry in hooks.py pointing at gst_india/overrides/; never edit another app",
+      "why": "the app extends ERPNext and never forks it (AGENTS.md:3, ic-feature-creation/SKILL.md:21)",
+      "files": [
+        "india_compliance/hooks.py",
+        "india_compliance/gst_india/overrides/**"
+      ]
+    },
+    {
+      "id": "mariadb-unchanged",
+      "rule": "a query change must not change MariaDB's values, row count or ordering; PostgreSQL is brought in line with MariaDB, never the reverse",
+      "why": "silent divergences pass CI on one engine and break only on PostgreSQL sites (.github/POSTGRES_COMPATIBILITY.md:15)",
+      "files": [
+        "india_compliance/gst_india/report/**",
+        "india_compliance/income_tax_india/report/**",
+        "india_compliance/gst_india/utils/**",
+        "india_compliance/gst_returns/**"
+      ]
+    },
+    {
+      "id": "fix-shared-place",
+      "rule": "find every caller and fix the shared place once, not the reported path",
+      "why": "AGENTS.md:21",
+      "files": [
+        "india_compliance/gst_india/utils/**",
+        "india_compliance/utils/**"
+      ]
+    },
+    {
+      "id": "workflow-test",
+      "rule": "a new feature gets one test walking the whole user workflow; a later bug appends a case to it",
+      "why": "ic-feature-creation/SKILL.md:53",
+      "files": [
+        "india_compliance/**/test_*.py"
+      ]
+    }
+  ],
+  "ignore": []
+}
