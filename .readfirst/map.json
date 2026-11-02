@@ -197,6 +197,9 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "hotspots are checked only for shape: the file must be tracked and named rules must exist, but check and fix never compare the symbol or line with the file's contents. fix drops a hot spot only when its file is gone, so a hot spot's line number goes stale as the code moves and read prints it as given"
         }
       ]
     },
