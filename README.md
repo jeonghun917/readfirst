@@ -10,6 +10,8 @@ knowledge in one file next to the code and hands it out, file by file, at the mo
 
 No server, no account, no model calls. It reads your git checkout and `.readfirst/map.json`.
 
+Filled maps for real repositories (vercel/ai, cal.com, excalidraw and two more), with sample output: [examples/](examples/).
+
 ## Start
 
 Any language; needs Node 20+ for `npx`.
@@ -76,6 +78,8 @@ choose to).
 ```sh
 npx readfirst view               # the map as a city in one HTML page: .readfirst/local/view.html
 ```
+
+![vercel/ai as a city: each workspace package is a neighbourhood, and the panel shows the rules for one file](docs/readfirst-city.jpg)
 
 Groups are neighbourhoods, files are buildings (taller when more code depends on them), and traffic between
 neighbourhoods is the imports between them. A red-lit building has a risk on it; an amber one is under a rule. Point at a

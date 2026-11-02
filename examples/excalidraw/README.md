@@ -2,6 +2,8 @@
 
 [excalidraw/excalidraw](https://github.com/excalidraw/excalidraw) at `8bcdca4`. 1,328 files in 18 groups, 3 rules.
 
+![excalidraw's main package, with its snapshot warning and rules in the panel](city.jpg)
+
 Where it came from:
 - `CLAUDE.md` and `AGENTS.md`: package vs app work, snapshot tests, `ownerDocument`, `Merge`
 - `package.json` dependencies: which package may import which

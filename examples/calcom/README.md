@@ -2,6 +2,8 @@
 
 [calcom/cal.com](https://github.com/calcom/cal.com) at `793293c`. 7,711 files in 42 groups, 6 rules.
 
+![cal.com's app store up close: 1,570 files, with the generated-files warning in the panel](city.jpg)
+
 Where it came from:
 - `AGENTS.md`: Prisma `select`, `credential.key`, barrel imports, repositories vs services, API v2 imports through platform-libraries, generated app-store files, permission checks in `page.tsx`
 - checks: each workspace's own scripts through `yarn workspace`, plus `yarn type-check:ci --force`
