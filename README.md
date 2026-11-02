@@ -226,7 +226,11 @@ Everything above is free and stays free. The GitHub App adds the parts that take
   citing the file and line it came from. Free once per account, for repositories up to 200 files.
 - **Pro, $19/month:** fills for up to 3 private repositories that also read where the code broke before and the known
   traps of its libraries; after each merge, a small PR when the map needs it; on every pull request, a comment on the
-  files it touches that broke before. [Get Pro](https://readfirst-cloud.vercel.app/#pricing).
+  lines that look like they break a rule in your map and the files it touches that broke before.
+  [Get Pro](https://readfirst-cloud.vercel.app/#pricing).
+- **Map setup, $290 once:** we write the first maps for up to 3 repositories from your code, its history, your docs and
+  a short email Q&A, and send them as pull requests with the Action and your agent's setup. No calls; 5 business days;
+  first month of Pro included. [Book a setup](https://readfirst-cloud.vercel.app/#pricing).
 
 The CLI, hook, MCP server and Action never send your code anywhere. What the app reads and keeps is listed on
 [the site](https://readfirst-cloud.vercel.app/#your-code).
