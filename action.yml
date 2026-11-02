@@ -17,6 +17,9 @@ inputs:
   strict:
     description: '"true" also fails when new files are only placed by their neighbours, not yet written in the map.'
     default: 'false'
+  auto-fix:
+    description: '"true" commits what `readfirst fix` settles (new files placed by their neighbours) to the PR branch. Needs contents write. Not on PRs from forks.'
+    default: 'false'
   limit:
     description: Most tests and users listed per section.
     default: '30'
@@ -31,3 +34,4 @@ runs:
         INPUT_FAIL_ON_MAP_PROBLEMS: ${{ inputs.fail-on-map-problems }}
         INPUT_LIMIT: ${{ inputs.limit }}
         INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_AUTO_FIX: ${{ inputs.auto-fix }}

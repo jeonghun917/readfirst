@@ -30,12 +30,14 @@ async function pages(fetchImpl, env, path) {
   return all;
 }
 
-export function commentBody({ list, problems, removed, commit, fixes = [], settled = [] }) {
+export function commentBody({ list, problems, removed, commit, fixes = [], settled = [], committed = null }) {
   const parts = [MARKER, '## readfirst', ''];
   if (problems.length) {
     parts.push(`> [!WARNING]\n> \`${MAP_PATH}\` no longer matches the code (${problems.length} problem${problems.length > 1 ? 's' : ''}). Run \`npx readfirst check\` and fix the map in this PR.`, '');
     parts.push(...problems.slice(0, 20).map((p) => `- ${p}`), ...(problems.length > 20 ? [`- …and ${problems.length - 20} more`] : []), '');
     if (fixes.length) parts.push('`npx readfirst fix` would make these changes:', ...fixes.slice(0, 10).map((f) => `- ${f}`), ...(fixes.length > 10 ? [`- …and ${fixes.length - 10} more`] : []), '');
+  } else if (committed) {
+    parts.push(`<details><summary>readfirst placed ${settled.length} new file(s) in the map and committed it to this branch (${committed.slice(0, 7)})</summary>`, '', ...settled.slice(0, 20).map((f) => `- ${f}`), ...(settled.length > 20 ? [`- …and ${settled.length - 20} more`] : []), '', 'Pull before your next push.', '</details>', '');
   } else if (settled.length) {
     parts.push(`<details><summary>New files placed by their neighbours (${settled.length})</summary>`, '', ...settled.slice(0, 20).map((f) => `- ${f}`), ...(settled.length > 20 ? [`- …and ${settled.length - 20} more`] : []), '', '`npx readfirst fix` writes this into the map; nothing to do for this PR.', '</details>', '');
   }
@@ -72,13 +74,16 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   }
   const repo = env.GITHUB_REPOSITORY;
   const changed = await pages(fetchImpl, env, `/repos/${repo}/pulls/${pr.number}/files`);
+  const committed = (env['INPUT_AUTO-FIX'] ?? env.INPUT_AUTO_FIX ?? 'false') === 'true' && settled.length
+    ? await commitFix({ fetchImpl, env, repo, pr, raw, fixed: map, settled, log })
+    : null;
   const removed = changed.filter((f) => f.status === 'removed').map((f) => f.filename);
   const targets = changed.filter((f) => f.status !== 'removed').map((f) => f.filename);
   // A broken map still gets a comment (the problems), but no read list from it.
   const list = targets.length && !problems.length
     ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30) })
     : null;
-  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled });
+  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled, committed });
   summary(body);
 
   if ((env.INPUT_COMMENT ?? 'true') !== 'false') {
@@ -95,7 +100,39 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
     }
   }
   if (problems.length) log(`${MAP_PATH} has ${problems.length} problem(s):\n- ${problems.join('\n- ')}`);
-  return { ok: !(problems.length && failOnProblems), problems, list, body };
+  return { ok: !(problems.length && failOnProblems), problems, list, body, committed };
+}
+
+// auto-fix: write what `readfirst fix` settles (new files placed by their neighbours, patterns for deleted files) into
+// the map on the PR's branch, as one commit through the contents API. Only the mechanical part, never anything a person
+// has to decide; only on a branch of this repository; only when the branch's map is the one this run read, so a push in
+// between is never overwritten. Returns the new commit's sha, or null with a warning.
+async function commitFix({ fetchImpl, env, repo, pr, raw, fixed, settled, log }) {
+  if (pr.head?.repo?.full_name !== repo || !pr.head?.ref) {
+    log('::warning::readfirst auto-fix: this PR comes from a fork, so the map update stays a suggestion in the comment.');
+    return null;
+  }
+  const path = MAP_PATH.split('/').map(encodeURIComponent).join('/');
+  try {
+    const now = await api(fetchImpl, env, 'GET', `/repos/${repo}/contents/${path}?ref=${encodeURIComponent(pr.head.ref)}`);
+    let onBranch = null;
+    try { onBranch = JSON.parse(Buffer.from(now.content ?? '', 'base64').toString('utf8')); } catch { onBranch = null; }
+    if (JSON.stringify(onBranch) !== JSON.stringify(raw)) {
+      log('::warning::readfirst auto-fix: the map on the branch differs from the one this run read (a newer push, or the base changed it); nothing committed.');
+      return null;
+    }
+    const res = await api(fetchImpl, env, 'PUT', `/repos/${repo}/contents/${path}`, {
+      message: `readfirst fix: place ${settled.length} new file(s) in the map`,
+      content: Buffer.from(`${JSON.stringify(fixed, null, 2)}\n`, 'utf8').toString('base64'),
+      sha: now.sha,
+      branch: pr.head.ref,
+    });
+    log(`readfirst auto-fix: committed the map update to ${pr.head.ref}`);
+    return res?.commit?.sha ?? 'committed';
+  } catch (e) {
+    log(`::warning::readfirst auto-fix could not commit (${/: 403 /u.test(e.message) ? 'the token needs contents: write' : e.message.slice(0, 200)}); the comment says what \`npx readfirst fix\` would change.`);
+    return null;
+  }
 }
 
 if (process.argv[1]?.endsWith('/src/action.mjs')) {

@@ -37,7 +37,7 @@ function setup({ map = (m) => m, extra = {} } = {}) {
   return { root, event };
 }
 
-function fakeGitHub({ comments = [], files, denyWrite = false }) {
+function fakeGitHub({ comments = [], files, denyWrite = false, mapOnBranch = null }) {
   const calls = [];
   const fetchImpl = async (url, init) => {
     const u = new URL(url);
@@ -45,6 +45,8 @@ function fakeGitHub({ comments = [], files, denyWrite = false }) {
     const json = (v, status = 200) => ({ ok: status < 300, status, json: async () => v, text: async () => JSON.stringify(v) });
     if (init.method === 'GET' && u.pathname.endsWith('/pulls/7/files')) return json(u.searchParams.get('page') === '1' ? files : []);
     if (init.method === 'GET' && u.pathname.endsWith('/issues/7/comments')) return json(u.searchParams.get('page') === '1' ? comments : []);
+    if (init.method === 'GET' && u.pathname.endsWith('/contents/.readfirst/map.json')) return json({ sha: 'blob1', content: Buffer.from(mapOnBranch ?? '').toString('base64') });
+    if (init.method === 'PUT' && !denyWrite) return json({ commit: { sha: 'c0ffee1234567' } });
     if (denyWrite) return json({ message: 'Resource not accessible by integration' }, 403);
     return json({ id: 1 }, init.method === 'POST' ? 201 : 200);
   };
@@ -122,4 +124,40 @@ test('comment: when the map is stale, it says what `readfirst fix` would change'
   const body = commentBody({ list: null, problems: ['1 file(s) in no group and not ignored: src/new.js'], removed: [], commit: 'abc1234', fixes: ['groups.src: added src/new.js'] });
   assert.match(body, /`npx readfirst fix` would make these changes:\n- groups.src: added src\/new.js/u);
   assert.doesNotMatch(commentBody({ list: null, problems: ['x'], removed: [], commit: null }), /readfirst fix/u);
+});
+
+test('auto-fix: what fix settles is committed to the PR branch, only from this repository and only over the map it read', async () => {
+  const map = (m) => { m.groups.find((g) => g.id === 'src-util').files = ['src/util/cents.js']; return m; };
+  const { root, event } = setup({ map, extra: { 'src/util/round.js': "import { cents } from './cents.js';\n" } });
+  const onBranch = readFileSync(join(root, '.readfirst/map.json'), 'utf8');
+  writeFileSync(event, JSON.stringify({ pull_request: { number: 7, head: { sha: 'abcdef1234567', ref: 'feat/round', repo: { full_name: 'o/r' } } } }));
+  const files = [{ filename: 'src/util/round.js', status: 'added' }];
+  const on = { INPUT_AUTO_FIX: 'true' };
+
+  const gh = fakeGitHub({ files, mapOnBranch: onBranch });
+  const r = await runAction({ env: envFor(root, event, on), fetchImpl: gh.fetchImpl, log: () => {} });
+  assert.equal(r.ok, true);
+  const put = gh.calls.find((c) => c.method === 'PUT');
+  assert.equal(put.path, '/repos/o/r/contents/.readfirst/map.json');
+  assert.equal(put.body.branch, 'feat/round');
+  assert.equal(put.body.sha, 'blob1');
+  assert.match(put.body.message, /^readfirst fix: place 1 new file/u);
+  const written = JSON.parse(Buffer.from(put.body.content, 'base64').toString('utf8'));
+  assert.ok(written.groups.find((g) => g.id === 'src-util').files.includes('src/util/round.js'));
+  assert.match(r.body, /placed 1 new file\(s\) in the map and committed it to this branch \(c0ffee1\)/u);
+
+  // the branch moved on: nothing is overwritten
+  const moved = fakeGitHub({ files, mapOnBranch: '{"format":"readfirst/map@1","groups":[]}' });
+  const r2 = await runAction({ env: envFor(root, event, on), fetchImpl: moved.fetchImpl, log: () => {} });
+  assert.equal(moved.calls.some((c) => c.method === 'PUT'), false);
+  assert.match(r2.body, /New files placed by their neighbours/u);
+
+  // off by default, and never on a fork's branch
+  const off = fakeGitHub({ files, mapOnBranch: onBranch });
+  await runAction({ env: envFor(root, event), fetchImpl: off.fetchImpl, log: () => {} });
+  assert.equal(off.calls.some((c) => c.method === 'PUT' || c.path.includes('/contents/')), false);
+  writeFileSync(event, JSON.stringify({ pull_request: { number: 7, head: { sha: 'abcdef1234567', ref: 'main', repo: { full_name: 'someone/fork' } } } }));
+  const fork = fakeGitHub({ files, mapOnBranch: onBranch });
+  await runAction({ env: envFor(root, event, on), fetchImpl: fork.fetchImpl, log: () => {} });
+  assert.equal(fork.calls.some((c) => c.method === 'PUT'), false);
 });
