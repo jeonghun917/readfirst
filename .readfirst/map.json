@@ -287,6 +287,9 @@
             "package.json",
             ".github/**"
           ]
+        },
+        {
+          "text": "the README Hosted section repeats the prices and what each offer includes (Pro $19/month with its PR rule check, Map setup $290 once with 5 business days and the first month of Pro) from the pricing page of readfirst-cloud; change it together with that site, or the two disagree"
         }
       ]
     },
