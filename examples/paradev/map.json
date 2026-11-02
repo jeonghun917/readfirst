@@ -1,0 +1,1024 @@
+{
+  "format": "readfirst/map@1",
+  "groups": [
+    {
+      "id": "agents",
+      "title": "agent skills (db-migrations, trpc-compat and others)",
+      "files": [
+        ".agents/**"
+      ],
+      "checks": [
+        {
+          "run": "bun run test",
+          "why": "the test suite"
+        },
+        {
+          "run": "bun run typecheck",
+          "why": "types"
+        },
+        {
+          "run": "bun run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-agent-worker",
+      "title": "cloud agent worker",
+      "files": [
+        "apps/agent-worker/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/agent-worker run test",
+          "why": "the test suite of @superset/agent-worker"
+        },
+        {
+          "run": "bun --filter @superset/agent-worker run typecheck",
+          "why": "types of @superset/agent-worker"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-api",
+      "title": "the API: tRPC routes and the plugin MCP proxy",
+      "files": [
+        "apps/api/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/api run test",
+          "why": "the test suite of @superset/api"
+        },
+        {
+          "run": "bun --filter @superset/api run typecheck",
+          "why": "types of @superset/api"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-desktop",
+      "title": "@superset/desktop: The last developer tool you'll ever need",
+      "files": [
+        "apps/desktop/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/desktop run test",
+          "why": "the test suite of @superset/desktop"
+        },
+        {
+          "run": "bun --filter @superset/desktop run typecheck",
+          "why": "types of @superset/desktop"
+        }
+      ],
+      "risks": [
+        {
+          "text": "every renderer localStorage writer is allowlisted in persisted-key-registry.test-data.ts and answers: what bounds it, who deletes it, what happens when the feature dies; unbounded growth froze the renderer before (apps/desktop/AGENTS.md:5-12)"
+        }
+      ]
+    },
+    {
+      "id": "apps-docs",
+      "title": "documentation site",
+      "files": [
+        "apps/docs/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/docs run typecheck",
+          "why": "types of @superset/docs"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-gate",
+      "title": "gate service",
+      "files": [
+        "apps/gate/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/gate run typecheck",
+          "why": "types of @superset/gate"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-marketing",
+      "title": "marketing site",
+      "files": [
+        "apps/marketing/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/marketing run test",
+          "why": "the test suite of @superset/marketing"
+        },
+        {
+          "run": "bun --filter @superset/marketing run typecheck",
+          "why": "types of @superset/marketing"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-mobile",
+      "title": "Expo mobile app",
+      "files": [
+        "apps/mobile/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/mobile run test",
+          "why": "the test suite of @superset/mobile"
+        },
+        {
+          "run": "bun --filter @superset/mobile run typecheck",
+          "why": "types of @superset/mobile"
+        },
+        {
+          "run": "bun --filter @superset/mobile run lint",
+          "why": "lint rules of @superset/mobile"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-realtime",
+      "title": "realtime service",
+      "files": [
+        "apps/realtime/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/realtime run test",
+          "why": "the test suite of @superset/realtime"
+        },
+        {
+          "run": "bun --filter @superset/realtime run typecheck",
+          "why": "types of @superset/realtime"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-relay",
+      "title": "relay service",
+      "files": [
+        "apps/relay/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/relay run test",
+          "why": "the test suite of @superset/relay"
+        },
+        {
+          "run": "bun --filter @superset/relay run typecheck",
+          "why": "types of @superset/relay"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-review-host",
+      "title": "@superset/review-host: App Store review host: provisioning and watchdog scripts for the reviewer VM",
+      "files": [
+        "apps/review-host/**"
+      ],
+      "checks": [
+        {
+          "run": "bun run test",
+          "why": "the test suite"
+        },
+        {
+          "run": "bun run typecheck",
+          "why": "types"
+        },
+        {
+          "run": "bun run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-usercontent",
+      "title": "user content service",
+      "files": [
+        "apps/usercontent/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/usercontent run typecheck",
+          "why": "types of @superset/usercontent"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-web",
+      "title": "Next.js web app",
+      "files": [
+        "apps/web/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/web run test",
+          "why": "the test suite of @superset/web"
+        },
+        {
+          "run": "bun --filter @superset/web run typecheck",
+          "why": "types of @superset/web"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "claude",
+      "title": "Claude Code settings",
+      "files": [
+        ".claude/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "claude-plugin",
+      "title": "Claude Code plugin manifest",
+      "files": [
+        ".claude-plugin/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "codex",
+      "title": "Codex settings",
+      "files": [
+        ".codex/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "cursor",
+      "title": "Cursor rules",
+      "files": [
+        ".cursor/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "design",
+      "title": "design assets",
+      "files": [
+        "design/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "docs",
+      "title": "internal docs (plugins, architecture)",
+      "files": [
+        "docs/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "github",
+      "title": "CI and release workflows",
+      "files": [
+        ".github/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "mastracode",
+      "title": "Mastra settings",
+      "files": [
+        ".mastracode/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "packages-agent-harness",
+      "title": "@superset/agent-harness",
+      "files": [
+        "packages/agent-harness/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/agent-harness run test",
+          "why": "the test suite of @superset/agent-harness"
+        },
+        {
+          "run": "bun --filter @superset/agent-harness run typecheck",
+          "why": "types of @superset/agent-harness"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-agent-setup",
+      "title": "@superset/agent-setup",
+      "files": [
+        "packages/agent-setup/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/agent-setup run test",
+          "why": "the test suite of @superset/agent-setup"
+        },
+        {
+          "run": "bun --filter @superset/agent-setup run typecheck",
+          "why": "types of @superset/agent-setup"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-auth",
+      "title": "@superset/auth",
+      "files": [
+        "packages/auth/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/auth run test",
+          "why": "the test suite of @superset/auth"
+        },
+        {
+          "run": "bun --filter @superset/auth run typecheck",
+          "why": "types of @superset/auth"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-chat",
+      "title": "@superset/chat",
+      "files": [
+        "packages/chat/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/chat run test",
+          "why": "the test suite of @superset/chat"
+        },
+        {
+          "run": "bun --filter @superset/chat run typecheck",
+          "why": "types of @superset/chat"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-chat-runtime",
+      "title": "@superset/chat-runtime",
+      "files": [
+        "packages/chat-runtime/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/chat-runtime run test",
+          "why": "the test suite of @superset/chat-runtime"
+        },
+        {
+          "run": "bun --filter @superset/chat-runtime run typecheck",
+          "why": "types of @superset/chat-runtime"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-chat-ui",
+      "title": "@superset/chat-ui",
+      "files": [
+        "packages/chat-ui/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/chat-ui run test",
+          "why": "the test suite of @superset/chat-ui"
+        },
+        {
+          "run": "bun --filter @superset/chat-ui run typecheck",
+          "why": "types of @superset/chat-ui"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-cli",
+      "title": "@superset/cli",
+      "files": [
+        "packages/cli/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/cli run test",
+          "why": "the test suite of @superset/cli"
+        },
+        {
+          "run": "bun --filter @superset/cli run typecheck",
+          "why": "types of @superset/cli"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-cli-framework",
+      "title": "@superset/cli-framework",
+      "files": [
+        "packages/cli-framework/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/cli-framework run test",
+          "why": "the test suite of @superset/cli-framework"
+        },
+        {
+          "run": "bun --filter @superset/cli-framework run typecheck",
+          "why": "types of @superset/cli-framework"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-cloud-client",
+      "title": "@superset/cloud-client",
+      "files": [
+        "packages/cloud-client/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/cloud-client run test",
+          "why": "the test suite of @superset/cloud-client"
+        },
+        {
+          "run": "bun --filter @superset/cloud-client run typecheck",
+          "why": "types of @superset/cloud-client"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-db",
+      "title": "@superset/db",
+      "files": [
+        "packages/db/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/db run typecheck",
+          "why": "types of @superset/db"
+        }
+      ],
+      "risks": [
+        {
+          "text": "never hand-edit packages/db/drizzle/ (SQL, meta/_journal.json, snapshots) without explicit user confirmation, and never apply migrations against a shared or production database; follow .agents/skills/db-migrations/SKILL.md (AGENTS.md:85-87)",
+          "files": [
+            "packages/db/drizzle/**"
+          ]
+        },
+        {
+          "text": "a db.query findMany/findFirst without columns passes table columns into tRPC output, so a column change here is an API output change (packages/trpc/AGENTS.md:28-31)",
+          "files": [
+            "packages/db/src/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packages-email",
+      "title": "@superset/email",
+      "files": [
+        "packages/email/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/email run test",
+          "why": "the test suite of @superset/email"
+        },
+        {
+          "run": "bun --filter @superset/email run typecheck",
+          "why": "types of @superset/email"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-host-client",
+      "title": "@superset/host-client",
+      "files": [
+        "packages/host-client/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/host-client run test",
+          "why": "the test suite of @superset/host-client"
+        },
+        {
+          "run": "bun --filter @superset/host-client run typecheck",
+          "why": "types of @superset/host-client"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-host-service",
+      "title": "@superset/host-service",
+      "files": [
+        "packages/host-service/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/host-service run test",
+          "why": "the test suite of @superset/host-service"
+        },
+        {
+          "run": "bun --filter @superset/host-service run typecheck",
+          "why": "types of @superset/host-service"
+        }
+      ],
+      "risks": [
+        {
+          "text": "changes are additive; a client calling a new procedure must handle a host that lacks it, and raising MIN_HOST_SERVICE_VERSION alone is not enough (packages/host-service/AGENTS.md:7-12)"
+        }
+      ]
+    },
+    {
+      "id": "packages-i18n",
+      "title": "@superset/i18n",
+      "files": [
+        "packages/i18n/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/i18n run test",
+          "why": "the test suite of @superset/i18n"
+        },
+        {
+          "run": "bun --filter @superset/i18n run typecheck",
+          "why": "types of @superset/i18n"
+        }
+      ],
+      "risks": [
+        {
+          "text": "editing English copy re-keys the message (the text is the id), so every locale loses its translation; regenerate catalogs from a clean tree (AGENTS.md:179-186)"
+        },
+        {
+          "text": "SUPPORTED_LOCALES in src/locales.ts is the single source of truth, and every enabled locale must be fully translated or compile --strict fails the build (AGENTS.md:170-175)",
+          "files": [
+            "packages/i18n/src/locales.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packages-local-db",
+      "title": "@superset/local-db",
+      "files": [
+        "packages/local-db/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/local-db run typecheck",
+          "why": "types of @superset/local-db"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-macos-process-metrics",
+      "title": "@superset/macos-process-metrics",
+      "files": [
+        "packages/macos-process-metrics/**"
+      ],
+      "checks": [
+        {
+          "run": "bun run test",
+          "why": "the test suite"
+        },
+        {
+          "run": "bun run typecheck",
+          "why": "types"
+        },
+        {
+          "run": "bun run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-mcp",
+      "title": "@superset/mcp",
+      "files": [
+        "packages/mcp/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/mcp run typecheck",
+          "why": "types of @superset/mcp"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-panes",
+      "title": "@superset/panes",
+      "files": [
+        "packages/panes/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/panes run test",
+          "why": "the test suite of @superset/panes"
+        },
+        {
+          "run": "bun --filter @superset/panes run typecheck",
+          "why": "types of @superset/panes"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-port-scanner",
+      "title": "@superset/port-scanner",
+      "files": [
+        "packages/port-scanner/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/port-scanner run test",
+          "why": "the test suite of @superset/port-scanner"
+        },
+        {
+          "run": "bun --filter @superset/port-scanner run typecheck",
+          "why": "types of @superset/port-scanner"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-pty-daemon",
+      "title": "@superset/pty-daemon",
+      "files": [
+        "packages/pty-daemon/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/pty-daemon run test",
+          "why": "the test suite of @superset/pty-daemon"
+        },
+        {
+          "run": "bun --filter @superset/pty-daemon run typecheck",
+          "why": "types of @superset/pty-daemon"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-sandbox",
+      "title": "@superset/sandbox",
+      "files": [
+        "packages/sandbox/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/sandbox run test",
+          "why": "the test suite of @superset/sandbox"
+        },
+        {
+          "run": "bun --filter @superset/sandbox run typecheck",
+          "why": "types of @superset/sandbox"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-sdk",
+      "title": "@superset/sdk: TypeScript SDK for the Paradev API",
+      "files": [
+        "packages/sdk/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/sdk run typecheck",
+          "why": "types of @superset/sdk"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-shared",
+      "title": "@superset/shared",
+      "files": [
+        "packages/shared/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/shared run test",
+          "why": "the test suite of @superset/shared"
+        },
+        {
+          "run": "bun --filter @superset/shared run typecheck",
+          "why": "types of @superset/shared"
+        }
+      ],
+      "risks": [
+        {
+          "text": "src/plugins/manifests.generated.ts is generated and never hand-edited; change the plugin source and run superset plugins publish (AGENTS.md:102-105)",
+          "files": [
+            "packages/shared/src/plugins/manifests.generated.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packages-trpc",
+      "title": "@superset/trpc",
+      "files": [
+        "packages/trpc/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/trpc run test",
+          "why": "the test suite of @superset/trpc"
+        },
+        {
+          "run": "bun --filter @superset/trpc run typecheck",
+          "why": "types of @superset/trpc"
+        }
+      ],
+      "risks": [
+        {
+          "text": "never a breaking change to a procedure released clients call: add a new procedure instead; new inputs optional; no tightened inputs, changed outputs, error codes or query/mutation type (packages/trpc/AGENTS.md:12-36)"
+        }
+      ]
+    },
+    {
+      "id": "packages-ui",
+      "title": "@superset/ui",
+      "files": [
+        "packages/ui/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/ui run typecheck",
+          "why": "types of @superset/ui"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-workspace-client",
+      "title": "@superset/workspace-client",
+      "files": [
+        "packages/workspace-client/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/workspace-client run test",
+          "why": "the test suite of @superset/workspace-client"
+        },
+        {
+          "run": "bun --filter @superset/workspace-client run typecheck",
+          "why": "types of @superset/workspace-client"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-workspace-fs",
+      "title": "@superset/workspace-fs",
+      "files": [
+        "packages/workspace-fs/**"
+      ],
+      "checks": [
+        {
+          "run": "bun --filter @superset/workspace-fs run test",
+          "why": "the test suite of @superset/workspace-fs"
+        },
+        {
+          "run": "bun --filter @superset/workspace-fs run typecheck",
+          "why": "types of @superset/workspace-fs"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "patches",
+      "title": "dependency patches",
+      "files": [
+        "patches/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "plans",
+      "title": "design plans",
+      "files": [
+        "plans/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "plugins",
+      "title": "first-party plugins: plugin.json and skills, no code",
+      "files": [
+        "plugins/**"
+      ],
+      "checks": [
+        {
+          "run": "bun run check:plugins"
+        }
+      ],
+      "risks": [
+        {
+          "text": "a plugin change is published with superset plugins publish <name> --bump patch, which rewrites .agent-marketplace.json and the generated manifests; CI runs bun run check:plugins (AGENTS.md:103-106)"
+        }
+      ]
+    },
+    {
+      "id": "readme",
+      "title": "README assets",
+      "files": [
+        "readme/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "root",
+      "title": "workspace root: manifests, turbo, lingui config",
+      "files": [
+        ".agent-marketplace.json",
+        ".bun-version",
+        ".dockerignore",
+        ".env.example",
+        ".env.local.example",
+        ".gitignore",
+        "AGENTS.md",
+        "CLA.md",
+        "CLAUDE.md",
+        "CODEX.md",
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "DEVELOPMENT.md",
+        "LICENSE.md",
+        "README.md",
+        "SECURITY.md",
+        "TODO.md",
+        "WARP.md",
+        "biome.jsonc",
+        "bun.lock",
+        "bunfig.toml",
+        "docker-compose.yml",
+        "lingui.config.ts",
+        "opencode.json",
+        "package.json",
+        "turbo.jsonc"
+      ],
+      "checks": [
+        {
+          "run": "bun run test",
+          "why": "the test suite"
+        },
+        {
+          "run": "bun run typecheck",
+          "why": "types"
+        },
+        {
+          "run": "bun run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "scripts",
+      "title": "release, lint and check scripts",
+      "files": [
+        "scripts/**"
+      ],
+      "checks": [
+        {
+          "run": "bun run test",
+          "why": "the test suite"
+        },
+        {
+          "run": "bun run typecheck",
+          "why": "types"
+        },
+        {
+          "run": "bun run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "superset",
+      "title": "the repo's own workspace setup",
+      "files": [
+        ".superset/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "tooling",
+      "title": "shared build tooling",
+      "files": [
+        "tooling/**"
+      ],
+      "checks": [
+        {
+          "run": "bun run test",
+          "why": "the test suite"
+        },
+        {
+          "run": "bun run typecheck",
+          "why": "types"
+        },
+        {
+          "run": "bun run lint",
+          "why": "lint rules"
+        }
+      ],
+      "risks": []
+    }
+  ],
+  "rules": [
+    {
+      "id": "i18n-strings",
+      "rule": "user-facing strings use Lingui macros; numbers, currencies and dates go through @superset/i18n/format, never Intl with a hardcoded locale; after changing strings run check:i18n and commit translations for every locale",
+      "why": "nothing on CI fills translations (AGENTS.md:154-162)",
+      "files": [
+        "apps/desktop/src/**",
+        "apps/web/src/**",
+        "apps/mobile/**",
+        "packages/ui/src/**",
+        "packages/chat-ui/src/**"
+      ],
+      "checks": [
+        {
+          "run": "bun run check:i18n"
+        }
+      ]
+    },
+    {
+      "id": "display-only-errors",
+      "rule": "errorMessage() output is display-only; logs, Sentry/PostHog and error classification use rawErrorMessage() or the error object",
+      "why": "it may be translated (AGENTS.md:166-168, packages/i18n/test/display-only.test.ts)",
+      "files": [
+        "apps/**",
+        "packages/**"
+      ]
+    },
+    {
+      "id": "trpc-additive",
+      "rule": "procedures that released clients call change only additively",
+      "why": "desktop 1.24.0 got a 405 on every query to hosts on 1.23.x after a transport change (packages/trpc/AGENTS.md:34-36)",
+      "files": [
+        "packages/trpc/src/**",
+        "packages/host-service/src/**"
+      ]
+    },
+    {
+      "id": "fast-deterministic-tests",
+      "rule": "tests never wait for real timeouts, run in any order with no root .env, never mock.module something others import for real, and a flaky test is fixed or deleted, never retried",
+      "why": "CI runs every suite in about two minutes (AGENTS.md:201-218)",
+      "files": [
+        "**/*.test.ts",
+        "**/*.test.tsx"
+      ]
+    },
+    {
+      "id": "plugins-declarative",
+      "rule": "provisioners read the one installed_plugins.json; a caller never passes its own list",
+      "why": "provisioning reaps whatever is absent, so the last writer deletes the others' skills (AGENTS.md:108-112)",
+      "files": [
+        "packages/host-service/src/**",
+        "packages/cli/src/**",
+        "apps/desktop/src/main/**"
+      ]
+    }
+  ],
+  "ignore": []
+}
