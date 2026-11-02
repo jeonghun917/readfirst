@@ -252,7 +252,9 @@
         ".github/**",
         "docs/**",
         "server.json",
-        "glama.json"
+        "glama.json",
+        "SECURITY.md",
+        "package-lock.json"
       ],
       "checks": [
         {
@@ -279,7 +281,7 @@
           ]
         },
         {
-          "text": "server.json lists readfirst in the official MCP Registry (mcp-registry.yml, after a release is published and npm shows the version); its version and packages[0].version must equal package.json's version, and its name must equal package.json's mcpName, or the release or the listing fails (bump all three together)",
+          "text": "server.json lists readfirst in the official MCP Registry (mcp-registry.yml, after a release is published and npm shows the version); its version and packages[0].version must equal package.json's version (and package-lock.json's two version fields: run `npm install --package-lock-only` after bumping), and its name must equal package.json's mcpName, or the release or the listing fails (bump all three together)",
           "files": [
             "server.json",
             "package.json",
