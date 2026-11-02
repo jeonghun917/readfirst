@@ -15,10 +15,15 @@ No server, no account, no model calls. It reads your git checkout and `.readfirs
 Any language; needs Node 20+ for `npx`.
 
 ```sh
-npx readfirst init --agent   # first map from your folders, checks from your scripts, plus the line for CLAUDE.md / AGENTS.md
+npx readfirst init --agent --ci   # first map from your folders, checks from your scripts, the line for CLAUDE.md / AGENTS.md,
+                                  # and the GitHub Action that comments on PRs and keeps the map in step
 npx readfirst prompt         # a brief for your coding agent to fill in titles, checks, risks and rules
 npx readfirst check          # every tracked file is in exactly one group (or ignored); rules point at real files
 ```
+
+In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
+(`pnpm --filter @acme/db test`, `yarn workspace …`, `npm test -w …`), so `verify` runs that package's tests, not the
+whole repository's, and its description becomes the group's title.
 
 Commit `.readfirst/map.json`. From then on:
 

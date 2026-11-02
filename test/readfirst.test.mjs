@@ -491,3 +491,46 @@ test('hook --stop: before Claude Code finishes, the checks for files it edited r
   assert.equal(settings.hooks.PreToolUse.length, 1);
   assert.deepEqual(settings.hooks.Stop, [{ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }]);
 });
+
+test('init: a workspace package gets its own scoped checks and its description as title', async () => {
+  const { draftMap, workspaceChecks } = await import('../src/map.mjs');
+  const tree = {
+    'package.json': JSON.stringify({ name: 'root', private: true, scripts: { test: 'turbo test', lint: 'turbo lint' } }),
+    'pnpm-lock.yaml': '',
+    'packages/db/package.json': JSON.stringify({ name: '@acme/db', description: 'Drizzle schema and migrations', scripts: { test: 'vitest', typecheck: 'tsc' } }),
+    'packages/db/src/index.ts': '',
+    'packages/tsconfig/package.json': JSON.stringify({ name: '@acme/tsconfig' }),
+    'packages/tsconfig/base.json': '{}',
+    'apps/web/package.json': JSON.stringify({ scripts: { lint: 'eslint .' } }),
+    'apps/web/page.tsx': '',
+  };
+  const map = draftMap(Object.keys(tree), (f) => tree[f] ?? null);
+  const g = (id) => map.groups.find((x) => x.id === id);
+  assert.deepEqual(g('packages-db').checks.map((c) => c.run), ['pnpm --filter @acme/db test', 'pnpm --filter @acme/db run typecheck']);
+  assert.equal(g('packages-db').title, '@acme/db: Drizzle schema and migrations');
+  assert.deepEqual(g('packages-tsconfig').checks.map((c) => c.run), ['pnpm test', 'pnpm run lint'], 'no scripts of its own: the repository checks');
+  assert.match(g('packages-tsconfig').title, /^TODO:/u);
+  assert.deepEqual(g('apps-web').checks.map((c) => c.run), ['pnpm --filter ./apps/web run lint'], 'no name: pnpm filters by path');
+  const files = ['package.json', 'packages/db/package.json'];
+  assert.equal(workspaceChecks(files, 'packages/db', { name: '@acme/db', scripts: { test: 'x' } })[0].run, 'npm test -w packages/db');
+  assert.equal(workspaceChecks([...files, 'yarn.lock'], 'packages/db', { name: '@acme/db', scripts: { lint: 'x' } })[0].run, 'yarn workspace @acme/db run lint');
+  assert.deepEqual(workspaceChecks(files, 'packages/db', { scripts: { test: 'echo "Error: no test specified" && exit 1' } }), []);
+});
+
+test('init --ci writes the Action with auto-fix once, and never over an existing workflow', async () => {
+  const { WORKFLOW_PATH } = await import('../src/cli.mjs');
+  const { root } = repo(FIXTURE);
+  const first = run(root, 'init', '--ci');
+  assert.equal(first.code, 0);
+  assert.match(first.out, /wrote \.github\/workflows\/readfirst\.yml/u);
+  const yml = readFileSync(join(root, WORKFLOW_PATH), 'utf8');
+  assert.match(yml, /uses: jeonghun917\/readfirst@v0\n\s+with:\n\s+auto-fix: true/u);
+  assert.match(yml, /contents: write/u);
+  assert.match(yml, /actions\/checkout@[0-9a-f]{40} # v4/u, 'pinned by commit');
+  assert.doesNotMatch(first.out, /init --ci/u, 'no tip for what was just done');
+  writeFileSync(join(root, WORKFLOW_PATH), 'mine');
+  const again = run(root, 'init', '--ci', '--force');
+  assert.match(again.out, /already exists; left as it is/u);
+  assert.equal(readFileSync(join(root, WORKFLOW_PATH), 'utf8'), 'mine');
+  assert.match(run(root, 'init', '--force').out, /init --ci` would add the GitHub Action/u);
+});

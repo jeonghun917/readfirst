@@ -160,7 +160,42 @@ export function draftMap(files, read = () => null) {
     const hasNested = [...byFolder.values()].some((slot) => slot.pattern?.startsWith(`${root}/`) && slot.pattern !== `${root}/**`);
     if (covered && hasNested) covered.files = covered.files.filter((p) => p !== `${root}/**`).concat(loose);
   }
+  // A folder that is a workspace package of its own (packages/db/package.json) gets that package's checks, run through the
+  // package manager's workspace filter, so verify runs the package's tests instead of the whole repository's. Its title
+  // comes from the package's description when it has one.
+  for (const g of groups.values()) {
+    const dir = g.files.length === 1 && /^(.+)\/\*\*$/u.exec(g.files[0])?.[1];
+    if (!dir || !files.includes(`${dir}/package.json`)) continue;
+    let pkg;
+    try { pkg = JSON.parse(read(`${dir}/package.json`) ?? ''); } catch { continue; }
+    const checks = workspaceChecks(files, dir, pkg);
+    if (checks.length) g.checks = checks;
+    const about = typeof pkg?.description === 'string' ? pkg.description.trim().replace(/\s+/gu, ' ') : '';
+    if (about && g.title.startsWith('TODO:')) g.title = `${typeof pkg.name === 'string' ? `${pkg.name}: ` : ''}${about}`.slice(0, 200);
+  }
   return { format: MAP_FORMAT, groups: [...groups.values()].sort((a, b) => a.id.localeCompare(b.id)), rules: [], ignore: [...ignore].sort() };
+}
+
+const packageManager = (has) => (has.has('pnpm-lock.yaml') ? 'pnpm' : has.has('yarn.lock') ? 'yarn' : has.has('bun.lockb') || has.has('bun.lock') ? 'bun' : 'npm');
+const PLACEHOLDER = /no test specified/u;
+// The scripts worth running as checks, in order, with what each covers.
+const scriptChecks = (scripts, run) => [
+  ...(typeof scripts.test === 'string' && !PLACEHOLDER.test(scripts.test) ? [{ run: run('test'), why: 'the test suite' }] : []),
+  ...['typecheck', 'type-check', 'check-types', 'lint'].filter((n) => typeof scripts[n] === 'string').map((n) => ({ run: run(n), why: n === 'lint' ? 'lint rules' : 'types' })),
+];
+
+// One workspace package's own scripts, scoped to it: pnpm --filter, yarn workspace, bun --filter or npm -w.
+export function workspaceChecks(files, dir, pkg) {
+  const scripts = pkg?.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
+  const name = typeof pkg?.name === 'string' && pkg.name ? pkg.name : null;
+  const pm = packageManager(new Set(files));
+  const run = (script) => {
+    if (pm === 'pnpm') return `pnpm --filter ${name ?? `./${dir}`} ${script === 'test' ? 'test' : `run ${script}`}`;
+    if (pm === 'yarn' && name) return `yarn workspace ${name} ${script === 'test' ? 'test' : `run ${script}`}`;
+    if (pm === 'bun' && name) return `bun --filter ${name} run ${script}`;
+    return script === 'test' ? `npm test -w ${dir}` : `npm run ${script} -w ${dir}`;
+  };
+  return scriptChecks(scripts, run).map((c) => ({ ...c, why: `${c.why} of ${name ?? dir}` }));
 }
 
 // Repairs the two ways a good map goes stale as code moves, without guessing at meaning:
@@ -244,11 +279,9 @@ export function draftChecks(files, read = () => null) {
   if (has.has('package.json')) {
     let scripts = {};
     try { scripts = JSON.parse(read('package.json') ?? '{}').scripts ?? {}; } catch { scripts = {}; }
-    const pm = has.has('pnpm-lock.yaml') ? 'pnpm' : has.has('yarn.lock') ? 'yarn' : has.has('bun.lockb') || has.has('bun.lock') ? 'bun' : 'npm';
+    const pm = packageManager(has);
     const run = (name) => (pm === 'npm' ? (name === 'test' ? 'npm test' : `npm run ${name}`) : `${pm} ${name === 'test' && pm !== 'bun' ? 'test' : `run ${name}`}`);
-    const placeholder = /no test specified/u;
-    if (typeof scripts.test === 'string' && !placeholder.test(scripts.test)) add(run('test'), 'the test suite');
-    for (const name of ['typecheck', 'type-check', 'check-types', 'lint']) if (typeof scripts[name] === 'string') add(run(name), name === 'lint' ? 'lint rules' : 'types');
+    for (const c of scriptChecks(scripts, run)) add(c.run, c.why);
   }
   const makefile = has.has('Makefile') ? read('Makefile') ?? '' : '';
   if (/^test:/mu.test(makefile)) add('make test', 'the test suite (Makefile)');
