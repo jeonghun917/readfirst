@@ -204,6 +204,9 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   map can't quietly fall behind the code (run it in CI).
 - **risks**: what a newcomer would get wrong. Leave out `files` when the risk covers the whole group.
 - **rules**: promises the code must keep. A rule can span groups.
+- **hotspots** (optional, usually written by a tool): functions where risky code meets a rule, as
+  `{ "file", "symbol", "line", "labels": ["db-write", "money"], "rules"?: [...], "note"? }`. `read` lists the ones in the
+  file being changed under "Hot spots in this code"; `fix` drops those whose file is gone.
 
 Tests are found from imports: a test that imports the file directly, or through other files, is listed.
 Imports are read for JavaScript/TypeScript, Python, Go, Rust, Elixir, C#, Java, Kotlin, Ruby (including Rails autoloaded

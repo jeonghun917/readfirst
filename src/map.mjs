@@ -42,11 +42,35 @@ const checkList = (v, where, p) => {
   });
 };
 
+// Hot spots: functions where code that does something risky (writes the database, moves money, calls out) meets a rule.
+// Optional; written by tools, read by `read`. Each names a tracked file, a symbol in it and the line it starts on.
+export const MAX_HOTSPOTS = 500;
+function hotspotProblems(map, files, p) {
+  if (!Array.isArray(map.hotspots)) { p.push('hotspots: a list'); return; }
+  if (map.hotspots.length > MAX_HOTSPOTS) p.push(`hotspots: at most ${MAX_HOTSPOTS}`);
+  const ruleIds = new Set((Array.isArray(map.rules) ? map.rules : []).map((r) => r?.id));
+  const tracked = new Set(files);
+  map.hotspots.forEach((h, i) => {
+    const at = `hotspots[${i}]`;
+    if (!isRecord(h)) { p.push(`${at}: { file, symbol, line, labels, rules?, note? }`); return; }
+    only(h, ['file', 'symbol', 'line', 'labels', 'rules', 'note'], at, p);
+    if (typeof h.file !== 'string' || !h.file) p.push(`${at}.file: a path`);
+    else if (!tracked.has(h.file)) p.push(`${at}.file: ${h.file} is not a tracked file`);
+    if (!text(h.symbol, 200)) p.push(`${at}.symbol: text`);
+    if (!Number.isInteger(h.line) || h.line < 1) p.push(`${at}.line: a line number`);
+    const labels = strings(h.labels, `${at}.labels`, p, 64);
+    if (!labels.length) p.push(`${at}.labels: at least one label`);
+    for (const l of labels) if (!ID.test(l)) p.push(`${at}.labels: ${l}: lowercase letters, digits and "-"`);
+    if (h.rules !== undefined) for (const r of strings(h.rules, `${at}.rules`, p, 64)) if (!ruleIds.has(r)) p.push(`${at}.rules: no rule ${r}`);
+    if (h.note !== undefined && !text(h.note, 500)) p.push(`${at}.note: text`);
+  });
+}
+
 // Problems with the map against the list of tracked files. An empty list means the map is good.
 export function mapProblems(map, files, { placement = true } = {}) {
   const p = [];
   if (!isRecord(map)) return ['map: a JSON object'];
-  only(map, ['format', 'groups', 'rules', 'ignore'], 'map', p);
+  only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots'], 'map', p);
   if (map.format !== MAP_FORMAT) p.push(`format: "${MAP_FORMAT}"`);
   if (!Array.isArray(map.groups) || !map.groups.length) return [...p, 'groups: at least one group'];
   const ids = new Set();
@@ -90,6 +114,7 @@ export function mapProblems(map, files, { placement = true } = {}) {
     }
   }
   if (map.ignore !== undefined) strings(map.ignore, 'ignore', p);
+  if (map.hotspots !== undefined) hotspotProblems(map, files, p);
   if (p.length || !placement) return p;
 
   // Placement: each tracked file in exactly one group or ignored; each group pattern matches something.
@@ -224,6 +249,14 @@ export function fixMap(map, files) {
     const keep = r.files.filter(live);
     for (const pat of r.files.filter((p) => !live(p))) if (keep.length) changes.push(`rules.${r.id}: dropped ${pat} (matches no file)`);
     if (keep.length) r.files = keep;
+  }
+
+  if (Array.isArray(out.hotspots)) {
+    const tracked = new Set(files);
+    const gone = out.hotspots.filter((h) => !tracked.has(h?.file));
+    for (const h of gone) changes.push(`hotspots: dropped ${h?.symbol} in ${h?.file} (file gone)`);
+    out.hotspots = out.hotspots.filter((h) => tracked.has(h?.file));
+    if (!out.hotspots.length) delete out.hotspots;
   }
 
   const ignored = matcher(out.ignore ?? []);
