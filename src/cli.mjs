@@ -8,6 +8,7 @@
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
 //   readfirst verify [--base <ref>] run the checks the read list names for the changed files; exit 1 if one fails
 //   readfirst hook [--install]     a Claude Code PreToolUse hook: the read list for the file an Edit or Write is about to change
+//                                  (--install --verify also adds a Stop hook, `hook --stop`, that runs verify before Claude Code finishes)
 //   readfirst mcp                  an MCP server on stdio: read_list, changed_read_list and check_map as tools for any agent
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
@@ -33,7 +34,8 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
   readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them)
-  readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json)
+  readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json;
+                                 --install --verify also runs the checks for edited files before Claude Code finishes)
   readfirst view [--out <file>]  the map as a city in one HTML page
   readfirst mcp                  MCP server on stdio for Cursor, Codex, Windsurf and other agents
   readfirst prompt --labels <lang>  brief for your agent to write personal labels for the view (e.g. ko, en)
@@ -51,6 +53,8 @@ function parse(argv) {
     else if (a === '--install') args.install = true;
     else if (a === '--dry-run') args.dryRun = true;
     else if (a === '--strict') args.strict = true;
+    else if (a === '--verify') args.verify = true;
+    else if (a === '--stop') args.stop = true;
     else if (a === '-h' || a === '--help') args.help = true;
     else if (a.startsWith('--')) { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); args[a.slice(2)] = v; }
     else args._.push(a);
@@ -164,6 +168,9 @@ export function brief(list) {
   return lines;
 }
 
+// Which files the PreToolUse hook has seen in a session: the Stop hook verifies those.
+const seenFile = (stateDir, session) => join(stateDir, `readfirst-hook-${String(session ?? 'none').replace(/[^\w-]/gu, '')}.json`);
+
 // Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file the map covers,
 // prints the read list as additionalContext, once per file per session. Never blocks the edit: any problem means no output.
 export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
@@ -175,7 +182,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
     const root = git(cwd, 'rev-parse', '--show-toplevel').trim();
     const path = (isAbsolute(file) ? relative(root, file) : file).replace(/\\/gu, '/');
     if (path.startsWith('..') || path === MAP_PATH || !existsSync(join(root, MAP_PATH))) return null;
-    const seenAt = join(stateDir, `readfirst-hook-${String(event.session_id ?? 'none').replace(/[^\w-]/gu, '')}.json`);
+    const seenAt = seenFile(stateDir, event.session_id);
     let seen = {};
     try { seen = JSON.parse(readFileSync(seenAt, 'utf8')); } catch { seen = {}; }
     if (seen[path] && now - seen[path] < 6 * 3600_000) return null;
@@ -195,17 +202,61 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
   }
 }
 
+// Claude Code Stop hook (opt-in, `hook --install --verify`): before Claude Code ends its turn, run the map's checks for the
+// files it edited in this session that are still changed. A failing check blocks the stop once, with the failure as the
+// reason, so the agent fixes it; on the second stop of the same turn it lets go, so a check it cannot fix never traps
+// the session. Nothing edited, nothing changed or no checks: no output.
+export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) {
+  let event;
+  try { event = JSON.parse(input); } catch { return null; }
+  if (event.stop_hook_active) return null;
+  try {
+    const root = git(event.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel').trim();
+    if (!existsSync(join(root, MAP_PATH))) return null;
+    let seen = {};
+    try { seen = JSON.parse(readFileSync(seenFile(stateDir, event.session_id), 'utf8')); } catch { return null; }
+    const dirty = new Set(git(root, 'status', '--porcelain', '-z', '--untracked-files=all').split('\0').filter(Boolean).map((l) => l.slice(3)));
+    let changed = [];
+    try { changed = changedFiles(root).files; } catch { /* no base branch: the working tree is enough */ }
+    const targets = Object.keys(seen).filter((f) => dirty.has(f) || changed.includes(f)).sort();
+    if (!targets.length) return null;
+    const files = repoFiles(root);
+    const map = readMapFile(root);
+    if (mapProblems(map, files, { placement: false }).length) return null;
+    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, limit: 1 });
+    if (!list.checks.length) return null;
+    const result = verifyChecks(root, list.checks, { timeout });
+    const failed = result.filter((c) => c.status !== 'pass');
+    if (!failed.length) return JSON.stringify({ systemMessage: `readfirst verify: ${result.length} check(s) passed for ${targets.length} edited file(s)` });
+    const reason = [
+      `readfirst verify: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.`,
+      ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}`),
+    ].join('\n');
+    return JSON.stringify({ decision: 'block', reason });
+  } catch {
+    return null;
+  }
+}
+
 export const HOOK_COMMAND = 'npx --yes readfirst hook';
-// Adds the hook to the project's .claude/settings.json, keeping everything already there.
-export function installHook(root) {
+export const STOP_HOOK_COMMAND = 'npx --yes readfirst hook --stop';
+// Adds the hook to the project's .claude/settings.json, keeping everything already there. With verify, also the Stop
+// hook that runs the checks before Claude Code finishes.
+export function installHook(root, { verify = false } = {}) {
   const at = join(root, '.claude', 'settings.json');
   let settings = {};
   if (existsSync(at)) {
     try { settings = JSON.parse(readFileSync(at, 'utf8')); } catch { throw new Error('.claude/settings.json is not valid JSON; fix it first'); }
   }
   const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
-  if (pre.some((m) => (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '')))) return false;
-  pre.push({ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] });
+  const has = (list) => list.some((m) => (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '')));
+  let added = false;
+  if (!has(pre)) { pre.push({ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }); added = true; }
+  if (verify) {
+    const stop = (settings.hooks.Stop ??= []);
+    if (!has(stop)) { stop.push({ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }); added = true; }
+  }
+  if (!added) return false;
   mkdirSync(join(root, '.claude'), { recursive: true });
   writeFileSync(at, `${JSON.stringify(settings, null, 2)}\n`);
   return true;
@@ -216,7 +267,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   const [cmd, ...rest] = args._;
   if (args.help || !cmd) { io.out(`${HELP}\n`); return cmd || args.help ? 0 : 2; }
   if (cmd === 'hook' && !args.install) {
-    const out = runHook(stdin());
+    const out = args.stop ? runStopHook(stdin()) : runHook(stdin());
     if (out) io.out(`${out}\n`);
     return 0;
   }
@@ -294,7 +345,9 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     return problems.length ? 1 : 0;
   }
   if (cmd === 'hook') {
-    io.out(installHook(root) ? 'added the readfirst hook to .claude/settings.json: Claude Code now sees the read list before each edit.\n' : '.claude/settings.json already has the readfirst hook.\n');
+    io.out(installHook(root, { verify: args.verify })
+      ? `added the readfirst hook to .claude/settings.json: Claude Code now sees the read list before each edit${args.verify ? ', and cannot finish while a check for a file it edited fails (it gets one try to fix it)' : ''}.\n`
+      : '.claude/settings.json already has the readfirst hook.\n');
     return 0;
   }
   if (cmd === 'fix') {

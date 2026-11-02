@@ -114,3 +114,44 @@ test('Elixir checks and a repository with none of these languages', () => {
   assert.ok(draftChecks(['mix.exs', 'lib/a.ex']).some((c) => c.run === 'mix test'));
   assert.deepEqual(edges({ 'README.md': '# x', 'a.txt': 'Shop.Billing' }), []);
 });
+
+test('TypeScript: workspace packages by name and tsconfig "paths" aliases', () => {
+  const tree = {
+    'package.json': JSON.stringify({ name: 'root', private: true, workspaces: ['packages/*', 'apps/*'] }),
+    'packages/db/package.json': JSON.stringify({ name: '@acme/db', main: './dist/index.js', types: './dist/index.d.ts' }),
+    'packages/db/src/index.ts': "export * from './schema';\n",
+    'packages/db/src/schema.ts': 'export const invoices = 1;\n',
+    'packages/ui/package.json': JSON.stringify({ name: '@acme/ui', exports: { '.': { types: './src/main.ts', default: './dist/main.js' } } }),
+    'packages/ui/src/main.ts': '',
+    'apps/web/tsconfig.json': '{\n  // Next.js alias\n  "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./src/*"], }, },\n}\n',
+    'apps/web/src/lib/money.ts': '',
+    'apps/web/src/app/page.tsx': "import { invoices } from '@acme/db';\nimport { schema } from '@acme/db/schema';\nimport { Button } from '@acme/ui';\nimport { cents } from '@/lib/money';\nimport React from 'react';\nimport fs from 'node:fs';\n",
+    'apps/web/src/app/page.test.tsx': "import Page from './page';\n",
+    'apps/other/src/x.ts': "import { cents } from '@/lib/money';\n",
+  };
+  assert.deepEqual(edges(tree), [
+    'apps/web/src/app/page.test.tsx -> apps/web/src/app/page.tsx',
+    'apps/web/src/app/page.tsx -> apps/web/src/lib/money.ts',
+    'apps/web/src/app/page.tsx -> packages/db/src/index.ts',
+    'apps/web/src/app/page.tsx -> packages/db/src/schema.ts',
+    'apps/web/src/app/page.tsx -> packages/ui/src/main.ts',
+    'packages/db/src/index.ts -> packages/db/src/schema.ts',
+  ], 'the alias applies only under the tsconfig that declares it; outside packages and node: are left out');
+  assert.deepEqual(testsOf(tree, 'packages/db/src/schema.ts'), ['apps/web/src/app/page.test.tsx']);
+});
+
+test('Python: dotted strings that name a module of the repository (Frappe hooks, frappe.call, Django settings)', () => {
+  const tree = {
+    'shop/__init__.py': '',
+    'shop/hooks.py': 'doc_events = {"Sales Invoice": {"validate": "shop.overrides.sales_invoice.validate"}}\nlabel = "not.a.module"\n',
+    'shop/overrides/__init__.py': '',
+    'shop/overrides/sales_invoice.py': 'def validate(doc, method=None): pass\n',
+    'shop/api.py': 'def charge(): pass\n',
+    'shop/public/js/invoice.js': 'frappe.call({ method: "shop.api.charge" });\n',
+    'shop/settings.json': '{"handler": "shop.missing.thing"}\n',
+  };
+  assert.deepEqual(edges(tree), [
+    'shop/hooks.py -> shop/overrides/sales_invoice.py',
+    'shop/public/js/invoice.js -> shop/api.py',
+  ]);
+});
