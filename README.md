@@ -25,6 +25,10 @@ In a monorepo, each workspace package with its own `package.json` becomes a grou
 (`pnpm --filter @acme/db test`, `yarn workspace …`, `npm test -w …`), so `verify` runs that package's tests, not the
 whole repository's, and its description becomes the group's title.
 
+The first map is the part nobody gets to. [readfirst-app](https://readfirst-cloud.vercel.app/) can write it for you: it
+reads the repository and your notes, and opens the map as a pull request with the file and line behind every risk.
+Free once per account; see [Hosted](#hosted-readfirst-app).
+
 Commit `.readfirst/map.json`. From then on:
 
 ```sh
@@ -204,6 +208,20 @@ constants) and PHP (through composer's PSR-4 map). `init` suggests the checks th
 `composer test`.
 
 readfirst needs Node 20 or newer to run, whatever language the project is in. `npx` comes with Node.
+
+## Hosted (readfirst-app)
+
+Everything above is free and stays free. The GitHub App adds the parts that take a person's time:
+
+- **First map:** install [readfirst-app](https://github.com/apps/readfirst-app/installations/new) on a repository and
+  comment `/readfirst fill` on any issue. 5–20 minutes later a pull request arrives with the map, each risk and rule
+  citing the file and line it came from. Free once per account, for repositories up to 200 files.
+- **Pro, $19/month:** fills for up to 3 private repositories that also read where the code broke before and the known
+  traps of its libraries; after each merge, a small PR when the map needs it; on every pull request, a comment on the
+  files it touches that broke before. [Get Pro](https://readfirst-cloud.vercel.app/#pricing).
+
+The CLI, hook, MCP server and Action never send your code anywhere. What the app reads and keeps is listed on
+[the site](https://readfirst-cloud.vercel.app/#your-code).
 
 ## License
 
