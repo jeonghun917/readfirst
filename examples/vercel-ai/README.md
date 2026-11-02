@@ -2,6 +2,8 @@
 
 [vercel/ai](https://github.com/vercel/ai) at `ad09bc1`. 9,630 files in 101 groups, 6 rules.
 
+![vercel/ai as a city: each workspace package is a neighbourhood; the panel shows the rules for packages/ai/src/global.ts](city.jpg)
+
 Where it came from:
 - `AGENTS.md`: JSON parsing, `validateUrl` on every `getFromApi`, response and option schemas, changesets, Zod imports, the Do Not list
 - `contributing/secure-url-handling.md` for the URL rule
