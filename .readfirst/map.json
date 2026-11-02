@@ -287,6 +287,9 @@
             "package.json",
             ".github/**"
           ]
+        },
+        {
+          "text": "the README shows its city image and links examples/ by relative path (docs/readfirst-city.jpg); docs/ and examples/ are not in the npm package, so on the npm page the image is broken unless the path becomes an absolute URL; keep the image under docs/ and out of \"files\""
         }
       ]
     },
@@ -298,7 +301,7 @@
       ],
       "risks": [
         {
-          "text": "each example names the commit it was made at; regenerate the sample output when the read format changes"
+          "text": "each example names the commit it was made at; regenerate the sample output when the read format changes, and re-render its city.jpg (readfirst view) when the example map or the view changes, since the image captions name groups, counts and a file's rules"
         }
       ]
     }
