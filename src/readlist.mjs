@@ -9,7 +9,7 @@ const TEST = /(^|\/)(?:tests?|__tests__|spec|e2e)\/|\.(?:test|spec)\.[cm]?[jt]sx
 export const isTest = (path) => TEST.test(path);
 
 // The read list for no files, so `diff --json` is always JSON.
-export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], truncated: { tests: 0, usedBy: 0 } });
+export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], truncated: { tests: 0, usedBy: 0 } });
 
 export function readList({ map, files, imports, targets, commit = null, limit = 30 }) {
   if (!targets.length || targets.some((t) => !t.trim())) throw new Error('give at least one file path, none empty');
@@ -18,8 +18,8 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
   const importers = new Map();
   for (const e of imports) importers.set(e.to, [...(importers.get(e.to) ?? []), e]);
 
-  const out = { format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [] };
-  const seen = { rules: new Map(), risks: new Map(), checks: new Map(), tests: new Map(), usedBy: new Map() };
+  const out = { format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [] };
+  const seen = { rules: new Map(), risks: new Map(), hotspots: new Map(), checks: new Map(), tests: new Map(), usedBy: new Map() };
   const note = (kind, key, item, target) => {
     const have = seen[kind].get(key);
     if (have) { if (!have.for.includes(target)) have.for.push(target); return; }
@@ -52,6 +52,7 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
       for (const r of group.risks ?? []) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text }, target);
       for (const c of group.checks ?? []) note('checks', c.run, { run: c.run, why: c.why ?? `checks for ${group.title}`, from: `group ${group.id}` }, target);
     }
+    for (const h of map.hotspots ?? []) if (h.file === target) note('hotspots', `${h.file}\0${h.symbol}\0${h.line}`, { file: h.file, symbol: h.symbol, line: h.line, labels: h.labels, rules: h.rules ?? [], note: h.note ?? null }, target);
     for (const rule of map.rules ?? []) {
       if (!matcher(rule.files)(target)) continue;
       note('rules', rule.id, { id: rule.id, rule: rule.rule, why: rule.why ?? null, files: rule.files }, target);
@@ -73,6 +74,7 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
     }
     if (isTest(target)) note('tests', target, { path: target, via: null }, target);
   }
+  out.hotspots.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
   for (const u of out.usedBy) indirect.delete(u.path);
   out.usedByIndirectly = indirect.size;
   out.tests.sort((a, b) => Number(a.via !== null) - Number(b.via !== null) || a.path.localeCompare(b.path));
@@ -97,6 +99,7 @@ export function toMarkdown(list, { checklist = false, heading } = {}) {
   };
   section('Rules that must keep holding', list.rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${forWhom(r)}`);
   section('Watch out', list.risks, (r) => `- ${r.text}${forWhom(r, `group ${r.group}`)}`);
+  section('Hot spots in this code', list.hotspots ?? [], (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`);
   section('Run these checks', list.checks, (c) => `- ${checklist ? '[ ] ' : ''}\`${c.run}\` — ${c.why}${forWhom(c)}`);
   section('Tests that reach this code', list.tests, (t) => `- \`${t.path}\`${t.via ? ` (through \`${t.via}\`)` : ''}${forWhom(t)}`);
   if (list.truncated?.tests) lines.splice(lines.length - 1, 0, `- …and ${list.truncated.tests} more`);
@@ -104,7 +107,7 @@ export function toMarkdown(list, { checklist = false, heading } = {}) {
   if (list.truncated?.usedBy) lines.splice(lines.length - 1, 0, `- …and ${list.truncated.usedBy} more direct users`);
   if (list.usedByIndirectly) lines.push(`${list.usedByIndirectly} more file(s) use this code indirectly.`, '');
   section('Not covered by the map', list.notCovered, (n) => `- \`${n.path}\`: ${n.why}`);
-  if (!list.rules.length && !list.risks.length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length)
+  if (!list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length)
     lines.push('Nothing in the map is tied to these files.', '');
   return lines.join('\n');
 }
