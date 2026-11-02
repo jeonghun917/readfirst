@@ -1,0 +1,733 @@
+{
+  "format": "readfirst/map@1",
+  "groups": [
+    {
+      "id": "apps-analytics-tracker",
+      "title": "@getmunin/analytics-tracker: Drop-in browser analytics tracker for self-hosted Munin. Built as a single content-hashed IIFE bundle and served by the Munin backend.",
+      "files": [
+        "apps/analytics-tracker/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/analytics-tracker test",
+          "why": "the test suite of @getmunin/analytics-tracker"
+        },
+        {
+          "run": "pnpm --filter @getmunin/analytics-tracker run typecheck",
+          "why": "types of @getmunin/analytics-tracker"
+        },
+        {
+          "run": "pnpm --filter @getmunin/analytics-tracker run lint",
+          "why": "lint rules of @getmunin/analytics-tracker"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-backend",
+      "title": "the deployable NestJS backend: Dockerfile, entrypoint and app shell over backend-core",
+      "files": [
+        "apps/backend/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/backend test",
+          "why": "the test suite of @getmunin/backend"
+        },
+        {
+          "run": "pnpm --filter @getmunin/backend run typecheck",
+          "why": "types of @getmunin/backend"
+        },
+        {
+          "run": "pnpm --filter @getmunin/backend run lint",
+          "why": "lint rules of @getmunin/backend"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-chat-widget",
+      "title": "@getmunin/chat-widget: Drop-in browser chat widget for self-hosted Munin. Built as a single content-hashed IIFE bundle and served by the Munin backend.",
+      "files": [
+        "apps/chat-widget/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/chat-widget test",
+          "why": "the test suite of @getmunin/chat-widget"
+        },
+        {
+          "run": "pnpm --filter @getmunin/chat-widget run typecheck",
+          "why": "types of @getmunin/chat-widget"
+        },
+        {
+          "run": "pnpm --filter @getmunin/chat-widget run lint",
+          "why": "lint rules of @getmunin/chat-widget"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "apps-web",
+      "title": "the dashboard: a thin Next.js shell over the /v1 control plane",
+      "files": [
+        "apps/web/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/web test",
+          "why": "the test suite of @getmunin/web"
+        },
+        {
+          "run": "pnpm --filter @getmunin/web run typecheck",
+          "why": "types of @getmunin/web"
+        },
+        {
+          "run": "pnpm --filter @getmunin/web run lint",
+          "why": "lint rules of @getmunin/web"
+        }
+      ],
+      "risks": [
+        {
+          "text": "apps/web never reads the workspace-root .env; NEXT_PUBLIC_* must be in apps/web/.env.local and are inlined at compile time, so restart after changing them (CLAUDE.md:155)"
+        }
+      ]
+    },
+    {
+      "id": "changeset",
+      "title": "changesets that become changelogs and release notes",
+      "files": [
+        ".changeset/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        }
+      ],
+      "risks": [
+        {
+          "text": "changesets are published surfaces: no real person's name, email, phone or domain (CLAUDE.md:102)"
+        }
+      ]
+    },
+    {
+      "id": "claude",
+      "title": "Claude Code settings, hooks and skills for this repo",
+      "files": [
+        ".claude/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "github",
+      "title": "CI and release workflows",
+      "files": [
+        ".github/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "husky",
+      "title": "git hooks: added-comment, fixture-PII and skill-tool-reference checks",
+      "files": [
+        ".husky/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-agent-host",
+      "title": "@getmunin/agent-host: In-process agent runner host: config CRUD, /v1/models proxy, ConversationHandler + curator-loop.",
+      "files": [
+        "packages/agent-host/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/agent-host test",
+          "why": "the test suite of @getmunin/agent-host"
+        },
+        {
+          "run": "pnpm --filter @getmunin/agent-host run typecheck",
+          "why": "types of @getmunin/agent-host"
+        },
+        {
+          "run": "pnpm --filter @getmunin/agent-host run lint",
+          "why": "lint rules of @getmunin/agent-host"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-agent-runtime",
+      "title": "@getmunin/agent-runtime: LLM agent loop — given a config, conversation history, and an MCP tool handle, produce a reply.",
+      "files": [
+        "packages/agent-runtime/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/agent-runtime test",
+          "why": "the test suite of @getmunin/agent-runtime"
+        },
+        {
+          "run": "pnpm --filter @getmunin/agent-runtime run typecheck",
+          "why": "types of @getmunin/agent-runtime"
+        },
+        {
+          "run": "pnpm --filter @getmunin/agent-runtime run lint",
+          "why": "lint rules of @getmunin/agent-runtime"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-backend-core",
+      "title": "@getmunin/backend-core: Shared NestJS modules powering both OSS and cloud Munin backends.",
+      "files": [
+        "packages/backend-core/*",
+        "packages/backend-core/src/*",
+        "packages/backend-core/src/agent/**",
+        "packages/backend-core/src/auth/**",
+        "packages/backend-core/src/common/**",
+        "packages/backend-core/src/control/**",
+        "packages/backend-core/src/mcp/**",
+        "packages/backend-core/src/oauth/**",
+        "packages/backend-core/src/realtime/**",
+        "packages/backend-core/src/scripts/**",
+        "packages/backend-core/src/modules/analytics/**",
+        "packages/backend-core/src/modules/cms/**",
+        "packages/backend-core/src/modules/credential-handoff/**",
+        "packages/backend-core/src/modules/crm/**",
+        "packages/backend-core/src/modules/curator/**",
+        "packages/backend-core/src/modules/feedback/**",
+        "packages/backend-core/src/modules/identity/**",
+        "packages/backend-core/src/modules/kb/**",
+        "packages/backend-core/src/modules/outreach/**",
+        "packages/backend-core/src/modules/playbooks/**",
+        "packages/backend-core/src/modules/review/**",
+        "packages/backend-core/src/modules/slack/**",
+        "packages/backend-core/src/modules/social/**",
+        "packages/backend-core/src/modules/system-alerts/**",
+        "packages/backend-core/src/modules/web/**",
+        "packages/backend-core/src/modules/webhooks/**",
+        "packages/backend-core/docs-fixtures/**",
+        "packages/backend-core/scripts/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/backend-core test",
+          "why": "the test suite of @getmunin/backend-core"
+        },
+        {
+          "run": "pnpm --filter @getmunin/backend-core run typecheck",
+          "why": "types of @getmunin/backend-core"
+        },
+        {
+          "run": "pnpm --filter @getmunin/backend-core run lint",
+          "why": "lint rules of @getmunin/backend-core"
+        }
+      ],
+      "risks": [
+        {
+          "text": "/v1 controllers and MCP tool handlers stay thin wrappers over the same service method; logic lives in the service, never in a controller or tool (CLAUDE.md:3)"
+        },
+        {
+          "text": "outreach is propose-only: it never auto-sends (CLAUDE.md:26)",
+          "files": [
+            "packages/backend-core/src/modules/outreach/**"
+          ]
+        },
+        {
+          "text": "event sinks run inside the emitting transaction and may only enqueue durable work; external I/O belongs in the module's own out-of-band worker (CLAUDE.md:43)",
+          "files": [
+            "packages/backend-core/src/modules/slack/**",
+            "packages/backend-core/src/modules/webhooks/**"
+          ]
+        },
+        {
+          "text": "the public tool and skill catalog deliberately lists every tool, admin ones included; a sensitive skill opts out with public: false, never the reverse (CLAUDE.md:71)",
+          "files": [
+            "packages/backend-core/src/mcp/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "backend-conv",
+      "title": "conversations: channels, inbound polling, attachments (has its own CLAUDE.md)",
+      "files": [
+        "packages/backend-core/src/modules/conv/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/backend-core test -- src/modules/conv",
+          "why": "the conv module's tests"
+        }
+      ],
+      "risks": [
+        {
+          "text": "adapters touch only conv_inbound_state.cursor; the poll worker owns consecutive_failures, failing_since, last_failure_at and next_poll_at (conv/CLAUDE.md:39)"
+        },
+        {
+          "text": "secrets in conv_channels.config are pgcrypto-wrapped and surface as password: REDACTED, never plaintext (conv/CLAUDE.md:75)"
+        },
+        {
+          "text": "attachments have their own rules file: packages/backend-core/src/modules/conv/attachments/CLAUDE.md",
+          "files": [
+            "packages/backend-core/src/modules/conv/attachments/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "backend-connectors",
+      "title": "connectors trunk and the domain modules that read customers' systems (commerce, bookings, seo)",
+      "files": [
+        "packages/backend-core/src/modules/connectors/**",
+        "packages/backend-core/src/modules/commerce/**",
+        "packages/backend-core/src/modules/bookings/**",
+        "packages/backend-core/src/modules/seo/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/backend-core test -- src/modules/connectors src/modules/commerce src/modules/bookings src/modules/seo"
+        }
+      ],
+      "risks": [
+        {
+          "text": "config.oauth is reserved for the trunk; adapters never read or write it, and publicConfig is an allow-list that keeps token ciphertext out of DTOs (CLAUDE.md:56)"
+        },
+        {
+          "text": "a token refresh is a write on a read path: SELECT … FOR UPDATE on the connection row, and marking a connection expired commits in a separate transaction, or the marker rolls back with the error (CLAUDE.md:57)"
+        },
+        {
+          "text": "connector data is live and never persisted in Munin; a domain module is a noun with its own contract, never a vendor (CLAUDE.md:44)"
+        },
+        {
+          "text": "seo research tools estimate worst-case cost and refuse before any HTTP call above maxCostUsd (CLAUDE.md:48)",
+          "files": [
+            "packages/backend-core/src/modules/seo/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packages-core",
+      "title": "@getmunin/core: Munin core: actor identity, request context, mailer, storage, crypto helpers.",
+      "files": [
+        "packages/core/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/core test",
+          "why": "the test suite of @getmunin/core"
+        },
+        {
+          "run": "pnpm --filter @getmunin/core run typecheck",
+          "why": "types of @getmunin/core"
+        },
+        {
+          "run": "pnpm --filter @getmunin/core run lint",
+          "why": "lint rules of @getmunin/core"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-dashboard-pages",
+      "title": "@getmunin/dashboard-pages: Munin dashboard page components shared between OSS and cloud Next apps.",
+      "files": [
+        "packages/dashboard-pages/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/dashboard-pages test",
+          "why": "the test suite of @getmunin/dashboard-pages"
+        },
+        {
+          "run": "pnpm --filter @getmunin/dashboard-pages run typecheck",
+          "why": "types of @getmunin/dashboard-pages"
+        },
+        {
+          "run": "pnpm --filter @getmunin/dashboard-pages run lint",
+          "why": "lint rules of @getmunin/dashboard-pages"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-db",
+      "title": "@getmunin/db: Munin database: Drizzle schema, migrations, RLS policies.",
+      "files": [
+        "packages/db/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/db test -- src/migrations-journal.test.ts",
+          "why": "journal timestamps"
+        },
+        {
+          "run": "pnpm --filter @getmunin/db test",
+          "why": "the test suite of @getmunin/db"
+        },
+        {
+          "run": "pnpm --filter @getmunin/db run typecheck",
+          "why": "types of @getmunin/db"
+        },
+        {
+          "run": "pnpm --filter @getmunin/db run lint",
+          "why": "lint rules of @getmunin/db"
+        }
+      ],
+      "risks": [
+        {
+          "text": "the _journal.json when timestamp must strictly increase with idx; a lower one is silently skipped on every existing DB while fresh CI looks green. This killed the 4.62.0 deploy (CLAUDE.md:118)",
+          "files": [
+            "packages/db/drizzle/**"
+          ]
+        },
+        {
+          "text": "rename drizzle-kit's random NNNN_adjective_noun migration to NNNN_<what_it_does>.sql, with its snapshot and journal tag (CLAUDE.md:116)",
+          "files": [
+            "packages/db/drizzle/**"
+          ]
+        },
+        {
+          "text": "one RLS policy per table in src/sql/rls.sql, gated by app.org_id and app.bypass_rls; the app connects as munin_app so RLS applies, and only the tenancy interceptor sets the GUCs (CLAUDE.md:88-90)",
+          "files": [
+            "packages/db/src/sql/**",
+            "packages/db/src/schema.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "packages-docs-pages",
+      "title": "@getmunin/docs-pages: Munin developer-portal route components shared between OSS and cloud Next apps.",
+      "files": [
+        "packages/docs-pages/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/docs-pages run typecheck",
+          "why": "types of @getmunin/docs-pages"
+        },
+        {
+          "run": "pnpm --filter @getmunin/docs-pages run lint",
+          "why": "lint rules of @getmunin/docs-pages"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-emails",
+      "title": "@getmunin/emails: Munin transactional email templates (React Email).",
+      "files": [
+        "packages/emails/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/emails test",
+          "why": "the test suite of @getmunin/emails"
+        },
+        {
+          "run": "pnpm --filter @getmunin/emails run typecheck",
+          "why": "types of @getmunin/emails"
+        },
+        {
+          "run": "pnpm --filter @getmunin/emails run lint",
+          "why": "lint rules of @getmunin/emails"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-eslint-config",
+      "title": "shared ESLint config",
+      "files": [
+        "packages/eslint-config/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-inspector-app",
+      "title": "@getmunin/inspector-app: Munin Inspector MCP App: the ui://munin/inspector panel bundle rendered inline by MCP App hosts.",
+      "files": [
+        "packages/inspector-app/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/inspector-app run typecheck",
+          "why": "types of @getmunin/inspector-app"
+        },
+        {
+          "run": "pnpm --filter @getmunin/inspector-app run lint",
+          "why": "lint rules of @getmunin/inspector-app"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-mcp-toolkit",
+      "title": "@getmunin/mcp-toolkit: Decorators + registry that turn NestJS providers into MCP tools.",
+      "files": [
+        "packages/mcp-toolkit/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/mcp-toolkit test",
+          "why": "the test suite of @getmunin/mcp-toolkit"
+        },
+        {
+          "run": "pnpm --filter @getmunin/mcp-toolkit run typecheck",
+          "why": "types of @getmunin/mcp-toolkit"
+        },
+        {
+          "run": "pnpm --filter @getmunin/mcp-toolkit run lint",
+          "why": "lint rules of @getmunin/mcp-toolkit"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-sdk",
+      "title": "@getmunin/sdk: TypeScript client for the Munin REST API (token minting, end-user lookup, webhooks).",
+      "files": [
+        "packages/sdk/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/sdk test",
+          "why": "the test suite of @getmunin/sdk"
+        },
+        {
+          "run": "pnpm --filter @getmunin/sdk run typecheck",
+          "why": "types of @getmunin/sdk"
+        },
+        {
+          "run": "pnpm --filter @getmunin/sdk run lint",
+          "why": "lint rules of @getmunin/sdk"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-tsconfig",
+      "title": "shared tsconfig bases",
+      "files": [
+        "packages/tsconfig/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-types",
+      "title": "@getmunin/types: Shared Zod schemas + TypeScript types for the Munin platform.",
+      "files": [
+        "packages/types/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/types test",
+          "why": "the test suite of @getmunin/types"
+        },
+        {
+          "run": "pnpm --filter @getmunin/types run typecheck",
+          "why": "types of @getmunin/types"
+        },
+        {
+          "run": "pnpm --filter @getmunin/types run lint",
+          "why": "lint rules of @getmunin/types"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-ui",
+      "title": "@getmunin/ui: Munin design-system primitives (shadcn-style) shared between OSS and cloud Next apps.",
+      "files": [
+        "packages/ui/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/ui test",
+          "why": "the test suite of @getmunin/ui"
+        },
+        {
+          "run": "pnpm --filter @getmunin/ui run typecheck",
+          "why": "types of @getmunin/ui"
+        },
+        {
+          "run": "pnpm --filter @getmunin/ui run lint",
+          "why": "lint rules of @getmunin/ui"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "packages-widget-voice",
+      "title": "@getmunin/widget-voice: Vendor-agnostic browser voice SDK for embedding into the Munin chat widget. Wraps Vapi (and future vendors) behind a common VoiceSession interface.",
+      "files": [
+        "packages/widget-voice/**"
+      ],
+      "checks": [
+        {
+          "run": "pnpm --filter @getmunin/widget-voice test",
+          "why": "the test suite of @getmunin/widget-voice"
+        },
+        {
+          "run": "pnpm --filter @getmunin/widget-voice run typecheck",
+          "why": "types of @getmunin/widget-voice"
+        },
+        {
+          "run": "pnpm --filter @getmunin/widget-voice run lint",
+          "why": "lint rules of @getmunin/widget-voice"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "root",
+      "title": "workspace root: package manifests, agent guides, env samples",
+      "files": [
+        ".dockerignore",
+        ".editorconfig",
+        ".env.example",
+        ".gitignore",
+        ".npmrc",
+        ".nvmrc",
+        ".prettierignore",
+        ".prettierrc",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "CODE_OF_CONDUCT.md",
+        "CONTRIBUTING.md",
+        "LICENSE",
+        "LICENSE_POLICY.json",
+        "README.md",
+        "SECURITY.md",
+        "THIRD_PARTY_LICENSES.md",
+        "compose.yml",
+        "lint-staged.config.mjs",
+        "package.json",
+        "pnpm-lock.yaml",
+        "pnpm-workspace.yaml",
+        "server.json",
+        "slack-app-manifest.json",
+        "tsconfig.base.json",
+        "turbo.json"
+      ],
+      "checks": [
+        {
+          "run": "pnpm test",
+          "why": "the test suite"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "scripts",
+      "title": "repo scripts: PII and skill-reference checks, release aggregation, licenses",
+      "files": [
+        "scripts/**"
+      ],
+      "checks": [
+        {
+          "run": "node scripts/check-skill-tool-refs.mjs",
+          "why": "skill tool names"
+        },
+        {
+          "run": "node scripts/check-fixture-pii.mjs"
+        }
+      ],
+      "risks": []
+    }
+  ],
+  "rules": [
+    {
+      "id": "mcp-tool-contract",
+      "rule": "an MCP tool pre-checks unique and FK constraints and throws ConflictException / BadRequestException, never returns void, carries title plus exactly one of readOnlyHint / destructiveHint, and does not mix read and write",
+      "why": "a violation poisons the outer tenant transaction and fails at commit as a bare 500; undefined fails the CallToolResult schema (CLAUDE.md:77-80)",
+      "files": [
+        "packages/backend-core/src/modules/*/*.tools.ts"
+      ]
+    },
+    {
+      "id": "fence-third-party-text",
+      "rule": "text from conversations, CRM fields, imported KB docs and connector records reaches a model only inside fenceUntrusted()",
+      "why": "it is written by people outside the org (CLAUDE.md:70)",
+      "files": [
+        "packages/agent-runtime/**",
+        "packages/backend-core/src/modules/conv/**",
+        "packages/backend-core/src/modules/kb/**",
+        "packages/backend-core/src/modules/crm/**"
+      ]
+    },
+    {
+      "id": "no-real-people-in-fixtures",
+      "rule": "fixtures, changesets, commit messages and PR bodies use reserved domains, placeholder names and unassignable phone numbers",
+      "why": "they are published and can't all be retracted (CLAUDE.md:102)",
+      "files": [
+        ".changeset/**",
+        "**/*.test.ts",
+        "packages/backend-core/src/modules/*/skills/*.md"
+      ],
+      "checks": [
+        {
+          "run": "node scripts/check-fixture-pii.mjs"
+        }
+      ]
+    },
+    {
+      "id": "skill-names-real-tools",
+      "rule": "a tool name in a skill must match a real @McpTool; renaming a tool means grepping the skills too",
+      "why": "a tool name in a skill is a promise an agent will try to keep (CLAUDE.md:178)",
+      "files": [
+        "packages/backend-core/src/modules/*/skills/*.md",
+        "packages/backend-core/src/modules/*/*.tools.ts"
+      ],
+      "checks": [
+        {
+          "run": "node scripts/check-skill-tool-refs.mjs"
+        }
+      ]
+    },
+    {
+      "id": "migration-on-existing-db",
+      "rule": "smoke-test a migration and its backfill against a DB already at the previous migration, as munin_app, before the PR",
+      "why": "a backfill run only against an empty DB is untested, and a superuser hides RLS bugs (CLAUDE.md:117)",
+      "files": [
+        "packages/db/drizzle/**"
+      ]
+    }
+  ],
+  "ignore": []
+}
