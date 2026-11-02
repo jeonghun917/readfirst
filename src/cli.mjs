@@ -1,5 +1,5 @@
 // readfirst: what to read and check before changing a file.
-//   readfirst init [--agent]       write a first .readfirst/map.json from the file tree (and the agent-notes line)
+//   readfirst init [--agent] [--ci] write a first .readfirst/map.json from the file tree (and the agent-notes line, the Action)
 //   readfirst prompt               the brief for a coding agent to fill in titles, checks, risks and rules
 //   readfirst prompt --labels <lang>  the brief for personal labels (a translation and plain notes) for the view
 //   readfirst check                the map covers every tracked file and is well formed
@@ -15,9 +15,9 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
-import { assertMap, draftMap, fixMap, MAP_PATH, mapProblems, settleMap } from './map.mjs';
+import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
@@ -27,7 +27,7 @@ import { emptyList, readList, toMarkdown } from './readlist.mjs';
 
 const HELP = `readfirst — what to read and check before changing a file
 
-  readfirst init [--agent]       write a first ${MAP_PATH} from the file tree
+  readfirst init [--agent] [--ci] write a first ${MAP_PATH} from the file tree
   readfirst prompt               brief for your coding agent to fill in the map
   readfirst check [--strict]     check the map covers every tracked file (new files beside placed ones pass; --strict fails on them)
   readfirst fix                  place new files, drop patterns for deleted ones
@@ -41,7 +41,8 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst prompt --labels <lang>  brief for your agent to write personal labels for the view (e.g. ko, en)
 
 Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; default 900), --force (init: replace the map),
-         --agent (init: add the read-first line to CLAUDE.md / AGENTS.md / .cursorrules)`;
+         --agent (init: add the read-first line to CLAUDE.md / AGENTS.md / .cursorrules),
+         --ci (init: add .github/workflows/readfirst.yml, the Action with auto-fix)`;
 
 function parse(argv) {
   const args = { _: [], json: false };
@@ -54,6 +55,7 @@ function parse(argv) {
     else if (a === '--dry-run') args.dryRun = true;
     else if (a === '--strict') args.strict = true;
     else if (a === '--verify') args.verify = true;
+    else if (a === '--ci') args.ci = true;
     else if (a === '--stop') args.stop = true;
     else if (a === '-h' || a === '--help') args.help = true;
     else if (a.startsWith('--')) { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); args[a.slice(2)] = v; }
@@ -255,6 +257,34 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   }
 }
 
+export const WORKFLOW_PATH = '.github/workflows/readfirst.yml';
+// The Action as `init --ci` writes it: on each PR, the read-list comment, and new files placed in the map on the PR's
+// branch (auto-fix). Never over a workflow that is already there.
+export function writeWorkflow(root) {
+  const at = join(root, WORKFLOW_PATH);
+  if (existsSync(at)) return false;
+  mkdirSync(dirname(at), { recursive: true });
+  writeFileSync(at, [
+    '# readfirst: one comment per PR with the rules, risks and checks for the files it changes,',
+    '# and new files placed in .readfirst/map.json on the PR branch (auto-fix). https://github.com/jeonghun917/readfirst',
+    'name: readfirst',
+    'on: pull_request',
+    'permissions:',
+    '  contents: write       # auto-fix commits the map update to the PR branch',
+    '  pull-requests: write  # the comment',
+    'jobs:',
+    '  readfirst:',
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0',
+    '      - uses: jeonghun917/readfirst@v0',
+    '        with:',
+    '          auto-fix: true',
+    '',
+  ].join('\n'));
+  return true;
+}
+
 export const HOOK_COMMAND = 'npx --yes readfirst hook';
 export const STOP_HOOK_COMMAND = 'npx --yes readfirst hook --stop';
 // Adds the hook to the project's .claude/settings.json, keeping everything already there. With verify, also the Stop
@@ -315,14 +345,21 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const map = draftMap(files, readText(root));
     mkdirSync(join(root, '.readfirst'), { recursive: true });
     writeFileSync(at, `${JSON.stringify(map, null, 2)}\n`);
-    const checks = map.groups.find((g) => g.checks.length)?.checks ?? [];
-    io.out(`wrote ${MAP_PATH}: ${map.groups.length} group${map.groups.length === 1 ? "" : "s"}${checks.length ? `, checks found: ${checks.map((c) => c.run).join(', ')}` : ''}.\n`);
+    const repoChecks = draftChecks(files, readText(root)).map((c) => c.run);
+    const scoped = map.groups.filter((g) => g.checks.length && g.checks.some((c) => !repoChecks.includes(c.run))).length;
+    io.out(`wrote ${MAP_PATH}: ${map.groups.length} group${map.groups.length === 1 ? '' : 's'}${repoChecks.length ? `, checks found: ${repoChecks.join(', ')}` : ''}${scoped ? `; ${scoped} workspace package${scoped === 1 ? '' : 's'} got ${scoped === 1 ? 'its' : 'their'} own checks` : ''}.\n`);
     if (args.agent) {
       const wrote = addAgentLine(root);
       io.out(wrote.length ? `added the read-first line to ${wrote.join(', ')}.\n` : 'your agent notes already mention readfirst.\n');
-      io.out('Using Claude Code? `readfirst hook --install` hands it the read list automatically before each edit.\n');
     }
-    io.out(`Next: run \`readfirst prompt\` and give the brief to your coding agent, or fill in titles, checks, risks and rules by hand.${args.agent ? '' : '\nTip: `readfirst init --agent` also adds the one line your coding agent needs to CLAUDE.md or AGENTS.md.'}\n`);
+    if (args.ci) io.out(writeWorkflow(root) ? `wrote ${WORKFLOW_PATH}: a PR comment with the read list, and new files placed in the map on the PR branch.\n` : `${WORKFLOW_PATH} already exists; left as it is.\n`);
+    const next = [
+      'run `readfirst prompt` and give the brief to your coding agent (or fill in titles, risks and rules by hand)',
+      ...(args.agent ? [] : ['`readfirst init --agent` would add the one line your agent needs to CLAUDE.md or AGENTS.md']),
+      'Claude Code: `readfirst hook --install` gives it the read list before each edit (`--verify` also runs the checks before it finishes)',
+      ...(args.ci ? [] : ['`readfirst init --ci` would add the GitHub Action that comments on PRs and keeps the map in step']),
+    ];
+    io.out(`Next:\n${next.map((n) => `- ${n}`).join('\n')}\n`);
     return 0;
   }
   if (cmd === 'prompt') {
