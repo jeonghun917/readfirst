@@ -1,0 +1,1912 @@
+{
+  "format": "readfirst/map@1",
+  "groups": [
+    {
+      "id": "saleor-account",
+      "title": "customers, staff accounts, addresses and their PII",
+      "files": [
+        "saleor/account/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/account",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "user PII (email and the like) is never copied into other tables or event params; new user-referencing fields are registered with the anonymizer and deleted with the user (AGENTS.md:650-654)"
+        }
+      ]
+    },
+    {
+      "id": "saleor-app",
+      "title": "installed apps (third-party integrations), their tokens and extensions",
+      "files": [
+        "saleor/app/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/app",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-asgi",
+      "title": "the ASGI entry point and its middleware",
+      "files": [
+        "saleor/asgi/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/asgi",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-attribute",
+      "title": "product and page attributes (types, values, assignments)",
+      "files": [
+        "saleor/attribute/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/attribute",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-auth",
+      "title": "auth backends and tokens outside GraphQL",
+      "files": [
+        "saleor/auth/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/auth",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-channel",
+      "title": "sales channels: currency, country and per-channel settings",
+      "files": [
+        "saleor/channel/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/channel",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-checkout",
+      "title": "checkout: lines, totals, discounts, completing into an order",
+      "files": [
+        "saleor/checkout/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/checkout",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-core",
+      "title": "shared core: tracing, transactions, events, HTTP client, utils",
+      "files": [
+        "saleor/core/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/core",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-csv",
+      "title": "CSV export of products and gift cards",
+      "files": [
+        "saleor/csv/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/csv",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-discount",
+      "title": "promotions, vouchers and discount application",
+      "files": [
+        "saleor/discount/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/discount",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "voucher usage counters change with F() expressions, never count += 1; save() (AGENTS.md:341-356, saleor/discount/utils/voucher.py:85)",
+          "files": [
+            "saleor/discount/utils/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "saleor-giftcard",
+      "title": "gift cards: issue, balance, usage",
+      "files": [
+        "saleor/giftcard/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/giftcard",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-account",
+      "title": "GraphQL account and staff mutations",
+      "files": [
+        "saleor/graphql/account/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/account",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-app",
+      "title": "GraphQL layer for app",
+      "files": [
+        "saleor/graphql/app/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/app",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-attribute",
+      "title": "GraphQL layer for attribute",
+      "files": [
+        "saleor/graphql/attribute/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/attribute",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-channel",
+      "title": "GraphQL layer for channel",
+      "files": [
+        "saleor/graphql/channel/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/channel",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-checkout",
+      "title": "GraphQL checkout mutations",
+      "files": [
+        "saleor/graphql/checkout/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/checkout",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-core",
+      "title": "GraphQL core: base mutations, types, validators, descriptions",
+      "files": [
+        "saleor/graphql/core/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/core",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "saleor/graphql/core/descriptions.py holds the ADDED_IN_{VERSION} constants; a version the change ships in that has none yet gets a new constant here (AGENTS.md:51-55)",
+          "files": [
+            "saleor/graphql/core/descriptions.py"
+          ]
+        },
+        {
+          "text": "saleor/graphql/core/validators/file.py is the reference for validating uploaded and downloaded files (AGENTS.md:663)",
+          "files": [
+            "saleor/graphql/core/validators/**"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graphql-csv",
+      "title": "GraphQL layer for csv",
+      "files": [
+        "saleor/graphql/csv/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/csv",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-discount",
+      "title": "GraphQL layer for discount",
+      "files": [
+        "saleor/graphql/discount/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/discount",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-giftcard",
+      "title": "GraphQL layer for giftcard",
+      "files": [
+        "saleor/graphql/giftcard/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/giftcard",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-invoice",
+      "title": "GraphQL layer for invoice",
+      "files": [
+        "saleor/graphql/invoice/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/invoice",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-management",
+      "title": "GraphQL layer for management",
+      "files": [
+        "saleor/graphql/management/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/management",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-menu",
+      "title": "GraphQL layer for menu",
+      "files": [
+        "saleor/graphql/menu/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/menu",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-meta",
+      "title": "GraphQL layer for meta",
+      "files": [
+        "saleor/graphql/meta/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/meta",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-notifications",
+      "title": "GraphQL layer for notifications",
+      "files": [
+        "saleor/graphql/notifications/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/notifications",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-order",
+      "title": "GraphQL order queries and mutations",
+      "files": [
+        "saleor/graphql/order/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/order",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-page",
+      "title": "GraphQL layer for page",
+      "files": [
+        "saleor/graphql/page/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/page",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-payment",
+      "title": "GraphQL payment and transaction mutations",
+      "files": [
+        "saleor/graphql/payment/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/payment",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-plugins",
+      "title": "GraphQL layer for plugins",
+      "files": [
+        "saleor/graphql/plugins/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/plugins",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-product",
+      "title": "GraphQL product types, queries and mutations",
+      "files": [
+        "saleor/graphql/product/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/product",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-root",
+      "title": "GraphQL schema, API views, query cost map and shared helpers",
+      "files": [
+        "saleor/graphql/*"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/tests",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "schema.graphql is generated: after any GraphQL type change run python manage.py graphql_schema --schema saleor/graphql/schema.graphql and commit it; a stale file fails CI (AGENTS.md:74-75, saleor/graphql/AGENTS.md:30)",
+          "files": [
+            "saleor/graphql/schema.graphql"
+          ]
+        },
+        {
+          "text": "a new field with a limit argument registers its cost multiplier in query_cost_map.py, or expensive queries slip past rate limiting (saleor/graphql/AGENTS.md:12)",
+          "files": [
+            "saleor/graphql/query_cost_map.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "graphql-shipping",
+      "title": "GraphQL layer for shipping",
+      "files": [
+        "saleor/graphql/shipping/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/shipping",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-shop",
+      "title": "GraphQL layer for shop",
+      "files": [
+        "saleor/graphql/shop/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/shop",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-site",
+      "title": "GraphQL layer for site",
+      "files": [
+        "saleor/graphql/site/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/site",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-tax",
+      "title": "GraphQL layer for tax",
+      "files": [
+        "saleor/graphql/tax/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/tax",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-tests",
+      "title": "GraphQL layer for tests",
+      "files": [
+        "saleor/graphql/tests/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/tests",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-translations",
+      "title": "GraphQL layer for translations",
+      "files": [
+        "saleor/graphql/translations/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/translations",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-utils",
+      "title": "GraphQL layer for utils",
+      "files": [
+        "saleor/graphql/utils/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/utils",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-warehouse",
+      "title": "GraphQL layer for warehouse",
+      "files": [
+        "saleor/graphql/warehouse/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/warehouse",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "graphql-webhook",
+      "title": "GraphQL layer for webhook",
+      "files": [
+        "saleor/graphql/webhook/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/graphql/webhook",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-invoice",
+      "title": "invoices for orders",
+      "files": [
+        "saleor/invoice/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/invoice",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-json-schemas",
+      "title": "JSON schemas for app payloads",
+      "files": [
+        "saleor/json_schemas/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/json_schemas",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-menu",
+      "title": "navigation menus",
+      "files": [
+        "saleor/menu/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/menu",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-order",
+      "title": "orders: lines, fulfilments, payments, refunds, events",
+      "files": [
+        "saleor/order/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/order",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-page",
+      "title": "CMS pages",
+      "files": [
+        "saleor/page/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/page",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-payment",
+      "title": "payments and transactions, gateways, row locks",
+      "files": [
+        "saleor/payment/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/payment",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "read-modify-write on payments and transactions locks rows through lock_objects.py inside traced_atomic_transaction; a lazy select_for_update queryset takes no lock at all (AGENTS.md:382-421)"
+        }
+      ]
+    },
+    {
+      "id": "saleor-permission",
+      "title": "permission enums and checks",
+      "files": [
+        "saleor/permission/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/permission",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-plugins",
+      "title": "plugin manager and built-in plugins (webhooks, gateways, Avatax)",
+      "files": [
+        "saleor/plugins/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/plugins",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-product",
+      "title": "product catalog: products, variants, channel listings, prices and discounted prices",
+      "files": [
+        "saleor/product/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/product",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "ProductChannelListing.discounted_price_dirty marks listings whose discounted price must be recalculated by a Celery task; a promotion or price change that skips mark_products_in_channels_as_dirty leaves storefront prices stale (saleor/product/utils/product.py:82-135)"
+        },
+        {
+          "text": "update_discounted_prices_for_promotion(only_dirty_products=True) is meant to recalculate only dirty listings, but the filter on line 71 is not assigned, so every listing of the products is recalculated (saleor/product/utils/variant_prices.py:40-41, 70-71)",
+          "files": [
+            "saleor/product/utils/variant_prices.py"
+          ]
+        },
+        {
+          "text": "search_index_dirty drives re-indexing; a change to search vector logic needs a data migration that marks existing rows dirty (AGENTS.md:483-520, saleor/product/models.py:193)"
+        }
+      ]
+    },
+    {
+      "id": "saleor-root",
+      "title": "Django settings, URLs, Celery config and the package entry",
+      "files": [
+        "saleor/*"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/tests",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "settings.py is read by every pod; SITE_ID may be unset, so never read settings.SITE_ID to find the current site (AGENTS.md:28-40)",
+          "files": [
+            "saleor/settings.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "saleor-schedulers",
+      "title": "Celery beat schedulers",
+      "files": [
+        "saleor/schedulers/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/schedulers",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-seo",
+      "title": "SEO fields",
+      "files": [
+        "saleor/seo/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/seo",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-shipping",
+      "title": "shipping zones, methods and prices",
+      "files": [
+        "saleor/shipping/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/shipping",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-site",
+      "title": "site settings and the patched Site cache",
+      "files": [
+        "saleor/site/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/site",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "Site.objects.get_current() reads THREADED_SITE_CACHE, a process-global dict that Site/SiteSettings saves never invalidate: a read after a write in the same process can be stale (AGENTS.md:42-45, saleor/site/patch_sites.py:16-59)",
+          "files": [
+            "saleor/site/patch_sites.py"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "saleor-static",
+      "title": "static assets",
+      "files": [
+        "saleor/static/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/static",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-tax",
+      "title": "tax configuration and calculation",
+      "files": [
+        "saleor/tax/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/tax",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-tests",
+      "title": "shared test settings, fixtures and helpers",
+      "files": [
+        "saleor/tests/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/tests",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "caches are process-global and survive across tests: read rows back with refresh_from_db, warm a cache before counting queries, or clear it (AGENTS.md:145-150)"
+        }
+      ]
+    },
+    {
+      "id": "saleor-thumbnail",
+      "title": "image thumbnails: download, validate, resize",
+      "files": [
+        "saleor/thumbnail/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/thumbnail",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": [
+        {
+          "text": "downloaded files are untrusted: check magic bytes not Content-Type, an allowlist without SVG, a size cap, the HTTP status before the body (AGENTS.md:656-663)"
+        }
+      ]
+    },
+    {
+      "id": "saleor-translations",
+      "title": "translation models",
+      "files": [
+        "saleor/translations/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/translations",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-warehouse",
+      "title": "warehouses, stock, allocations and reservations",
+      "files": [
+        "saleor/warehouse/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/warehouse",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "saleor-webhook",
+      "title": "webhook payloads, events and delivery",
+      "files": [
+        "saleor/webhook/**"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db saleor/webhook",
+          "why": "the tests for this part"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "claude",
+      "title": "Claude Code settings and skills",
+      "files": [
+        ".claude/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "deployment",
+      "title": "deployment manifests",
+      "files": [
+        "deployment/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "devcontainer",
+      "title": "dev container",
+      "files": [
+        ".devcontainer/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "docs",
+      "title": "docs: agent notes, ADRs",
+      "files": [
+        "docs/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "github",
+      "title": "CI workflows",
+      "files": [
+        ".github/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "root",
+      "title": "top-level files: AGENTS.md, pyproject, Dockerfile, manage.py",
+      "files": [
+        ".dockerignore",
+        ".editorconfig",
+        ".env.example",
+        ".gitattributes",
+        ".gitignore",
+        ".pre-commit-config.yaml",
+        ".release-it.json",
+        "AGENTS.md",
+        "CHANGELOG.md",
+        "CLAUDE.md",
+        "CONTRIBUTING.md",
+        "Dockerfile",
+        "LICENSE",
+        "README.md",
+        "SECURITY.md",
+        "conftest.py",
+        "manage.py",
+        "package-lock.json",
+        "package.json",
+        "pyproject.toml",
+        "setup.cfg",
+        "socket.yml",
+        "uv.lock"
+      ],
+      "checks": [
+        {
+          "run": "pytest --reuse-db",
+          "why": "the whole suite"
+        }
+      ],
+      "risks": []
+    },
+    {
+      "id": "scripts",
+      "title": "maintenance scripts",
+      "files": [
+        "scripts/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "semgrep",
+      "title": "semgrep rules run in CI",
+      "files": [
+        ".semgrep/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "templates",
+      "title": "email and HTML templates",
+      "files": [
+        "templates/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "vscode",
+      "title": "editor settings",
+      "files": [
+        ".vscode/**"
+      ],
+      "checks": [],
+      "risks": []
+    },
+    {
+      "id": "worktree-container",
+      "title": "per-worktree docker stack (compose.sh)",
+      "files": [
+        ".worktree-container/**"
+      ],
+      "checks": [],
+      "risks": [
+        {
+          "text": "in a git worktree, run tests and manage.py inside this worktree's containers (.worktree-container/compose.sh exec saleor ...), not on the host, which may hold another worktree's database (AGENTS.md:91-105)"
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "id": "tasks-after-commit",
+      "rule": "a Celery task is queued after the transaction commits (on_commit, or call_event for webhooks), never with a bare .delay() inside an open transaction",
+      "why": "the task can start on another pod before the row it needs is committed (AGENTS.md:19-21, 436-448)",
+      "files": [
+        "saleor/**"
+      ]
+    },
+    {
+      "id": "atomic-writes",
+      "rule": "counters change with F() expressions and upserts use update_or_create on a unique constraint; no check-then-act and no count += 1; save()",
+      "why": "every operation runs concurrently with itself on many pods; the read-then-write loses updates (AGENTS.md:13-15, 341-379)",
+      "files": [
+        "saleor/**"
+      ]
+    },
+    {
+      "id": "short-locks",
+      "rule": "select_for_update runs inside traced_atomic_transaction through the app's lock_objects module, is evaluated (list/get/__in) so it really locks, and the transaction stays short",
+      "why": "a lazy lock queryset takes no lock; long locks stall the shared Postgres (AGENTS.md:382-421, 646-648)",
+      "files": [
+        "saleor/**"
+      ]
+    },
+    {
+      "id": "no-n-plus-one",
+      "rule": "no per-row query or per-row save in a loop: bulk update/delete, .iterator() on unbounded querysets, fetch only the columns used, reuse dataloaders on hot paths",
+      "why": "the shared Postgres is the scaling bottleneck and writes replicate to every read replica (AGENTS.md:22-24, 632-648)",
+      "files": [
+        "saleor/**"
+      ]
+    },
+    {
+      "id": "domain-never-imports-graphql",
+      "rule": "code outside saleor/graphql never imports from saleor.graphql; a helper both need moves into the domain module",
+      "why": "the GraphQL layer depends on the domain, never the reverse (AGENTS.md:273-275)",
+      "files": [
+        "saleor/account/**",
+        "saleor/app/**",
+        "saleor/asgi/**",
+        "saleor/attribute/**",
+        "saleor/auth/**",
+        "saleor/channel/**",
+        "saleor/checkout/**",
+        "saleor/core/**",
+        "saleor/csv/**",
+        "saleor/discount/**",
+        "saleor/giftcard/**",
+        "saleor/invoice/**",
+        "saleor/json_schemas/**",
+        "saleor/menu/**",
+        "saleor/order/**",
+        "saleor/page/**",
+        "saleor/payment/**",
+        "saleor/permission/**",
+        "saleor/plugins/**",
+        "saleor/product/**",
+        "saleor/schedulers/**",
+        "saleor/seo/**",
+        "saleor/shipping/**",
+        "saleor/site/**",
+        "saleor/tax/**",
+        "saleor/thumbnail/**",
+        "saleor/translations/**",
+        "saleor/warehouse/**",
+        "saleor/webhook/**"
+      ]
+    },
+    {
+      "id": "site-not-site-id",
+      "rule": "the current site comes from Site.objects.get_current() (or get_site_promise), never settings.SITE_ID, and anything per-site is keyed by the resolved site",
+      "why": "one process may serve several sites; SITE_ID alone lets one tenant read another's data (AGENTS.md:28-40)",
+      "files": [
+        "saleor/**"
+      ]
+    },
+    {
+      "id": "webhooks-through-call-event",
+      "rule": "webhook events are dispatched with call_event(manager.method, ...) from saleor.core.utils.events, never by calling the plugin manager method directly",
+      "why": "call_event defers the event until the transaction commits (AGENTS.md:19-21, 321-335)",
+      "files": [
+        "saleor/**"
+      ]
+    },
+    {
+      "id": "no-django-signals",
+      "rule": "no Django signals (post_save, pre_delete, @receiver); call the logic explicitly from the code that triggers it",
+      "why": "logic wired through signals is invisible at the call site; post_migrate is the one exception (AGENTS.md:83, 512)",
+      "files": [
+        "saleor/**"
+      ]
+    },
+    {
+      "id": "graphql-schema-versioned",
+      "rule": "new GraphQL types, fields, mutations and inputs carry ADDED_IN_{VERSION} (type-level only for a new type), each mutation has its own error class, input lists are capped at 100, and schema.graphql is regenerated and committed",
+      "why": "the changelog is generated from the annotations, and CI fails when the committed schema.graphql is behind the code (AGENTS.md:49-75, saleor/graphql/AGENTS.md:3-12, 30)",
+      "files": [
+        "saleor/graphql/**"
+      ],
+      "checks": [
+        {
+          "run": "python manage.py graphql_schema --schema saleor/graphql/schema.graphql && git diff --exit-code saleor/graphql/schema.graphql",
+          "why": "the committed schema matches the code"
+        }
+      ]
+    },
+    {
+      "id": "concurrent-indexes",
+      "rule": "an index or unique constraint on an existing table is built CONCURRENTLY in its own migration with atomic = False and a reverse_sql that drops it IF EXISTS",
+      "why": "a synchronous build takes an ACCESS EXCLUSIVE lock on the whole table (AGENTS.md:522-550, saleor/graphql/AGENTS.md:53)",
+      "files": [
+        "saleor/*/migrations/**"
+      ]
+    },
+    {
+      "id": "untrusted-files",
+      "rule": "a downloaded file or URL is untrusted: confirm its type from magic bytes, allowlist formats (no SVG), cap the size, check the HTTP status before the body, and pass an explicit timeout",
+      "why": "Content-Type is spoofable (AGENTS.md:309-312, 656-663)",
+      "files": [
+        "saleor/thumbnail/**",
+        "saleor/graphql/core/validators/**",
+        "saleor/core/http_client.py",
+        "saleor/product/tasks.py",
+        "saleor/graphql/product/utils.py",
+        "saleor/app/installation_utils.py",
+        "saleor/webhook/transport/utils.py",
+        "saleor/plugins/openid_connect/**",
+        "saleor/plugins/avatax/**"
+      ]
+    },
+    {
+      "id": "no-dev-imports",
+      "rule": "saleor.core.development is imported only from tests, conftest.py and development-only commands like populatedb",
+      "why": "it needs the dev dependency group (AGENTS.md:287-292)",
+      "files": [
+        "saleor/**"
+      ]
+    }
+  ],
+  "ignore": [],
+  "hotspots": [
+    {
+      "file": "saleor/account/events.py",
+      "symbol": "customer_account_created_event",
+      "line": 7,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/account/events.py",
+      "symbol": "customer_password_reset_link_sent_event",
+      "line": 33,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/account/events.py",
+      "symbol": "customer_password_reset_event",
+      "line": 39,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/account/events.py",
+      "symbol": "customer_password_changed_event",
+      "line": 43,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/account/events.py",
+      "symbol": "customer_placed_order_event",
+      "line": 63,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/app/actions.py",
+      "symbol": "delete_app",
+      "line": 19,
+      "labels": [
+        "db-write",
+        "queue"
+      ],
+      "rules": [
+        "tasks-after-commit",
+        "atomic-writes",
+        "no-n-plus-one"
+      ],
+      "note": "Writes the database, enqueues or retries work"
+    },
+    {
+      "file": "saleor/app/installation_utils.py",
+      "symbol": "_set_brand_data",
+      "line": 135,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/attribute/lock_objects.py",
+      "symbol": "attribute_value_qs_select_for_update",
+      "line": 6,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/attribute/lock_objects.py",
+      "symbol": "attribute_reference_product_types_qs_select_for_update",
+      "line": 14,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/attribute/lock_objects.py",
+      "symbol": "attribute_reference_page_types_qs_select_for_update",
+      "line": 20,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/celeryconf.py",
+      "symbol": "setup_celery_logging",
+      "line": 15,
+      "labels": [
+        "queue"
+      ],
+      "rules": [
+        "tasks-after-commit"
+      ],
+      "note": "Enqueues or retries work; called from 1 other file read"
+    },
+    {
+      "file": "saleor/checkout/calculations.py",
+      "symbol": "process_calculation_result",
+      "line": 431,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/checkout/checkout_cleaner.py",
+      "symbol": "_validate_gift_cards",
+      "line": 114,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/core/auth_backend.py",
+      "symbol": "authenticate",
+      "line": 27,
+      "labels": [
+        "auth"
+      ],
+      "rules": [
+        "site-not-site-id"
+      ],
+      "note": "Decides who may do what"
+    },
+    {
+      "file": "saleor/core/auth_backend.py",
+      "symbol": "authenticate",
+      "line": 50,
+      "labels": [
+        "auth"
+      ],
+      "rules": [
+        "site-not-site-id"
+      ],
+      "note": "Decides who may do what"
+    },
+    {
+      "file": "saleor/core/auth_backend.py",
+      "symbol": "get_user",
+      "line": 53,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/core/auth_backend.py",
+      "symbol": "_get_user_permissions",
+      "line": 59,
+      "labels": [
+        "auth"
+      ],
+      "rules": [
+        "site-not-site-id"
+      ],
+      "note": "Decides who may do what"
+    },
+    {
+      "file": "saleor/core/auth_backend.py",
+      "symbol": "_get_group_permissions",
+      "line": 63,
+      "labels": [
+        "auth"
+      ],
+      "rules": [
+        "site-not-site-id"
+      ],
+      "note": "Decides who may do what"
+    },
+    {
+      "file": "saleor/csv/events.py",
+      "symbol": "export_file_sent_event",
+      "line": 68,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/csv/events.py",
+      "symbol": "export_failed_info_sent_event",
+      "line": 77,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/discount/models.py",
+      "symbol": "active",
+      "line": 76,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/discount/models.py",
+      "symbol": "active_in_channel",
+      "line": 93,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/discount/models.py",
+      "symbol": "expired",
+      "line": 105,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/discount/models.py",
+      "symbol": "validate_once_per_customer",
+      "line": 234,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/discount/models.py",
+      "symbol": "assign_old_sale_id",
+      "line": 398,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/graphql/account/bulk_mutations/customer_bulk_update.py",
+      "symbol": "save_customers",
+      "line": 527,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/graphql/product/utils.py",
+      "symbol": "update_ordered_media",
+      "line": 246,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/order/actions.py",
+      "symbol": "decrease_fulfilled_quantity",
+      "line": 854,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/order/actions.py",
+      "symbol": "_increase_order_line_quantity",
+      "line": 1066,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/order/calculations.py",
+      "symbol": "process_calculation_result",
+      "line": 125,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/page/lock_objects.py",
+      "symbol": "page_qs_select_for_update",
+      "line": 6,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/payment/gateway.py",
+      "symbol": "authorize",
+      "line": 313,
+      "labels": [
+        "auth"
+      ],
+      "rules": [
+        "site-not-site-id"
+      ],
+      "note": "Decides who may do what"
+    },
+    {
+      "file": "saleor/permission/enums.py",
+      "symbol": "get_permissions_from_names",
+      "line": 141,
+      "labels": [
+        "auth"
+      ],
+      "rules": [
+        "site-not-site-id"
+      ],
+      "note": "Decides who may do what; called from 2 other files read"
+    },
+    {
+      "file": "saleor/permission/enums.py",
+      "symbol": "split_permission_codename",
+      "line": 158,
+      "labels": [
+        "auth"
+      ],
+      "rules": [
+        "site-not-site-id"
+      ],
+      "note": "Decides who may do what"
+    },
+    {
+      "file": "saleor/plugins/avatax/tasks.py",
+      "symbol": "api_post_request_task",
+      "line": 21,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/plugins/openid_connect/utils.py",
+      "symbol": "is_jwt_shaped",
+      "line": 159,
+      "labels": [
+        "auth"
+      ],
+      "rules": [
+        "site-not-site-id"
+      ],
+      "note": "Decides who may do what"
+    },
+    {
+      "file": "saleor/plugins/openid_connect/utils.py",
+      "symbol": "update_is_staff",
+      "line": 354,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database; called from 1 other file read"
+    },
+    {
+      "file": "saleor/plugins/openid_connect/utils.py",
+      "symbol": "get_decoded_token",
+      "line": 403,
+      "labels": [
+        "auth"
+      ],
+      "rules": [
+        "site-not-site-id"
+      ],
+      "note": "Decides who may do what"
+    },
+    {
+      "file": "saleor/plugins/openid_connect/utils.py",
+      "symbol": "get_user_from_token",
+      "line": 613,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database; called from 1 other file read"
+    },
+    {
+      "file": "saleor/product/tasks.py",
+      "symbol": "_update_variants_names",
+      "line": 79,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/product/tasks.py",
+      "symbol": "update_variant_relations_for_active_promotion_rules_task",
+      "line": 182,
+      "labels": [
+        "db-write",
+        "db-read",
+        "queue"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks",
+        "tasks-after-commit"
+      ],
+      "note": "Writes the database, queries the database, enqueues or retries work"
+    },
+    {
+      "file": "saleor/product/tasks.py",
+      "symbol": "recalculate_discounted_price_for_products_task",
+      "line": 249,
+      "labels": [
+        "db-write",
+        "db-read",
+        "queue"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks",
+        "tasks-after-commit"
+      ],
+      "note": "Writes the database, queries the database, enqueues or retries work"
+    },
+    {
+      "file": "saleor/product/tasks.py",
+      "symbol": "mark_products_search_vector_as_dirty",
+      "line": 303,
+      "labels": [
+        "db-write",
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks",
+        "atomic-writes"
+      ],
+      "note": "Writes the database, queries the database"
+    },
+    {
+      "file": "saleor/product/tasks.py",
+      "symbol": "on_failure_fetch_product_media_image_task",
+      "line": 351,
+      "labels": [
+        "db-write",
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks",
+        "atomic-writes"
+      ],
+      "note": "Writes the database, queries the database"
+    },
+    {
+      "file": "saleor/schedulers/models.py",
+      "symbol": "schedule",
+      "line": 44,
+      "labels": [
+        "queue"
+      ],
+      "rules": [
+        "tasks-after-commit"
+      ],
+      "note": "Enqueues or retries work"
+    },
+    {
+      "file": "saleor/schedulers/models.py",
+      "symbol": "from_schedule",
+      "line": 61,
+      "labels": [
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Queries the database"
+    },
+    {
+      "file": "saleor/schedulers/schedulers.py",
+      "symbol": "setup_celery_logging",
+      "line": 20,
+      "labels": [
+        "queue"
+      ],
+      "rules": [
+        "tasks-after-commit"
+      ],
+      "note": "Enqueues or retries work; called from 1 other file read"
+    },
+    {
+      "file": "saleor/thumbnail/signals.py",
+      "symbol": "delete_thumbnail_image",
+      "line": 4,
+      "labels": [
+        "queue"
+      ],
+      "rules": [
+        "tasks-after-commit"
+      ],
+      "note": "Enqueues or retries work"
+    },
+    {
+      "file": "saleor/webhook/transport/utils.py",
+      "symbol": "clear_successful_deliveries",
+      "line": 583,
+      "labels": [
+        "db-write",
+        "db-read"
+      ],
+      "rules": [
+        "no-n-plus-one",
+        "short-locks",
+        "atomic-writes"
+      ],
+      "note": "Writes the database, queries the database"
+    },
+    {
+      "file": "saleor/webhook/transport/utils.py",
+      "symbol": "delivery_update",
+      "line": 670,
+      "labels": [
+        "db-write"
+      ],
+      "rules": [
+        "atomic-writes",
+        "no-n-plus-one",
+        "short-locks"
+      ],
+      "note": "Writes the database"
+    },
+    {
+      "file": "saleor/webhook/transport/utils.py",
+      "symbol": "get_sqs_message_group_id",
+      "line": 720,
+      "labels": [
+        "queue"
+      ],
+      "rules": [
+        "tasks-after-commit"
+      ],
+      "note": "Enqueues or retries work"
+    },
+    {
+      "file": "saleor/webhook/transport/utils.py",
+      "symbol": "get_boto3_sqs_client",
+      "line": 729,
+      "labels": [
+        "queue"
+      ],
+      "rules": [
+        "tasks-after-commit"
+      ],
+      "note": "Enqueues or retries work"
+    },
+    {
+      "file": "saleor/webhook/transport/utils.py",
+      "symbol": "get_google_pubsub_client_and_retry_config",
+      "line": 793,
+      "labels": [
+        "queue"
+      ],
+      "rules": [
+        "tasks-after-commit"
+      ],
+      "note": "Enqueues or retries work"
+    }
+  ]
+}

@@ -155,3 +155,43 @@ test('Python: dotted strings that name a module of the repository (Frappe hooks,
     'shop/public/js/invoice.js -> shop/api.py',
   ]);
 });
+
+test('Python: a Django project under a folder resolves from the folder that holds manage.py', () => {
+  const tree = {
+    'backend/manage.py': 'import os\n',
+    'backend/feeds/__init__.py': '',
+    'backend/feeds/models.py': 'class Feed: pass\n',
+    'backend/feeds/views.py': 'from feeds.models import Feed\nfrom feeds import models\n',
+    'backend/settings.py': 'INSTALLED_APPS = ["feeds.apps.FeedsConfig"]\n',
+    'backend/feeds/apps.py': 'class FeedsConfig: pass\n',
+    'backend/feeds/tests/test_models.py': 'import feeds.models\n',
+  };
+  assert.deepEqual(edges(tree), [
+    'backend/feeds/tests/test_models.py -> backend/feeds/models.py',
+    'backend/feeds/views.py -> backend/feeds/__init__.py',
+    'backend/feeds/views.py -> backend/feeds/models.py',
+    'backend/settings.py -> backend/feeds/apps.py',
+  ]);
+});
+
+test('Python 2: an implicit relative import names a module next to the importing file', () => {
+  const tree = {
+    'feedlib/__init__.py': '',
+    'feedlib/export.py': 'import utils\nfrom channels import google\nimport os\n\nprint "exported"\n',
+    'feedlib/utils.py': 'def clean(): pass\n',
+    'feedlib/channels/__init__.py': '',
+    'feedlib/channels/google.py': 'def push(): pass\n',
+    'settings.py': 'ROOT = 1\n',
+    'feedlib/settings.py': 'LOCAL = 1\n',
+    'feedlib/run.py': 'import settings\ntry:\n    pass\nexcept ValueError, e:\n    pass\n',
+    'feedlib/py3.py': 'import utils\nprint("no Python 2 here")\n',
+    'feedlib/future.py': 'from __future__ import absolute_import\nimport utils\nprint "x"\n',
+  };
+  // Only files with Python 2 syntax read imports from their own folder; a module of the same name at a source root wins.
+  assert.deepEqual(edges(tree), [
+    'feedlib/export.py -> feedlib/channels/__init__.py',
+    'feedlib/export.py -> feedlib/channels/google.py',
+    'feedlib/export.py -> feedlib/utils.py',
+    'feedlib/run.py -> settings.py',
+  ]);
+});

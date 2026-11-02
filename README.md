@@ -209,7 +209,8 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   file being changed under "Hot spots in this code"; `fix` drops those whose file is gone.
 
 Tests are found from imports: a test that imports the file directly, or through other files, is listed.
-Imports are read for JavaScript/TypeScript, Python, Go, Rust, Elixir, C#, Java, Kotlin, Ruby (including Rails autoloaded
+Imports are read for JavaScript/TypeScript, Python (from the root, `src/`, or the folder that holds Django's `manage.py`;
+Python 2's implicit relative imports too), Go, Rust, Elixir, C#, Java, Kotlin, Ruby (including Rails autoloaded
 constants) and PHP (through composer's PSR-4 map). `init` suggests the checks those projects already have: `npm test`,
 `pytest`, `go test ./...`, `cargo test`, `mix test`, `dotnet test`, `./gradlew test` or `mvn test`, `bundle exec rspec`,
 `composer test`.
