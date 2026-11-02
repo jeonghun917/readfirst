@@ -94,7 +94,7 @@
           ]
         },
         {
-          "text": "a 403 from a comment write is treated as a fork PR and swallowed by matching ': 403 ' in the message built by api(); changing that error text turns fork PRs into failed jobs",
+          "text": "a 403 from a comment write is treated as a fork PR and swallowed by matching ': 403 ' in the message built by api(); the auto-fix commit matches the same text to say the token needs contents: write. Changing that error text turns fork PRs into failed jobs and makes the auto-fix 403 warning show the raw API error instead",
           "files": [
             "src/action.mjs"
           ]
@@ -117,6 +117,9 @@
           "files": [
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "a commit made by auto-fix with the default GITHUB_TOKEN does not start new workflow runs, so a branch protection that requires checks never sees a run on the fix commit; it needs a GitHub App or personal token as `token`"
         }
       ]
     },
