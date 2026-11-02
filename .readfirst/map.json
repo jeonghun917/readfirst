@@ -76,7 +76,7 @@
       "checks": [
         {
           "run": "npm test",
-          "why": "the Action against a fake GitHub API: post, update in place, broken map, read-only token, non-PR events"
+          "why": "the Action against a fake GitHub API: post, update in place, broken map, read-only token, non-PR events, auto-fix commits"
         }
       ],
       "risks": [
@@ -108,6 +108,12 @@
         },
         {
           "text": "when the map has problems the comment shows the problems but no read list, and the job fails unless fail-on-map-problems is 'false'",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "auto-fix writes to the PR branch through the contents API: only on a branch of this repository (never a fork), only when the branch's map equals the one this run read (else it would overwrite a newer push), and only what settleMap settles; anything a person must decide stays in the comment",
           "files": [
             "src/action.mjs"
           ]
@@ -338,7 +344,7 @@
     },
     {
       "id": "only-init-and-fix-write",
-      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; `hook --stop` writes nothing itself and runs only the base branch's check commands, like verify; check, prompt (with or without --labels), read, diff and the mcp server never change the checkout; verify writes nothing itself and only runs the commands the map lists, which may write as they would when run by hand",
+      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes; fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; `hook --stop` writes nothing itself and runs only the base branch's check commands, like verify; check, prompt (with or without --labels), read, diff and the mcp server never change the checkout; verify writes nothing itself and only runs the commands the map lists, which may write as they would when run by hand; the Action writes nothing in the checkout, and with auto-fix only commits the map that fix would write to the PR branch through the API",
       "why": "agents run read and diff freely before every change, and the hook runs before every edit, so it must not touch the working tree",
       "files": [
         "src/cli.mjs"

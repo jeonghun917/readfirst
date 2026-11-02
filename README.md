@@ -133,9 +133,28 @@ lists what `npx readfirst fix` would change.
 | `fail-on-map-problems` | `true` | `false` reports map problems without failing |
 | `strict` | `false` | `true` also fails on new files that are only placed by their neighbours |
 | `comment` | `true` | `false` writes only the job summary |
+| `auto-fix` | `false` | `true` commits what `readfirst fix` settles (new files placed by their neighbours) to the PR branch |
 | `limit` | `30` | most tests and users listed per section |
 
 On a PR from a fork, the token is read-only. The list then goes to the job summary instead of a comment.
+
+### Keep the map in step without thinking about it
+
+```yaml
+permissions:
+  contents: write        # for auto-fix
+  pull-requests: write
+# ...
+      - uses: jeonghun917/readfirst@v0
+        with:
+          auto-fix: true
+```
+
+With `auto-fix`, when a PR adds files next to ones the map already places, the Action writes them into the map and
+commits that to the PR branch. That is the mechanical part `npx readfirst fix` does, nothing else: new risks and
+rules stay for a person. It skips PRs from forks, and it skips the commit if the branch's map changed since the run
+started, so a push is never overwritten. A commit made with the default `GITHUB_TOKEN` does not start new workflow
+runs. If your branch protection requires checks, pass a GitHub App or personal token as `token`.
 
 ## The map
 
