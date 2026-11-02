@@ -63,6 +63,9 @@
             "src/mcp.mjs",
             "src/cli.mjs"
           ]
+        },
+        {
+          "text": "writeWorkflow in cli.mjs holds the workflow YAML as a string, with the checkout action pinned to a commit and `jeonghun917/readfirst@v0` with `auto-fix: true`; changing the Action's inputs, permissions or tag means updating that template and the README by hand, and users who already ran `init --ci` keep the old file because it never overwrites an existing workflow"
         }
       ]
     },
@@ -197,6 +200,9 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "draftMap scopes checks per workspace package only for a group whose single pattern is `<dir>/**` and whose folder has its own package.json; the scoped command forms live in workspaceChecks, while draftChecks builds the repository-wide ones, so a new package manager or script name must be handled in both (packageManager and scriptChecks are the shared parts). A yarn or bun package without a `name` falls through to the `npm ... -w <dir>` form, which may not match the repository's manager"
         }
       ]
     },
