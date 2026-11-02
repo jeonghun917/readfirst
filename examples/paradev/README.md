@@ -1,8 +1,8 @@
-# superset
+# paradev
 
-[superset-sh/superset](https://github.com/superset-sh/superset) at `1982e32d`. 14,654 files in 56 groups, 5 rules.
+Paradev (formerly Superset), from [superset-sh/superset](https://github.com/superset-sh/superset) at `1982e32d`. 14,654 files in 56 groups, 5 rules.
 
-![superset as a city: apps/desktop is the big neighbourhood; the panel shows its localStorage rule and the repo-wide rules](city.jpg)
+![Paradev as a city: apps/desktop is the big neighbourhood; the panel shows its localStorage rule and the repo-wide rules](city.jpg)
 
 Where it came from:
 - `AGENTS.md` (275 lines): migrations, generated plugin manifests, i18n and its traps, display-only error messages, test rules, the one installed_plugins.json

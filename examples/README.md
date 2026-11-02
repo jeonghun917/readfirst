@@ -11,7 +11,7 @@ These are not maintained by, or affiliated with, the projects they describe.
 - [vercel-ai](vercel-ai/): the AI SDK (pnpm monorepo, 90+ provider packages)
 - [calcom](calcom/): Cal.com scheduling (Yarn monorepo, Next.js, Prisma, NestJS API)
 - [excalidraw](excalidraw/): the whiteboard and its npm packages (Yarn workspaces, React)
-- [superset](superset/): an IDE for running coding agents in parallel (Bun, Turborepo, Electron, tRPC)
+- [paradev](paradev/): Paradev (formerly Superset), an IDE for running coding agents in parallel (Bun, Turborepo, Electron, tRPC)
 
 To try one: copy its `map.json` to `.readfirst/map.json` in a checkout of that repository at the commit named in its
 README, then run `npx readfirst read <file>`.
