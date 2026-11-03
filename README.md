@@ -100,7 +100,8 @@ It reads the checkout and its git history, runs nothing, changes nothing, and re
 
 - **rules and risks that may be out of date**: the line that holds one was written before 10 or more commits changed
   the files it covers (git blame on the map, git log on the files). Each says when it was written and how much moved since;
-- **hot spots no longer at their line**, and where the function is now;
+- **hot spots no longer at their line**, and where the function is now, and **hot spots nothing checks**: no test
+  reaches their file and no check of their own covers them (a check most groups share, like the whole suite, does not count);
 - **what was never filled in**: groups still titled `TODO:` from `init`, rules no check verifies;
 - **code no test reaches through imports**, the most used first, with a count per group;
 - **what readfirst could not see**: languages whose imports it does not read, and modules loaded by a computed name
