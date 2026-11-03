@@ -299,6 +299,9 @@
         },
         {
           "text": "plugins/readfirst is listed twice: in .agent-marketplace.json (Paradev, with version) and .claude-plugin/marketplace.json (Claude Code). Its version lives in plugins/readfirst/plugin.json, plugins/readfirst/.claude-plugin/plugin.json and the .agent-marketplace.json entry; change all three together, and a Paradev release is the git tag readfirst@<version>, so bump the version instead of moving a tag - .agent-marketplace.json:18"
+        },
+        {
+          "text": "plugins/readfirst calls the CLI by command name: SKILL.md runs `readfirst read`, `find`, `verify`, `check` and `init --agent`, and hooks/hooks.json runs `readfirst hook` through `npx --yes`. Renaming or removing one of these commands in cli.mjs breaks the plugin for every agent that installed it, so update SKILL.md and hooks.json together with HELP."
         }
       ]
     },
