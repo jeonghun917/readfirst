@@ -8,17 +8,41 @@ export const READ_LIST_FORMAT = 'readfirst/read-list@1';
 const TEST = /(^|\/)(?:tests?|__tests__|spec|e2e)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(^|\/)test[-_][^/]*\.(?:[cm]?[jt]sx?|py)$|_test\.(?:py|go|exs|rb)$|_spec\.rb$|(^|\/)[^/]+\.(?:Unit|Integration)?Tests?\/|Tests?\.(?:cs|java|kt|php)$|(^|\/)src\/(?:test|androidTest|integrationTest)\//u;
 export const isTest = (path) => TEST.test(path);
 
-// The read list for no files, so `diff --json` is always JSON.
-export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], truncated: { tests: 0, usedBy: 0 } });
+// Files whose imports readfirst reads (imports.mjs, langs.mjs), and code in languages it does not read. For the second
+// kind, an empty "used by" or "tests" means unknown, not none.
+export const READS_IMPORTS = /\.(?:m?js|cjs|tsx?|jsx|mts|cts|vue|svelte|py|go|rs|exs?|cs|java|kts?|rb|php)$/u;
+export const OTHER_CODE = /\.(?:c|cc|cpp|cxx|h|hh|hpp|m|mm|swift|scala|clj|cljs|hs|lua|dart|zig|nim|erl|fs|fsx|vb|r|jl|pl|pm|groovy)$/iu;
+// Code that loads a module by a computed name: what it loads is not followed.
+const COMPUTED_LOAD = {
+  js: { test: /\.(?:m?js|cjs|tsx?|jsx|mts|cts|vue|svelte)$/u, re: /\b(?:import|require)\(\s*(?!['"][^'"\n]*['"]\s*[),])(?=[^)\s])/u },
+  py: { test: /\.py$/u, re: /\b(?:importlib\.import_module|__import__|import_string)\(\s*(?!['"])(?=[^)\s])/u },
+};
 
-export function readList({ map, files, imports, targets, commit = null, limit = 30 }) {
+// What readfirst could not see about one file: a language whose imports it does not read, or a module loaded by a
+// computed name. read(path) gives the file's text, or null.
+export function unseenIn(path, read = () => null) {
+  if (OTHER_CODE.test(path)) return [{ path, why: `readfirst does not read imports in .${path.split('.').pop()} files: who uses it and which tests reach it are unknown, not none` }];
+  const kind = Object.values(COMPUTED_LOAD).find((k) => k.test.test(path));
+  if (!kind) return [];
+  const body = read(path);
+  if (!body) return [];
+  const lines = body.split('\n');
+  const at = lines.findIndex((l) => !/^\s*(?:\/\/|#|\*)/u.test(l) && kind.re.test(l));
+  return at < 0 ? [] : [{ path, line: at + 1, why: `line ${at + 1} loads a module by a computed name: what it loads is not followed` }];
+}
+
+// The read list for no files, so `diff --json` is always JSON.
+export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [], truncated: { tests: 0, usedBy: 0 } });
+
+// read(path), optional, gives a file's text: with it, code that loads modules by computed names is listed as unseen.
+export function readList({ map, files, imports, targets, commit = null, limit = 30, read = () => null }) {
   if (!targets.length || targets.some((t) => !t.trim())) throw new Error('give at least one file path, none empty');
   const tracked = new Set(files);
   const ignored = matcher(map.ignore ?? []);
   const importers = new Map();
   for (const e of imports) importers.set(e.to, [...(importers.get(e.to) ?? []), e]);
 
-  const out = { format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [] };
+  const out = { format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [] };
   const seen = { rules: new Map(), risks: new Map(), hotspots: new Map(), checks: new Map(), tests: new Map(), usedBy: new Map() };
   const note = (kind, key, item, target) => {
     const have = seen[kind].get(key);
@@ -73,6 +97,7 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
       }
     }
     if (isTest(target)) note('tests', target, { path: target, via: null }, target);
+    out.unseen.push(...unseenIn(target, read));
   }
   out.hotspots.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
   for (const u of out.usedBy) indirect.delete(u.path);
@@ -107,7 +132,8 @@ export function toMarkdown(list, { checklist = false, heading } = {}) {
   if (list.truncated?.usedBy) lines.splice(lines.length - 1, 0, `- …and ${list.truncated.usedBy} more direct users`);
   if (list.usedByIndirectly) lines.push(`${list.usedByIndirectly} more file(s) use this code indirectly.`, '');
   section('Not covered by the map', list.notCovered, (n) => `- \`${n.path}\`: ${n.why}`);
-  if (!list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length)
+  section('Not seen by readfirst (an empty list above may mean unknown here)', list.unseen ?? [], (n) => `- \`${n.path}\`: ${n.why}`);
+  if (!list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length && !(list.unseen ?? []).length)
     lines.push('Nothing in the map is tied to these files.', '');
   return lines.join('\n');
 }
