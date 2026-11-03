@@ -12,6 +12,12 @@ No server, no account, no model calls. It reads your git checkout and `.readfirs
 
 Filled maps for real repositories (vercel/ai, cal.com, excalidraw and two more), with sample output: [examples/](examples/).
 
+**Bugs found by making maps**, each reported upstream: a discarded filter that recalculates every discounted price in
+saleor ([saleor/saleor#19984](https://github.com/saleor/saleor/pull/19984)), fixes sent to
+[wagtail/wagtail#14790](https://github.com/wagtail/wagtail/pull/14790) and
+[TandoorRecipes/recipes#4917](https://github.com/TandoorRecipes/recipes/pull/4917), and a report to
+[mealie-recipes/mealie#8964](https://github.com/mealie-recipes/mealie/issues/8964).
+
 ## Start
 
 Any language; needs Node 20+ for `npx`.
@@ -24,6 +30,10 @@ npx readfirst check          # every tracked file is in exactly one group (or ig
 npx readfirst audit          # the whole repository against the map, once: what went stale, what no test reaches
 npx readfirst find payment retry   # before writing something new: what in the code may already do it
 ```
+
+Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
+exactly the version you reviewed, pin it: `npx readfirst@0.13.0 read <file>` (and `jeonghun917/readfirst@v0.13.0` for
+the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
 (`pnpm --filter @acme/db test`, `yarn workspace …`, `npm test -w …`), so `verify` runs that package's tests, not the
@@ -148,6 +158,30 @@ args = ["--yes", "readfirst", "mcp"]
 
 The server reads the git repository it is started in. If your agent starts it elsewhere, add `"--root", "/path/to/repo"`
 to the arguments.
+
+### Cursor rules, from the same map
+
+`npx readfirst export --cursor` writes one `.cursor/rules/readfirst-<group>.mdc` per group, scoped to the group's
+files by glob, with its rules, risks and checks. Cursor then attaches them whenever those files are in play. Commit them
+and add `npx readfirst export --cursor --check` to CI: it fails when the map changed and the rules did not. Only files
+named `readfirst-*.mdc` are written or removed; your own rules in `.cursor/rules` are left alone, and the exported files
+need no group in the map.
+
+### Why not just CLAUDE.md or Cursor rules?
+
+Folder `CLAUDE.md` files and Cursor's glob rules attach text to paths, and that is often enough. readfirst adds what
+they leave to you:
+
+- **It can't go stale quietly.** `check` fails in CI when a file is in no group or a pattern matches nothing, and
+  `audit` lists rules written before their files changed a lot. Prose in a folder has no such check.
+- **It knows the code around the file.** Read lists add the tests that reach a file through imports and the files that
+  use it; `verify` runs only the checks for what changed; `find` shows what already exists before you write it again.
+- **One source for every tool.** The same map feeds the Claude Code hook, any MCP agent, the PR comment and, with
+  `export --cursor`, Cursor's own rules.
+
+Keeping the map up is mostly automatic: `fix` places new files beside their neighbours, `check` lets a new file in a
+known folder pass, the Action's auto-fix commits the map change to the PR, and hosted upkeep (Pro) proposes edits after
+a merge.
 
 ## On every pull request (GitHub Action)
 
