@@ -298,7 +298,7 @@
           ]
         },
         {
-          "text": "plugins/readfirst is listed twice: in .agent-marketplace.json (Paradev, with version) and .claude-plugin/marketplace.json (Claude Code). Its version lives in plugins/readfirst/plugin.json, plugins/readfirst/.claude-plugin/plugin.json and the .agent-marketplace.json entry; change all three together, and a Paradev release is the git tag readfirst@<version>, so bump the version instead of moving a tag - .agent-marketplace.json:20"
+          "text": "plugins/readfirst is listed twice: in .agent-marketplace.json (Paradev, with version) and .claude-plugin/marketplace.json (Claude Code). Its version lives in plugins/readfirst/plugin.json, plugins/readfirst/.claude-plugin/plugin.json and the .agent-marketplace.json entry; change all three together, and a Paradev release is the git tag readfirst@<version>, so bump the version instead of moving a tag - .agent-marketplace.json:18"
         }
       ]
     },
