@@ -290,9 +290,10 @@
           ]
         },
         {
-          "text": "the README repeats the command list, the Action inputs table and a sample read list; update it when cli.mjs HELP, action.yml inputs or toMarkdown output change",
+          "text": "docs/guide.md repeats the command list, the Action inputs table and a sample read list, and README.md the three start commands; update them when cli.mjs HELP, action.yml inputs or toMarkdown output change",
           "files": [
-            "README.md"
+            "README.md",
+            "docs/guide.md"
           ]
         },
         {
