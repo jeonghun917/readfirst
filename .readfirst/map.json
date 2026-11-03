@@ -293,6 +293,9 @@
             "package.json",
             ".github/**"
           ]
+        },
+        {
+          "text": ".claude/settings.json and CLAUDE.md call this checkout's bin/readfirst.mjs (`node \"$CLAUDE_PROJECT_DIR/bin/readfirst.mjs\" hook` and `hook --stop`), because `npx readfirst` does not resolve inside its own package. Running `hook --install` here would overwrite them with `npx readfirst` commands that fail. If bin/readfirst.mjs moves, or the hook, read, find or verify commands are renamed, update both files."
         }
       ]
     },
