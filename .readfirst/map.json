@@ -36,7 +36,7 @@
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read and diff use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false)",
+          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read, diff, view, verify and export --cursor use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -201,6 +201,12 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "audit's 'hot spots nothing checks' counts a group check as a check of its own only if fewer than half the groups share the same `run` string (always, if the map has under two groups). Adding one command such as `npm test` to most groups, or writing the same check with different text, changes which hot spots are listed. A rule check only counts when the rule's files cover the hot spot's file. - src/audit.mjs:109"
+        },
+        {
+          "text": "readfirst's own files (the map, .readfirst/held.json and the exported .cursor/rules/readfirst-*.mdc) belong to no group: isOwnFile in map.mjs (OWN_FILES and OWN_PATTERN) keeps them out of placement, and readlist.mjs reports them as status MAP. A new file readfirst writes into the checkout must be added there, or check fails with it as an unplaced file. The Cursor file name is matched twice (OWN_PATTERN in map.mjs and isCursorExport in export.mjs): change both together. The text export writes is compared byte for byte by `export --cursor --check`, so rewording it makes every user's CI fail until they re-export. - src/map.mjs:10"
         }
       ]
     },
@@ -299,6 +305,12 @@
         },
         {
           "text": "plugins/readfirst is listed twice: in .agent-marketplace.json (Paradev, with version) and .claude-plugin/marketplace.json (Claude Code). Its version lives in plugins/readfirst/plugin.json, plugins/readfirst/.claude-plugin/plugin.json and the .agent-marketplace.json entry; change all three together, and a Paradev release is the git tag readfirst@<version>, so bump the version instead of moving a tag - .agent-marketplace.json:18"
+        },
+        {
+          "text": ".claude/settings.json and CLAUDE.md call this checkout's bin/readfirst.mjs (`node \"$CLAUDE_PROJECT_DIR/bin/readfirst.mjs\" hook` and `hook --stop`), because `npx readfirst` does not resolve inside its own package. Running `hook --install` here would overwrite them with `npx readfirst` commands that fail. If bin/readfirst.mjs moves, or the hook, read, find or verify commands are renamed, update both files. - .claude/settings.json:9"
+        },
+        {
+          "text": "plugins/readfirst calls the CLI by command name: SKILL.md runs `readfirst read`, `find`, `verify`, `check` and `init --agent`, and hooks/hooks.json runs `readfirst hook` through `npx --yes`. Renaming or removing one of these commands in cli.mjs breaks the plugin for every agent that installed it, so update SKILL.md and hooks.json together with HELP. - plugins/readfirst/skills/readfirst/SKILL.md:18"
         }
       ]
     },
@@ -341,8 +353,8 @@
     },
     {
       "id": "every-file-placed",
-      "rule": "every tracked file is in exactly one group or in ignore, and every group and rule pattern matches a tracked file; check fails otherwise",
-      "why": "this is what stops the map from quietly falling behind the code",
+      "rule": "every tracked file is in exactly one group or in ignore, except readfirst's own files (the map, .readfirst/held.json and the exported .cursor/rules/readfirst-*.mdc, see isOwnFile), and every group and rule pattern matches a tracked file; check fails otherwise",
+      "why": "this is what stops the map from quietly falling behind the code; the exported Cursor files must not need a group, or committing them would fail check --strict",
       "files": [
         "src/map.mjs"
       ],
@@ -419,5 +431,70 @@
       ]
     }
   ],
-  "ignore": []
+  "ignore": [],
+  "hotspots": [
+    {
+      "file": "src/cli.mjs",
+      "symbol": "git",
+      "line": 84,
+      "labels": [
+        "exec"
+      ],
+      "rules": [
+        "only-init-and-fix-write",
+        "no-network-in-cli"
+      ],
+      "note": "Runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "addAgentLine",
+      "line": 121,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "verifyChecks",
+      "line": 150,
+      "labels": [
+        "secrets",
+        "exec"
+      ],
+      "rules": [
+        "only-init-and-fix-write",
+        "no-network-in-cli"
+      ],
+      "note": "Reads secrets or the environment, runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "runHook",
+      "line": 196,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "writeWorkflow",
+      "line": 281,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    }
+  ]
 }
