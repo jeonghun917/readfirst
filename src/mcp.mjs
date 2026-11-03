@@ -25,6 +25,12 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {} },
     args: () => ['check'],
   },
+  {
+    name: 'audit_repo',
+    description: 'The whole repository against .readfirst/map.json, as a report: rules and risks whose files changed a lot since they were written, hot spots that moved, groups never filled in, code no test reaches through imports, and what readfirst could not see. Use it before larger work, or to decide what to add to the map.',
+    inputSchema: { type: 'object', properties: {} },
+    args: () => ['audit'],
+  },
 ];
 
 // One request in, one response out (null for notifications). run(argv) runs the CLI and returns { code, out, err }.

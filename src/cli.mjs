@@ -4,6 +4,8 @@
 //   readfirst prompt --labels <lang>  the brief for personal labels (a translation and plain notes) for the view
 //   readfirst check                the map covers every tracked file and is well formed
 //   readfirst fix                  place new files and drop patterns for deleted ones, then check
+//   readfirst audit                the whole repository against the map, as a report: stale rules, moved hot spots,
+//                                  what was never filled in, code no test reaches, what readfirst could not see
 //   readfirst read <file>...       the read list for files you are about to change
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
 //   readfirst verify [--base <ref>] run the checks the read list names for the changed files; exit 1 if one fails
@@ -19,6 +21,7 @@ import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
 import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
+import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
 import { mcpHandler, serveMcp } from './mcp.mjs';
@@ -31,6 +34,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst prompt               brief for your coding agent to fill in the map
   readfirst check [--strict]     check the map covers every tracked file (new files beside placed ones pass; --strict fails on them)
   readfirst fix                  place new files, drop patterns for deleted ones
+  readfirst audit                the whole repository against the map: stale rules, moved hot spots, code no test reaches
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
   readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them)
@@ -167,6 +171,7 @@ export function brief(list) {
   for (const r of list.risks) lines.push(`Risk: ${r.text}`);
   for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}`);
   if (list.tests.length) lines.push(`Tests that reach this file: ${list.tests.slice(0, 5).map((t) => t.path).join(', ')}`);
+  if (lines.length) for (const u of list.unseen ?? []) lines.push(`Not seen by readfirst: ${u.why}`);
   return lines;
 }
 
@@ -191,7 +196,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
     const files = repoFiles(root);
     const map = readMapFile(root);
     if (mapProblems(map, files, { placement: false }).length) return null;
-    const list = readList({ map, files: files.includes(path) ? files : [...files, path].sort(), imports: importEdges(files, readText(root)), targets: [path], limit: 10 });
+    const list = readList({ map, files: files.includes(path) ? files : [...files, path].sort(), imports: importEdges(files, readText(root)), targets: [path], limit: 10, read: readText(root) });
     const lines = brief(list);
     seen[path] = now;
     try { writeFileSync(seenAt, JSON.stringify(seen)); } catch { /* best effort */ }
@@ -414,6 +419,26 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     }
     return problems.length ? 1 : 0;
   }
+  if (cmd === 'audit') {
+    const map = readMapFile(root);
+    const broken = mapProblems(map, files, { placement: false });
+    const { map: settled, problems } = broken.length ? { map, problems: broken } : settleMap(map, files);
+    if (broken.length) {
+      io.out(args.json ? `${JSON.stringify({ format: 'readfirst/audit@1', commit, files: files.length, problems: broken }, null, 2)}\n` : `${MAP_PATH} has problems; fix them first (\`readfirst check\`):\n- ${broken.join('\n- ')}\n`);
+      return 1;
+    }
+    // Who last wrote each line of the map, and every commit since the oldest of those lines with the files it changed.
+    let blame = [];
+    let history = [];
+    try {
+      blame = parseBlame(git(root, 'blame', '--line-porcelain', '--', MAP_PATH));
+      const oldest = Math.min(...blame.filter(Boolean).map((b) => b.time));
+      if (Number.isFinite(oldest)) history = parseLog(git(root, 'log', '--no-merges', `--since=${new Date((oldest - 1) * 1000).toISOString()}`, '--format=%x01%H %ct', '--name-only', 'HEAD'));
+    } catch { /* the map is not committed yet, or no history: nothing is stale */ }
+    const report = audit({ map: settled, problems, files, imports: importEdges(files, readText(root)), read: readText(root), blame, history, commit });
+    io.out(args.json ? `${JSON.stringify(report, null, 2)}\n` : auditText(report));
+    return 0;
+  }
   if (cmd === 'read' || cmd === 'diff') {
     const map = loadMapLenient(root, files, io);
     let targets = rest;
@@ -427,7 +452,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     }
     const limit = Number(args.limit ?? 30);
     if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
-    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit });
+    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit, read: readText(root) });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
     return 0;
   }

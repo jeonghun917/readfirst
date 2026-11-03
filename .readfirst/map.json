@@ -130,7 +130,8 @@
         "src/readlist.mjs",
         "src/view.mjs",
         "src/view-city.mjs",
-        "src/labels.mjs"
+        "src/labels.mjs",
+        "src/audit.mjs"
       ],
       "checks": [
         {

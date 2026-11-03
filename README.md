@@ -21,6 +21,7 @@ npx readfirst init --agent --ci   # first map from your folders, checks from you
                                   # and the GitHub Action that comments on PRs and keeps the map in step
 npx readfirst prompt         # a brief for your coding agent to fill in titles, checks, risks and rules
 npx readfirst check          # every tracked file is in exactly one group (or ignored); rules point at real files
+npx readfirst audit          # the whole repository against the map, once: what went stale, what no test reaches
 ```
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -90,11 +91,27 @@ Labels for yourself: `npx readfirst prompt --labels ko` (or `en`, ...) gives you
 to the code. The view then has a switch between the two. `.readfirst/local/` is added to `.git/info/exclude`, so labels
 stay on your machine and never reach the team's map.
 
+### Audit the whole repository
+
+`check` asks whether the map covers the files; `npx readfirst audit` asks whether it still tells the truth about them.
+It reads the checkout and its git history, runs nothing, changes nothing, and reports:
+
+- **rules and risks that may be out of date**: the line that holds one was written before 10 or more commits changed
+  the files it covers (git blame on the map, git log on the files). Each says when it was written and how much moved since;
+- **hot spots no longer at their line**, and where the function is now;
+- **what was never filled in**: groups still titled `TODO:` from `init`, rules no check verifies;
+- **code no test reaches through imports**, the most used first, with a count per group;
+- **what readfirst could not see**: languages whose imports it does not read, and modules loaded by a computed name
+  (``import(`./plugins/${name}`)``, `importlib.import_module(settings.X)`). An empty "used by" for those means unknown,
+  not none; read lists now say so too.
+
+`--json` gives the same as `readfirst/audit@1`. On a 4,700-file Django repository it takes about two seconds.
+
 ### Any agent, through MCP
 
-`npx readfirst mcp` is an MCP server on stdio with three tools: `read_list` (files → what to read and check before
-changing them), `changed_read_list` (the same for everything changed on the branch) and `check_map`. It answers from the
-checkout as it is and writes nothing.
+`npx readfirst mcp` is an MCP server on stdio with four tools: `read_list` (files → what to read and check before
+changing them), `changed_read_list` (the same for everything changed on the branch), `check_map` and `audit_repo` (the
+audit above). It answers from the checkout as it is and writes nothing.
 
 ```sh
 claude mcp add readfirst -- npx --yes readfirst mcp          # Claude Code

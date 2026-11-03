@@ -81,7 +81,7 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const targets = changed.filter((f) => f.status !== 'removed').map((f) => f.filename);
   // A broken map still gets a comment (the problems), but no read list from it.
   const list = targets.length && !problems.length
-    ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30) })
+    ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root) })
     : null;
   const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled, committed });
   summary(body);
