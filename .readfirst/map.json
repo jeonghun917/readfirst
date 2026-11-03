@@ -36,7 +36,7 @@
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read and diff use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false)",
+          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read and diff use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false). find reads the map itself and never throws on it: with a missing or broken map (mapProblems with placement: false) it searches the code alone, silently",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -63,6 +63,9 @@
             "src/mcp.mjs",
             "src/cli.mjs"
           ]
+        },
+        {
+          "text": "the MCP find_existing tool splits the query on whitespace and passes the words as argv to main(['find', ...]), so a query word that starts with `--` is parsed as an option (e.g. --json or --limit) instead of a search word"
         }
       ]
     },
@@ -199,6 +202,9 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "find.mjs reads function, class and type names with its own per-language regex list (DEFS), separate from the import regexes in imports.mjs and langs.mjs; a language added to one is not read by the other, and files in languages missing from DEFS are only listed under 'Not searched'"
         }
       ]
     },
@@ -409,5 +415,70 @@
       ]
     }
   ],
-  "ignore": []
+  "ignore": [],
+  "hotspots": [
+    {
+      "file": "src/cli.mjs",
+      "symbol": "git",
+      "line": 75,
+      "labels": [
+        "exec"
+      ],
+      "rules": [
+        "no-network-in-cli",
+        "only-init-and-fix-write"
+      ],
+      "note": "Runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "addAgentLine",
+      "line": 112,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "verifyChecks",
+      "line": 141,
+      "labels": [
+        "secrets",
+        "exec"
+      ],
+      "rules": [
+        "no-network-in-cli",
+        "only-init-and-fix-write"
+      ],
+      "note": "Reads secrets or the environment, runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "runHook",
+      "line": 186,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "writeWorkflow",
+      "line": 271,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    }
+  ]
 }
