@@ -4,9 +4,12 @@
 
 export const MAP_FORMAT = 'readfirst/map@1';
 export const MAP_PATH = '.readfirst/map.json';
-// readfirst's own files: the map, and the record of when rules held (held.mjs). They belong to no group.
-const OWN = new Set([MAP_PATH, '.readfirst/held.json']);
-export const isOwnFile = (path) => OWN.has(path);
+// readfirst's own files: the map, the record of when rules held (held.mjs) and the Cursor rules export writes
+// (export.mjs). They belong to no group.
+const OWN_FILES = new Set([MAP_PATH, '.readfirst/held.json']);
+const OWN_PATTERN = /^\.cursor\/rules\/readfirst-[a-z0-9-]+\.mdc$/u;
+export const isOwnFile = (path) => OWN_FILES.has(path) || OWN_PATTERN.test(path);
+const OWN = { has: isOwnFile };
 
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 const isRecord = (v) => !!v && typeof v === 'object' && !Array.isArray(v);

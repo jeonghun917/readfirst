@@ -30,7 +30,7 @@
           ]
         },
         {
-          "text": "parse() treats every --option except --json, --help, --force, --agent, --install, --dry-run, --strict, --verify, --stop and --ci as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
+          "text": "parse() treats every --option it does not list as an on/off flag as taking a value, so a new on/off flag (like --record, --cursor or --check) must be added to that list in parse() or it swallows the next argument",
           "files": [
             "src/cli.mjs"
           ]
@@ -133,7 +133,8 @@
         "src/labels.mjs",
         "src/audit.mjs",
         "src/find.mjs",
-        "src/held.mjs"
+        "src/held.mjs",
+        "src/export.mjs"
       ],
       "checks": [
         {
@@ -361,7 +362,7 @@
     },
     {
       "id": "only-init-and-fix-write",
-      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes, and with --ci .github/workflows/readfirst.yml (never over an existing one); fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; `hook --stop` writes nothing itself and runs only the base branch's check commands, like verify; check, prompt (with or without --labels), read, diff, find, audit and the mcp server never change the checkout; verify writes nothing itself except, with --record, .readfirst/held.json (which rules held, at which commit), and only runs the commands the map lists, which may write as they would when run by hand; the Action writes nothing in the checkout, and with auto-fix only commits the map that fix would write to the PR branch through the API",
+      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes, and with --ci .github/workflows/readfirst.yml (never over an existing one); fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; `hook --stop` writes nothing itself and runs only the base branch's check commands, like verify; check, prompt (with or without --labels), read, diff, find, audit and the mcp server never change the checkout; export --cursor writes and removes only .cursor/rules/readfirst-*.mdc; verify writes nothing itself except, with --record, .readfirst/held.json (which rules held, at which commit), and only runs the commands the map lists, which may write as they would when run by hand; the Action writes nothing in the checkout, and with auto-fix only commits the map that fix would write to the PR branch through the API",
       "why": "agents run read and diff freely before every change, and the hook runs before every edit, so it must not touch the working tree",
       "files": [
         "src/cli.mjs"

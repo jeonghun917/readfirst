@@ -4,6 +4,7 @@
 //   readfirst prompt --labels <lang>  the brief for personal labels (a translation and plain notes) for the view
 //   readfirst check                the map covers every tracked file and is well formed
 //   readfirst fix                  place new files and drop patterns for deleted ones, then check
+//   readfirst export --cursor      the map as Cursor rules (.cursor/rules/readfirst-<group>.mdc); --check: fail if stale
 //   readfirst audit                the whole repository against the map, as a report: stale rules, moved hot spots,
 //                                  what was never filled in, code no test reaches, what readfirst could not see
 //   readfirst find <words>...      before writing something new: functions, files and map entries that may already do it
@@ -17,7 +18,7 @@
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
@@ -25,6 +26,7 @@ import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, settle
 import { agentBrief } from './prompt.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { find, findText } from './find.mjs';
+import { CURSOR_DIR, cursorPlan } from './export.mjs';
 import { HELD_PATH, heldInRun, parseHeld, recordHeld } from './held.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
@@ -39,6 +41,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst check [--strict]     check the map covers every tracked file (new files beside placed ones pass; --strict fails on them)
   readfirst fix                  place new files, drop patterns for deleted ones
   readfirst audit                the whole repository against the map: stale rules, moved hot spots, code no test reaches
+  readfirst export --cursor      write the map as Cursor rules, one .mdc per group (--check: fail if they are out of date)
   readfirst find <words>...      before writing something new: what in the code may already do it
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
@@ -64,6 +67,8 @@ function parse(argv) {
     else if (a === '--install') args.install = true;
     else if (a === '--dry-run') args.dryRun = true;
     else if (a === '--record') args.record = true;
+    else if (a === '--cursor') args.cursor = true;
+    else if (a === '--check') args.check = true;
     else if (a === '--strict') args.strict = true;
     else if (a === '--verify') args.verify = true;
     else if (a === '--ci') args.ci = true;
@@ -437,6 +442,25 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     try { const m = readMapFile(root); if (!mapProblems(m, files, { placement: false }).length) map = m; } catch { map = null; }
     const report = find({ query, files, imports: importEdges(files, readText(root)), read: readText(root), map, limit });
     io.out(args.json ? `${JSON.stringify(report, null, 2)}\n` : findText(report));
+    return 0;
+  }
+  if (cmd === 'export') {
+    if (!args.cursor) throw new Error('say what to export: `readfirst export --cursor`');
+    const map = loadMapLenient(root, files, io);
+    const dir = join(root, CURSOR_DIR);
+    const existing = existsSync(dir) ? readdirSync(dir).map((f) => `${CURSOR_DIR}/${f}`) : [];
+    const plan = cursorPlan(map, files, readText(root), existing);
+    if (args.check) {
+      const stale = [...plan.write, ...plan.remove];
+      io.out(stale.length ? `${stale.length} Cursor rule file(s) no longer match ${MAP_PATH}: ${stale.join(', ')}. Run \`readfirst export --cursor\`.\n` : `Cursor rules match ${MAP_PATH} (${Object.keys(plan.want).length} file(s)).\n`);
+      return stale.length ? 1 : 0;
+    }
+    if (plan.write.length) mkdirSync(dir, { recursive: true });
+    for (const p of plan.write) writeFileSync(join(root, p), plan.want[p]);
+    for (const p of plan.remove) unlinkSync(join(root, p));
+    io.out(plan.write.length || plan.remove.length
+      ? `${plan.write.length ? `wrote ${plan.write.join(', ')}` : ''}${plan.write.length && plan.remove.length ? '; ' : ''}${plan.remove.length ? `removed ${plan.remove.join(', ')}` : ''}.\nCommit them; \`readfirst export --cursor --check\` in CI keeps them in step with the map.\n`
+      : `Cursor rules already match ${MAP_PATH} (${Object.keys(plan.want).length} file(s)).\n`);
     return 0;
   }
   if (cmd === 'audit') {
