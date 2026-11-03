@@ -4,6 +4,9 @@
 
 export const MAP_FORMAT = 'readfirst/map@1';
 export const MAP_PATH = '.readfirst/map.json';
+// readfirst's own files: the map, and the record of when rules held (held.mjs). They belong to no group.
+const OWN = new Set([MAP_PATH, '.readfirst/held.json']);
+export const isOwnFile = (path) => OWN.has(path);
 
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 const isRecord = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -77,13 +80,22 @@ export function mapProblems(map, files, { placement = true } = {}) {
   map.groups.forEach((g, i) => {
     const at = `groups[${i}]`;
     if (!isRecord(g)) { p.push(`${at}: an object`); return; }
-    only(g, ['id', 'title', 'files', 'checks', 'risks'], at, p);
+    only(g, ['id', 'title', 'files', 'checks', 'risks', 'deprecated'], at, p);
     if (typeof g.id !== 'string' || !ID.test(g.id)) p.push(`${at}.id: lowercase letters, digits and "-"`);
     else if (ids.has(g.id)) p.push(`${at}.id: ${g.id} is used twice`);
     ids.add(g.id);
     if (!text(g.title, 200)) p.push(`${at}.title: text`);
     if (!strings(g.files, `${at}.files`, p).length) p.push(`${at}.files: at least one path or pattern`);
     checkList(g.checks, `${at}.checks`, p);
+    // Code being replaced: why, and optionally what to use instead (a group id or a path). Optional; checked below once
+    // every group id is known.
+    if (g.deprecated !== undefined) {
+      if (!isRecord(g.deprecated) || !text(g.deprecated.why)) p.push(`${at}.deprecated: { why, use? }`);
+      else {
+        only(g.deprecated, ['why', 'use'], `${at}.deprecated`, p);
+        if (g.deprecated.use !== undefined && !text(g.deprecated.use, 500)) p.push(`${at}.deprecated.use: a group id or a path`);
+      }
+    }
     if (g.risks !== undefined) {
       if (!Array.isArray(g.risks)) p.push(`${at}.risks: a list`);
       else g.risks.forEach((r, j) => {
@@ -92,6 +104,10 @@ export function mapProblems(map, files, { placement = true } = {}) {
         if (r.files !== undefined) strings(r.files, `${at}.risks[${j}].files`, p);
       });
     }
+  });
+  map.groups.forEach((g, i) => {
+    const use = isRecord(g) && isRecord(g.deprecated) ? g.deprecated.use : undefined;
+    if (typeof use === 'string' && use.trim() && !ids.has(use) && !files.some(matcher([use]))) p.push(`groups[${i}].deprecated.use: ${use} is no group id and matches no tracked file`);
   });
   if (map.rules !== undefined) {
     if (!Array.isArray(map.rules)) p.push('rules: a list');
@@ -122,7 +138,7 @@ export function mapProblems(map, files, { placement = true } = {}) {
   const groupMatch = map.groups.map((g) => [g.id, matcher(g.files)]);
   const unplaced = [];
   for (const f of files) {
-    if (f === MAP_PATH) continue;
+    if (OWN.has(f)) continue;
     const owners = groupMatch.filter(([, m]) => m(f)).map(([id]) => id);
     if (owners.length > 1) p.push(`${f}: in more than one group (${owners.join(', ')})`);
     else if (!owners.length && !ignored(f)) unplaced.push(f);
@@ -160,7 +176,7 @@ export function draftMap(files, read = () => null) {
   const byFolder = new Map();
   const projectChecks = draftChecks(files, read);
   for (const f of files) {
-    if (f === MAP_PATH) continue;
+    if (OWN.has(f)) continue;
     const { key, pattern } = keyOf(f);
     const slot = byFolder.get(key) ?? { pattern, files: [] };
     slot.files.push(f);
@@ -261,9 +277,9 @@ export function fixMap(map, files) {
 
   const ignored = matcher(out.ignore ?? []);
   const owner = (f) => out.groups.find((g) => matcher(g.files)(f));
-  const unplaced = files.filter((f) => f !== MAP_PATH && !ignored(f) && !owner(f));
+  const unplaced = files.filter((f) => !OWN.has(f) && !ignored(f) && !owner(f));
   const dir = (f) => (f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : '');
-  const placedIn = (d) => files.filter((f) => f !== MAP_PATH && dir(f) === d && owner(f));
+  const placedIn = (d) => files.filter((f) => !OWN.has(f) && dir(f) === d && owner(f));
   const doneDirs = new Set();
   for (const f of unplaced) {
     if (owner(f)) continue; // placed by a folder pattern added earlier in this loop

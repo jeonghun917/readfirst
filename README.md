@@ -104,6 +104,8 @@ It reads the checkout and its git history, runs nothing, changes nothing, and re
   reaches their file and no check of their own covers them (a check most groups share, like the whole suite, does not count);
 - **what was never filled in**: groups still titled `TODO:` from `init`, rules no check verifies;
 - **code no test reaches through imports**, the most used first, with a count per group;
+- **code being replaced that is still used** (groups marked `deprecated`), and, with `.readfirst/held.json`, **rules
+  never recorded as holding** or whose files changed after they last held;
 - **what readfirst could not see**: languages whose imports it does not read, and modules loaded by a computed name
   (``import(`./plugins/${name}`)``, `importlib.import_module(settings.X)`). An empty "used by" for those means unknown,
   not none; read lists now say so too.
@@ -239,6 +241,17 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
 - **hotspots** (optional, usually written by a tool): functions where risky code meets a rule, as
   `{ "file", "symbol", "line", "labels": ["db-write", "money"], "rules"?: [...], "note"? }`. `read` lists the ones in the
   file being changed under "Hot spots in this code"; `fix` drops those whose file is gone.
+- **deprecated** (optional, on a group): code being replaced, as `{ "why": "...", "use"?: "billing" }` where `use` is the
+  group or path to use instead. Read lists open with "Being replaced", the hook tells the agent not to add to it,
+  `find` lists its matches last with what to use instead, and `audit` counts the files outside it that still import it.
+
+### When rules last held
+
+`npx readfirst verify --record` runs the checks as usual, then writes `.readfirst/held.json`: for every rule whose
+checks all passed in that run, the commit and the date. Commit it with the change. Read lists then show
+"held at 3f2a91c on 2026-11-03" (or "never recorded as holding") next to each rule that has checks, and `audit` lists
+rules never recorded and rules whose files changed in commits after they last held. A rule with no check is never
+recorded: give it one. The file belongs to no group, like the map.
 
 Tests are found from imports: a test that imports the file directly, or through other files, is listed.
 Imports are read for JavaScript/TypeScript, Python (from the root, `src/`, or the folder that holds Django's `manage.py`;
