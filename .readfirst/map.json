@@ -30,7 +30,7 @@
           ]
         },
         {
-          "text": "parse() treats every --option except --json, --help, --force, --agent, --install, --dry-run, --strict, --verify, --stop and --ci as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
+          "text": "parse() treats every --option except --json, --help, --force, --agent, --install, --dry-run, --record, --strict, --verify, --stop and --ci as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
           "files": [
             "src/cli.mjs"
           ]
@@ -200,6 +200,9 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "readfirst's own files (the map and .readfirst/held.json) belong to no group and are skipped by placement through the OWN set in map.mjs (isOwnFile; readlist.mjs reports them as status MAP); a new file readfirst writes into the checkout must be added there, or check fails with it as an unplaced file"
         }
       ]
     },
@@ -332,7 +335,7 @@
     },
     {
       "id": "every-file-placed",
-      "rule": "every tracked file is in exactly one group or in ignore, and every group and rule pattern matches a tracked file; check fails otherwise",
+      "rule": "every tracked file except readfirst's own (the map and .readfirst/held.json) is in exactly one group or in ignore, and every group and rule pattern matches a tracked file; check fails otherwise",
       "why": "this is what stops the map from quietly falling behind the code",
       "files": [
         "src/map.mjs"
@@ -410,5 +413,82 @@
       ]
     }
   ],
-  "ignore": []
+  "ignore": [],
+  "hotspots": [
+    {
+      "file": "src/action.mjs",
+      "symbol": "runAction",
+      "line": 54,
+      "labels": [
+        "secrets"
+      ],
+      "rules": [
+        "fork-pr-does-not-fail"
+      ],
+      "note": "Reads secrets or the environment"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "git",
+      "line": 79,
+      "labels": [
+        "exec"
+      ],
+      "rules": [
+        "only-init-and-fix-write",
+        "no-network-in-cli"
+      ],
+      "note": "Runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "addAgentLine",
+      "line": 116,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "verifyChecks",
+      "line": 145,
+      "labels": [
+        "secrets",
+        "exec"
+      ],
+      "rules": [
+        "only-init-and-fix-write",
+        "no-network-in-cli"
+      ],
+      "note": "Reads secrets or the environment, runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "runHook",
+      "line": 191,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "writeWorkflow",
+      "line": 276,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    }
+  ]
 }
