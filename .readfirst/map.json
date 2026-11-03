@@ -36,7 +36,7 @@
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read and diff use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false)",
+          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read, diff and export --cursor use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false)",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -201,6 +201,9 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "the name of the exported Cursor files is matched by two separate regexes (isCursorExport in export.mjs and OWN_PATTERN in map.mjs, which keeps them out of every group); change the naming in both, or `check` reports the exported files as in no group. The text export writes is also compared byte for byte by `export --cursor --check`, so rewording it makes every user's CI fail until they re-export"
         }
       ]
     },
@@ -333,8 +336,8 @@
     },
     {
       "id": "every-file-placed",
-      "rule": "every tracked file is in exactly one group or in ignore, and every group and rule pattern matches a tracked file; check fails otherwise",
-      "why": "this is what stops the map from quietly falling behind the code",
+      "rule": "every tracked file is in exactly one group or in ignore, except readfirst's own files (the map, .readfirst/held.json and the exported .cursor/rules/readfirst-*.mdc, see isOwnFile), and every group and rule pattern matches a tracked file; check fails otherwise",
+      "why": "this is what stops the map from quietly falling behind the code; the exported Cursor files must not need a group, or committing them would fail check --strict",
       "files": [
         "src/map.mjs"
       ],
@@ -411,5 +414,70 @@
       ]
     }
   ],
-  "ignore": []
+  "ignore": [],
+  "hotspots": [
+    {
+      "file": "src/cli.mjs",
+      "symbol": "git",
+      "line": 84,
+      "labels": [
+        "exec"
+      ],
+      "rules": [
+        "only-init-and-fix-write",
+        "no-network-in-cli"
+      ],
+      "note": "Runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "addAgentLine",
+      "line": 121,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "verifyChecks",
+      "line": 150,
+      "labels": [
+        "secrets",
+        "exec"
+      ],
+      "rules": [
+        "only-init-and-fix-write",
+        "no-network-in-cli"
+      ],
+      "note": "Reads secrets or the environment, runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "runHook",
+      "line": 196,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "writeWorkflow",
+      "line": 281,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    }
+  ]
 }
