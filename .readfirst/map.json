@@ -258,7 +258,9 @@
         "server.json",
         "glama.json",
         "SECURITY.md",
-        "package-lock.json"
+        "package-lock.json",
+        ".claude/**",
+        "CLAUDE.md"
       ],
       "checks": [
         {
