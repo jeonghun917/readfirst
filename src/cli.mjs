@@ -10,6 +10,7 @@
 //   readfirst read <file>...       the read list for files you are about to change
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
 //   readfirst verify [--base <ref>] run the checks the read list names for the changed files; exit 1 if one fails
+//                                  (--record: write the rules whose checks all passed to .readfirst/held.json, with the commit)
 //   readfirst hook [--install]     a Claude Code PreToolUse hook: the read list for the file an Edit or Write is about to change
 //                                  (--install --verify also adds a Stop hook, `hook --stop`, that runs verify before Claude Code finishes)
 //   readfirst mcp                  an MCP server on stdio: read_list, changed_read_list and check_map as tools for any agent
@@ -24,6 +25,7 @@ import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, settle
 import { agentBrief } from './prompt.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { find, findText } from './find.mjs';
+import { HELD_PATH, heldInRun, parseHeld, recordHeld } from './held.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
 import { mcpHandler, serveMcp } from './mcp.mjs';
@@ -40,7 +42,8 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst find <words>...      before writing something new: what in the code may already do it
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
-  readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them)
+  readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them;
+                                 --record notes in .readfirst/held.json which rules held, at which commit)
   readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json;
                                  --install --verify also runs the checks for edited files before Claude Code finishes)
   readfirst view [--out <file>]  the map as a city in one HTML page
@@ -60,6 +63,7 @@ function parse(argv) {
     else if (a === '--agent') args.agent = true;
     else if (a === '--install') args.install = true;
     else if (a === '--dry-run') args.dryRun = true;
+    else if (a === '--record') args.record = true;
     else if (a === '--strict') args.strict = true;
     else if (a === '--verify') args.verify = true;
     else if (a === '--ci') args.ci = true;
@@ -170,6 +174,7 @@ function verifyText(report, dryRun) {
 // The read list as a few factual lines for an agent's context: rules, risks and checks, nothing else.
 export function brief(list) {
   const lines = [];
+  for (const d of list.deprecated ?? []) lines.push(`Being replaced: group ${d.group}${d.use ? `; use ${d.use} instead` : ''} (${d.why}). Do not add to it.`);
   for (const r of list.rules) lines.push(`Rule ${r.id}: ${r.rule}${r.why ? ` (why: ${r.why})` : ''}`);
   for (const r of list.risks) lines.push(`Risk: ${r.text}`);
   for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}`);
@@ -199,7 +204,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
     const files = repoFiles(root);
     const map = readMapFile(root);
     if (mapProblems(map, files, { placement: false }).length) return null;
-    const list = readList({ map, files: files.includes(path) ? files : [...files, path].sort(), imports: importEdges(files, readText(root)), targets: [path], limit: 10, read: readText(root) });
+    const list = readList({ map, files: files.includes(path) ? files : [...files, path].sort(), imports: importEdges(files, readText(root)), targets: [path], limit: 10, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) });
     const lines = brief(list);
     seen[path] = now;
     try { writeFileSync(seenAt, JSON.stringify(seen)); } catch { /* best effort */ }
@@ -447,10 +452,11 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     let history = [];
     try {
       blame = parseBlame(git(root, 'blame', '--line-porcelain', '--', MAP_PATH));
-      const oldest = Math.min(...blame.filter(Boolean).map((b) => b.time));
+      const heldTimes = Object.values(parseHeld(readText(root)(HELD_PATH))?.rules ?? {}).map((h) => Date.parse(h.date) / 1000 - 86400).filter(Number.isFinite);
+      const oldest = Math.min(...blame.filter(Boolean).map((b) => b.time), ...heldTimes);
       if (Number.isFinite(oldest)) history = parseLog(git(root, 'log', '--no-merges', `--since=${new Date((oldest - 1) * 1000).toISOString()}`, '--format=%x01%H %ct', '--name-only', 'HEAD'));
     } catch { /* the map is not committed yet, or no history: nothing is stale */ }
-    const report = audit({ map: settled, problems, files, imports: importEdges(files, readText(root)), read: readText(root), blame, history, commit });
+    const report = audit({ map: settled, problems, files, imports: importEdges(files, readText(root)), read: readText(root), blame, history, commit, held: parseHeld(readText(root)(HELD_PATH)) });
     io.out(args.json ? `${JSON.stringify(report, null, 2)}\n` : auditText(report));
     return 0;
   }
@@ -467,7 +473,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     }
     const limit = Number(args.limit ?? 30);
     if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
-    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit, read: readText(root) });
+    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
     return 0;
   }
@@ -481,8 +487,21 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     if (!(timeout > 0)) throw new Error('--timeout needs a number of seconds above 0');
     const result = verifyChecks(root, list.checks, { dryRun: args.dryRun, timeout, progress: args.json ? () => {} : io.out });
     const report = { format: 'readfirst/verify@1', commit, base: changed.ref, files: changed.files, ok: result.every((c) => c.status === 'pass' || c.status === 'listed'), checks: result };
+    // --record: the rules whose checks all passed in this run, written to .readfirst/held.json at this commit.
+    if (args.record && !args.dryRun && commit && changed.files.length) {
+      const ids = heldInRun(map, changed.files, result);
+      if (ids.length) {
+        const dirty = git(root, 'status', '--porcelain', '--untracked-files=no').split('\n').some((l) => l.trim() && !l.endsWith(HELD_PATH));
+        const next = recordHeld(parseHeld(readText(root)(HELD_PATH)), ids, { commit, date: new Date().toISOString().slice(0, 10), dirty, map });
+        writeFileSync(join(root, HELD_PATH), `${JSON.stringify(next, null, 2)}\n`);
+      }
+      report.recorded = ids;
+    }
     if (args.json) io.out(`${JSON.stringify(report, null, 2)}\n`);
-    else io.out(verifyText(report, args.dryRun));
+    else {
+      io.out(verifyText(report, args.dryRun));
+      if (report.recorded) io.out(report.recorded.length ? `recorded in ${HELD_PATH}: ${report.recorded.join(', ')} held at ${commit.slice(0, 7)}. Commit it so the team sees it.\n` : `nothing recorded: no rule had all of its checks pass in this run.\n`);
+    }
     return report.ok ? 0 : 1;
   }
   throw new Error(`unknown command ${cmd}\n\n${HELP}`);

@@ -1,6 +1,6 @@
 // The read list for files someone is about to change: the rules that cover them, the risks written for their group,
 // the checks to run (the group's commands, the rules' commands, and the tests that import them), and who uses them.
-import { fixMap, groupOf, matcher, MAP_PATH } from './map.mjs';
+import { fixMap, groupOf, isOwnFile, matcher } from './map.mjs';
 
 export const READ_LIST_FORMAT = 'readfirst/read-list@1';
 // Test files by folder or name, across the languages imports.mjs reads: JS/TS, Python, Go, Rust (tests/), Elixir,
@@ -32,18 +32,19 @@ export function unseenIn(path, read = () => null) {
 }
 
 // The read list for no files, so `diff --json` is always JSON.
-export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [], truncated: { tests: 0, usedBy: 0 } });
+export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [], deprecated: [], truncated: { tests: 0, usedBy: 0 } });
 
 // read(path), optional, gives a file's text: with it, code that loads modules by computed names is listed as unseen.
-export function readList({ map, files, imports, targets, commit = null, limit = 30, read = () => null }) {
+// held, optional, is .readfirst/held.json: each rule then says the commit it last held at (null when never).
+export function readList({ map, files, imports, targets, commit = null, limit = 30, read = () => null, held = null }) {
   if (!targets.length || targets.some((t) => !t.trim())) throw new Error('give at least one file path, none empty');
   const tracked = new Set(files);
   const ignored = matcher(map.ignore ?? []);
   const importers = new Map();
   for (const e of imports) importers.set(e.to, [...(importers.get(e.to) ?? []), e]);
 
-  const out = { format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [] };
-  const seen = { rules: new Map(), risks: new Map(), hotspots: new Map(), checks: new Map(), tests: new Map(), usedBy: new Map() };
+  const out = { format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [], deprecated: [] };
+  const seen = { rules: new Map(), risks: new Map(), hotspots: new Map(), checks: new Map(), tests: new Map(), usedBy: new Map(), deprecated: new Map() };
   const note = (kind, key, item, target) => {
     const have = seen[kind].get(key);
     if (have) { if (!have.for.includes(target)) have.for.push(target); return; }
@@ -61,25 +62,26 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
 
   for (const raw of targets) {
     const target = raw.replace(/^\.\//u, '').replace(/\\/gu, '/');
-    if (!tracked.has(target) && target !== MAP_PATH) {
+    if (!tracked.has(target) && !isOwnFile(target)) {
       out.targets.push({ path: target, group: null, status: 'NOT_TRACKED' });
       out.notCovered.push({ path: target, why: 'not a tracked file at this commit (new, deleted or misspelt)' });
       continue;
     }
-    if (target === MAP_PATH) { out.targets.push({ path: target, group: null, status: 'MAP' }); continue; }
+    if (isOwnFile(target)) { out.targets.push({ path: target, group: null, status: 'MAP' }); continue; }
     const group = groupOf(map, target);
     out.targets.push({ path: target, group: group?.id ?? null, status: group ? 'IN_MAP' : ignored(target) ? 'IGNORED' : 'NO_GROUP' });
     if (!group) {
       const suggest = ignored(target) ? null : suggestFor(target);
       out.notCovered.push({ path: target, why: ignored(target) ? 'ignored by the map' : suggest ? `in no group: \`readfirst fix\` would add it to group ${suggest.group}` : 'in no group: run `readfirst check`' });
     } else {
+      if (group.deprecated) note('deprecated', group.id, { group: group.id, why: group.deprecated.why, use: group.deprecated.use ?? null }, target);
       for (const r of group.risks ?? []) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text }, target);
       for (const c of group.checks ?? []) note('checks', c.run, { run: c.run, why: c.why ?? `checks for ${group.title}`, from: `group ${group.id}` }, target);
     }
     for (const h of map.hotspots ?? []) if (h.file === target) note('hotspots', `${h.file}\0${h.symbol}\0${h.line}`, { file: h.file, symbol: h.symbol, line: h.line, labels: h.labels, rules: h.rules ?? [], note: h.note ?? null }, target);
     for (const rule of map.rules ?? []) {
       if (!matcher(rule.files)(target)) continue;
-      note('rules', rule.id, { id: rule.id, rule: rule.rule, why: rule.why ?? null, files: rule.files }, target);
+      note('rules', rule.id, { id: rule.id, rule: rule.rule, why: rule.why ?? null, files: rule.files, ...(held && (rule.checks ?? []).length ? { held: held.rules?.[rule.id] ?? null } : {}) }, target);
       for (const c of rule.checks ?? []) note('checks', c.run, { run: c.run, why: c.why ?? `keeps rule ${rule.id}`, from: `rule ${rule.id}` }, target);
     }
     // Who reaches the target through imports: direct importers by line, then everything further up, for tests.
@@ -122,7 +124,9 @@ export function toMarkdown(list, { checklist = false, heading } = {}) {
     if (!rows.length) return;
     lines.push(`## ${title}`, '', ...rows.map(render), '');
   };
-  section('Rules that must keep holding', list.rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${forWhom(r)}`);
+  section('Being replaced', list.deprecated ?? [], (d) => `- group **${d.group}** is being replaced${d.use ? `: use \`${d.use}\` instead` : ''} — ${d.why}${forWhom(d)}`);
+  const heldNote = (r) => (r.held ? ` _(held at ${r.held.commit.slice(0, 7)} on ${r.held.date})_` : r.held === null ? ' _(never recorded as holding)_' : '');
+  section('Rules that must keep holding', list.rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${heldNote(r)}${forWhom(r)}`);
   section('Watch out', list.risks, (r) => `- ${r.text}${forWhom(r, `group ${r.group}`)}`);
   section('Hot spots in this code', list.hotspots ?? [], (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`);
   section('Run these checks', list.checks, (c) => `- ${checklist ? '[ ] ' : ''}\`${c.run}\` — ${c.why}${forWhom(c)}`);
@@ -133,7 +137,7 @@ export function toMarkdown(list, { checklist = false, heading } = {}) {
   if (list.usedByIndirectly) lines.push(`${list.usedByIndirectly} more file(s) use this code indirectly.`, '');
   section('Not covered by the map', list.notCovered, (n) => `- \`${n.path}\`: ${n.why}`);
   section('Not seen by readfirst (an empty list above may mean unknown here)', list.unseen ?? [], (n) => `- \`${n.path}\`: ${n.why}`);
-  if (!list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length && !(list.unseen ?? []).length)
+  if (!list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length && !(list.unseen ?? []).length && !(list.deprecated ?? []).length)
     lines.push('Nothing in the map is tied to these files.', '');
   return lines.join('\n');
 }

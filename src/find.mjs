@@ -79,6 +79,8 @@ export function find({ query, files, imports = [], read = () => null, map = null
   const users = new Map();
   for (const e of imports) if (!isTest(e.from)) users.set(e.to, (users.get(e.to) ?? 0) + 1);
   const group = (f) => (map ? groupOf(map, f)?.id ?? null : null);
+  // Code in a group marked deprecated is still listed, after the rest, with what to use instead.
+  const replaced = (f) => (map && f ? groupOf(map, f)?.deprecated ?? null : null);
 
   // Every place a word can be found, with its own words.
   const items = [];
@@ -109,8 +111,8 @@ export function find({ query, files, imports = [], read = () => null, map = null
     const score = inName.reduce((s, q) => s + weight(q), 0) + inPath.reduce((s, q) => s + weight(q) / 2, 0) + (exact ? 0.5 : 0);
     scored.push({ it, matched, exact, score });
   }
-  // Most words matched first, then code before tests, then rarer words, then the most used.
-  const order = (a, b) => b.matched.length - a.matched.length || Number(Boolean(a.it.test)) - Number(Boolean(b.it.test)) || b.score - a.score || (users.get(b.it.file) ?? 0) - (users.get(a.it.file) ?? 0) || String(a.it.file ?? a.it.id).localeCompare(String(b.it.file ?? b.it.id));
+  // Most words matched first, then code before tests and code being replaced, then rarer words, then the most used.
+  const order = (a, b) => b.matched.length - a.matched.length || Number(Boolean(a.it.test)) - Number(Boolean(b.it.test)) || Number(Boolean(replaced(a.it.file))) - Number(Boolean(replaced(b.it.file))) || b.score - a.score || (users.get(b.it.file) ?? 0) - (users.get(a.it.file) ?? 0) || String(a.it.file ?? a.it.id).localeCompare(String(b.it.file ?? b.it.id));
   // With several words asked, a hit on only one of them is listed only when nothing matches more.
   const best = Math.max(0, ...scored.map((s) => s.matched.length));
   const keep = (s) => asked.length < 2 || s.matched.length >= Math.min(best, 2);
@@ -122,7 +124,7 @@ export function find({ query, files, imports = [], read = () => null, map = null
     query,
     words: asked,
     searched: { files: code.length, definitions: defs, groups: map?.groups.length ?? 0, rules: map?.rules?.length ?? 0 },
-    code: codeHits.slice(0, limit).map(({ it, matched, exact }) => ({ kind: it.kind, ...(it.name ? { name: it.name } : {}), file: it.file, ...(it.line ? { line: it.line } : {}), group: group(it.file), usedBy: users.get(it.file) ?? 0, test: it.test, matched, exact })),
+    code: codeHits.slice(0, limit).map(({ it, matched, exact }) => ({ kind: it.kind, ...(it.name ? { name: it.name } : {}), file: it.file, ...(it.line ? { line: it.line } : {}), group: group(it.file), usedBy: users.get(it.file) ?? 0, test: it.test, matched, exact, ...(replaced(it.file) ? { deprecated: { use: replaced(it.file).use ?? null } } : {}) })),
     map: mapHits.slice(0, limit).map(({ it, matched }) => ({ kind: it.kind, ...(it.id ? { id: it.id } : {}), ...(it.group ? { group: it.group } : {}), text: it.text, matched })),
     more: { code: Math.max(0, codeHits.length - limit), map: Math.max(0, mapHits.length - limit) },
     notSearched: [...other].sort(),
@@ -138,7 +140,7 @@ export function findText(r) {
     out.push('## Code that may already do this', '');
     for (const h of r.code) {
       const what = h.kind === 'file' ? `${where(h)} (file)` : `\`${h.name}\` (${h.kind}) in ${where(h)}`;
-      const notes = [h.exact ? 'name matches' : `matches ${h.matched.join(', ')}`, h.usedBy ? `used by ${h.usedBy} file(s)` : null, h.test ? 'a test' : null, h.group ? `group ${h.group}` : null].filter(Boolean);
+      const notes = [h.exact ? 'name matches' : `matches ${h.matched.join(', ')}`, h.usedBy ? `used by ${h.usedBy} file(s)` : null, h.test ? 'a test' : null, h.deprecated ? `being replaced${h.deprecated.use ? `: use ${h.deprecated.use}` : ''}` : null, h.group ? `group ${h.group}` : null].filter(Boolean);
       out.push(`- ${what} — ${notes.join(' · ')}`);
     }
     if (r.more.code) out.push(`- …and ${r.more.code} more (\`--limit\`)`);

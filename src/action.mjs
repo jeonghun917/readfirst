@@ -3,6 +3,7 @@
 // The changed files come from the GitHub API, so any checkout depth works.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { readMapFile, readText, repoFiles } from './cli.mjs';
+import { HELD_PATH, parseHeld } from './held.mjs';
 import { importEdges } from './imports.mjs';
 import { MAP_PATH, settleMap } from './map.mjs';
 import { readList, toMarkdown } from './readlist.mjs';
@@ -81,7 +82,7 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const targets = changed.filter((f) => f.status !== 'removed').map((f) => f.filename);
   // A broken map still gets a comment (the problems), but no read list from it.
   const list = targets.length && !problems.length
-    ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root) })
+    ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
     : null;
   const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled, committed });
   summary(body);

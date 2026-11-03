@@ -47,7 +47,7 @@ export function parseLog(text) {
 
 // map: the map (settled), problems: what check reports, files: tracked files, imports: import edges, read(path): text or
 // null, blame: parseBlame of the map file (or []), history: parseLog since the oldest blamed line (or []).
-export function audit({ map, problems = [], files, imports, read = () => null, blame = [], history = [], commit = null }) {
+export function audit({ map, problems = [], files, imports, read = () => null, blame = [], history = [], commit = null, held = null }) {
   const lines = (read(MAP_PATH) ?? '').split('\n');
   const writtenAt = (value) => {
     const needle = JSON.stringify(value);
@@ -115,6 +115,30 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
     && !(h.file.endsWith('.go') && goTested.has(h.file.slice(0, h.file.lastIndexOf('/') + 1))))
     .map((h) => ({ file: h.file, symbol: h.symbol, line: h.line, labels: h.labels }));
 
+  // Code being replaced that is still in use: files outside the deprecated group (and not tests) that import it.
+  const replacing = map.groups.filter((g) => g.deprecated).map((g) => {
+    const inside = matcher(g.files);
+    const users = [...new Set(imports.filter((e) => inside(e.to) && !inside(e.from) && !isTest(e.from)).map((e) => e.from))].sort();
+    return { group: g.id, use: g.deprecated.use ?? null, why: g.deprecated.why, users: users.length, files: users.slice(0, 5) };
+  });
+
+  // When rules last held (verify --record): never recorded, or their files changed in commits after that.
+  let lastHeld = null;
+  if (held) {
+    const times = new Map(history.map((c) => [c.hash, c.time]));
+    lastHeld = { never: [], changed: [] };
+    for (const r of map.rules ?? []) {
+      if (!(r.checks ?? []).length) continue;
+      const h = held.rules?.[r.id];
+      if (!h) { lastHeld.never.push(r.id); continue; }
+      const covers = matcher(r.files);
+      const at = times.get(h.commit) ?? Date.parse(h.date) / 1000;
+      const after = history.filter((c) => c.time > at && c.hash !== h.commit && c.files.some(covers)).length;
+      if (after) lastHeld.changed.push({ id: r.id, commit: h.commit.slice(0, 7), date: h.date, commits: after });
+    }
+    lastHeld.changed.sort((a, b) => b.commits - a.commits);
+  }
+
   const other = new Map();
   for (const f of files) if (OTHER_CODE.test(f) && !ignored(f) && !SKIP_CODE.test(f)) { const ext = f.split('.').pop().toLowerCase(); other.set(ext, (other.get(ext) ?? 0) + 1); }
   const computed = code.flatMap((f) => unseenIn(f, read));
@@ -125,6 +149,8 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
     stale,
     hotspots,
     unguarded,
+    replacing,
+    held: lastHeld,
     placeholders,
     unchecked,
     untested: {
@@ -152,6 +178,11 @@ export function auditText(a) {
   section('Hot spots no longer at their line', a.hotspots.map((h) => `- \`${h.symbol}\` in \`${h.file}\`: map says line ${h.line}, ${h.status === 'MOVED' ? `now line ${h.now}` : 'not found in the file'}`));
   section('Hot spots nothing checks (no test reaches their file, and no check of their own in the map)', a.unguarded.slice(0, TOP).map((h) =>
     `- \`${h.symbol}\` in \`${h.file}:${h.line}\`: ${h.labels.join(', ')}`).concat(a.unguarded.length > TOP ? [`- …and ${a.unguarded.length - TOP} more`] : []));
+  section('Code being replaced that is still used', a.replacing.filter((d) => d.users).map((d) => `- group **${d.group}**${d.use ? ` (use \`${d.use}\`)` : ''}: imported by ${d.users} file(s) outside it, e.g. ${d.files.map((f) => `\`${f}\``).join(', ')}`));
+  if (a.held) section('When rules last held (.readfirst/held.json)', [
+    ...a.held.changed.slice(0, TOP).map((h) => `- rule **${h.id}**: held at ${h.commit} on ${h.date}; ${h.commits} commit(s) changed its files since. Run \`readfirst verify --record\` again.`),
+    ...(a.held.never.length ? [`- never recorded as holding: ${a.held.never.slice(0, 10).join(', ')}${a.held.never.length > 10 ? ', …' : ''}`] : []),
+  ]);
   section('Not filled in yet', [
     ...(a.placeholders.length ? [`- ${a.placeholders.length} group(s) still have the TODO title from init: ${a.placeholders.slice(0, 10).join(', ')}${a.placeholders.length > 10 ? ', …' : ''}. \`readfirst prompt\` gives your agent the brief.`] : []),
     ...(a.unchecked.length ? [`- ${a.unchecked.length} rule(s) with no check that shows they hold: ${a.unchecked.slice(0, 10).join(', ')}${a.unchecked.length > 10 ? ', …' : ''}`] : []),

@@ -19,7 +19,9 @@ Do this:
 3. Add "rules": promises the code must keep, each {"id": "kebab-id", "rule": "...", "why": "...", "files": [...],
    "checks": [{"run": "..."}]}. Take them from comments, docs, tests and commit messages. Only write rules you can point to
    in the code or docs. Ask the user for the ones only they know.
-4. Run \`npx readfirst check\` until it says the map is good (\`npx readfirst fix\` places new files and drops dead
+4. If a group is being replaced (old code new work must not extend), add "deprecated": {"why": "...", "use": "new-group-id or path"}.
+   Read lists and \`readfirst find\` then send people and agents to the replacement.
+5. Run \`npx readfirst check\` until it says the map is good (\`npx readfirst fix\` places new files and drops dead
    patterns for you), then show the user the diff of ${MAP_PATH}.
 
 Current groups: ${map.groups.map((g) => `${g.id} (${g.files.join(', ')})`).join('; ')}.
