@@ -1,0 +1,15 @@
+{
+  "name": "readfirst",
+  "description": "readfirst: what to read before you change a file, from a map in the repository.",
+  "owner": {
+    "name": "Jeonghun Mun",
+    "url": "https://github.com/jeonghun917/readfirst"
+  },
+  "plugins": [
+    {
+      "name": "readfirst",
+      "source": "./plugins/readfirst",
+      "description": "Before Claude edits a file, it gets the rules, risks and checks your team wrote for it in .readfirst/map.json; before it writes new code, it finds what already exists."
+    }
+  ]
+}
