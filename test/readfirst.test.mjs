@@ -400,7 +400,7 @@ test('mcp: initialize, tools/list and tools/call over stdio answer from the chec
   const by = Object.fromEntries(lines.filter((l) => l.id != null).map((l) => [l.id, l]));
   assert.equal(by[1].result.protocolVersion, '2025-03-26');
   assert.equal(by[1].result.serverInfo.name, 'readfirst');
-  assert.deepEqual(by[2].result.tools.map((t) => t.name), ['read_list', 'changed_read_list', 'check_map', 'audit_repo']);
+  assert.deepEqual(by[2].result.tools.map((t) => t.name), ['read_list', 'changed_read_list', 'find_existing', 'check_map', 'audit_repo']);
   assert.match(by[3].result.content[0].text, /Read first: `src\/b\.js`/u);
   assert.match(by[3].result.content[0].text, /src\/a\.js/u); // a uses b
   assert.equal(by[3].result.isError, false);
@@ -444,7 +444,7 @@ test('mcp: starts and lists its tools outside a git repository; a tool call ther
   await new Promise((resolve, reject) => { const t = setTimeout(() => reject(new Error(`only ${lines.length} answers`)), 10000); const iv = setInterval(() => { if (lines.length >= 3) { clearInterval(iv); clearTimeout(t); resolve(); } }, 20); });
   child.kill();
   assert.equal(lines[0].result.serverInfo.name, 'readfirst');
-  assert.equal(lines[1].result.tools.length, 4);
+  assert.equal(lines[1].result.tools.length, 5);
   assert.equal(lines[2].result.isError, true);
   assert.match(lines[2].result.content[0].text, /not inside a git repository/u);
 });

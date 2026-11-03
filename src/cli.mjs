@@ -6,6 +6,7 @@
 //   readfirst fix                  place new files and drop patterns for deleted ones, then check
 //   readfirst audit                the whole repository against the map, as a report: stale rules, moved hot spots,
 //                                  what was never filled in, code no test reaches, what readfirst could not see
+//   readfirst find <words>...      before writing something new: functions, files and map entries that may already do it
 //   readfirst read <file>...       the read list for files you are about to change
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
 //   readfirst verify [--base <ref>] run the checks the read list names for the changed files; exit 1 if one fails
@@ -22,6 +23,7 @@ import { importEdges } from './imports.mjs';
 import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
+import { find, findText } from './find.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
 import { mcpHandler, serveMcp } from './mcp.mjs';
@@ -35,6 +37,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst check [--strict]     check the map covers every tracked file (new files beside placed ones pass; --strict fails on them)
   readfirst fix                  place new files, drop patterns for deleted ones
   readfirst audit                the whole repository against the map: stale rules, moved hot spots, code no test reaches
+  readfirst find <words>...      before writing something new: what in the code may already do it
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
   readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them)
@@ -105,7 +108,7 @@ function loadMapLenient(root, files, io) {
 
 // The one line that makes a coding agent use readfirst, added to the agent notes the project already has (CLAUDE.md,
 // AGENTS.md, .cursorrules), or to a new AGENTS.md when it has none. A file that already mentions readfirst is left alone.
-export const AGENT_LINE = 'Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the checks it lists. Before you finish, run `npx readfirst verify`: it runs the checks the map lists for everything you changed; fix what fails. When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.';
+export const AGENT_LINE = 'Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the checks it lists. Before writing a new function or module, run `npx readfirst find <what it does>` and reuse what already exists. Before you finish, run `npx readfirst verify`: it runs the checks the map lists for everything you changed; fix what fails. When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.';
 function addAgentLine(root) {
   const notes = ['CLAUDE.md', 'AGENTS.md', '.cursorrules'].filter((f) => existsSync(join(root, f)));
   const wrote = [];
@@ -418,6 +421,18 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       io.out(problems.length ? `still to fix by hand:\n- ${problems.join('\n- ')}\n` : `${MAP_PATH} is good: ${files.length} files.\n`);
     }
     return problems.length ? 1 : 0;
+  }
+  if (cmd === 'find') {
+    const query = rest.join(' ').trim();
+    if (!query) throw new Error('say what you are about to write, e.g. `readfirst find payment retry`');
+    const limit = Number(args.limit ?? 15);
+    if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
+    // The map adds its groups, rules and risks to the search; without one (or with a broken one) the code alone is searched.
+    let map = null;
+    try { const m = readMapFile(root); if (!mapProblems(m, files, { placement: false }).length) map = m; } catch { map = null; }
+    const report = find({ query, files, imports: importEdges(files, readText(root)), read: readText(root), map, limit });
+    io.out(args.json ? `${JSON.stringify(report, null, 2)}\n` : findText(report));
+    return 0;
   }
   if (cmd === 'audit') {
     const map = readMapFile(root);
