@@ -148,3 +148,27 @@ test('readfirst audit stops on a broken map and reports it', () => {
   assert.equal(code, 1);
   assert.match(out, /has problems; fix them first/u);
 });
+
+test('audit lists hot spots no check names and no test reaches, and leaves guarded ones out', () => {
+  const map = {
+    format: 'readfirst/map@1',
+    groups: [{ id: 'pay', title: 'pay', files: ['pay/**'] }, { id: 'db', title: 'db', files: ['db/**'], checks: [{ run: 'npm test' }] }, { id: 'jobs', title: 'jobs', files: ['jobs/**'] }, { id: 't', title: 't', files: ['tests/**'] }],
+    rules: [{ id: 'cents', rule: 'cents', files: ['pay/refund.js'], checks: [{ run: 'npm run money' }] }],
+    hotspots: [
+      { file: 'pay/charge.js', symbol: 'charge', line: 1, labels: ['money'] },
+      { file: 'pay/refund.js', symbol: 'refund', line: 1, labels: ['money'] },
+      { file: 'db/save.js', symbol: 'save', line: 1, labels: ['db-write'] },
+      { file: 'jobs/sync.js', symbol: 'sync', line: 1, labels: ['network'] },
+    ],
+  };
+  const files = ['pay/charge.js', 'pay/refund.js', 'db/save.js', 'jobs/sync.js', 'tests/sync.test.js'];
+  const read = (p) => ({ 'pay/charge.js': 'function charge() {}', 'pay/refund.js': 'function refund() {}', 'db/save.js': 'function save() {}', 'jobs/sync.js': 'function sync() {}' })[p] ?? null;
+  const a = audit({ map, files, imports: [{ from: 'tests/sync.test.js', to: 'jobs/sync.js', line: 1 }], read });
+  // refund: a rule with a check covers it; save: its group has a check; sync: a test reaches it.
+  assert.deepEqual(a.unguarded, [{ file: 'pay/charge.js', symbol: 'charge', line: 1, labels: ['money'] }]);
+  assert.match(auditText(a), /## Hot spots nothing checks[^\n]*\n\n- `charge` in `pay\/charge.js:1`: money/u);
+  // The same check on most groups (the whole suite) does not count as a check of db/save.js.
+  const suite = structuredClone(map);
+  for (const g of suite.groups) g.checks = [{ run: 'npm test' }];
+  assert.deepEqual(audit({ map: suite, files, imports: [{ from: 'tests/sync.test.js', to: 'jobs/sync.js', line: 1 }], read }).unguarded.map((h) => h.symbol), ['charge', 'save']);
+});

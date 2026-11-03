@@ -3,7 +3,8 @@
 //   - the map's own problems, as `check` would report them;
 //   - rules and risks that may be out of date: the line that holds one was last written before many commits changed
 //     the files it covers (git blame on the map, git log on the files);
-//   - hot spots whose function is no longer at the line the map gives;
+//   - hot spots whose function is no longer at the line the map gives, and hot spots nothing checks: no check in their
+//     group or in a rule that covers them, and no test that reaches their file;
 //   - what was never filled in: groups still titled "TODO:" from `init`, rules no check verifies;
 //   - code no test reaches through imports, the most used first;
 //   - what readfirst could not see: languages whose imports it does not read, modules loaded by computed names.
@@ -104,6 +105,16 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
   const byGroup = new Map();
   for (const f of untested) { const g = groupOf(map, f)?.id ?? null; byGroup.set(g, (byGroup.get(g) ?? 0) + 1); }
 
+  // Risky code with nothing to show it still works: a hot spot whose file no check of the map names and no test reaches.
+  // A check that half the groups or more share (the whole test suite) says nothing about this file in particular.
+  const shared = new Map();
+  for (const g of map.groups) for (const c of new Set((g.checks ?? []).map((x) => x.run))) shared.set(c, (shared.get(c) ?? 0) + 1);
+  const ownCheck = (c) => map.groups.length < 2 || shared.get(c.run) < map.groups.length / 2;
+  const guarded = (file) => (groupOf(map, file)?.checks ?? []).some(ownCheck) || (map.rules ?? []).some((r) => (r.checks ?? []).length && matcher(r.files)(file));
+  const unguarded = (map.hotspots ?? []).filter((h) => !guarded(h.file) && !reached.has(h.file) && !isTest(h.file)
+    && !(h.file.endsWith('.go') && goTested.has(h.file.slice(0, h.file.lastIndexOf('/') + 1))))
+    .map((h) => ({ file: h.file, symbol: h.symbol, line: h.line, labels: h.labels }));
+
   const other = new Map();
   for (const f of files) if (OTHER_CODE.test(f) && !ignored(f) && !SKIP_CODE.test(f)) { const ext = f.split('.').pop().toLowerCase(); other.set(ext, (other.get(ext) ?? 0) + 1); }
   const computed = code.flatMap((f) => unseenIn(f, read));
@@ -113,6 +124,7 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
     problems,
     stale,
     hotspots,
+    unguarded,
     placeholders,
     unchecked,
     untested: {
@@ -138,6 +150,8 @@ export function auditText(a) {
   section(`Rules and risks that may be out of date (${STALE_COMMITS}+ commits changed their files since they were written)`, [...a.stale.slice(0, TOP).map((s) =>
     `- ${s.kind === 'rule' ? `rule **${s.id}**` : `risk in group ${s.group}`}: "${s.text.length > 100 ? `${s.text.slice(0, 100)}…` : s.text}" — written ${s.written.date} (${s.written.commit}); ${s.commits} commits changed ${s.files} of its files since. Still true?`), ...(a.stale.length > TOP ? [`- …and ${a.stale.length - TOP} more (\`readfirst audit --json\` lists all)`] : [])]);
   section('Hot spots no longer at their line', a.hotspots.map((h) => `- \`${h.symbol}\` in \`${h.file}\`: map says line ${h.line}, ${h.status === 'MOVED' ? `now line ${h.now}` : 'not found in the file'}`));
+  section('Hot spots nothing checks (no test reaches their file, and no check of their own in the map)', a.unguarded.slice(0, TOP).map((h) =>
+    `- \`${h.symbol}\` in \`${h.file}:${h.line}\`: ${h.labels.join(', ')}`).concat(a.unguarded.length > TOP ? [`- …and ${a.unguarded.length - TOP} more`] : []));
   section('Not filled in yet', [
     ...(a.placeholders.length ? [`- ${a.placeholders.length} group(s) still have the TODO title from init: ${a.placeholders.slice(0, 10).join(', ')}${a.placeholders.length > 10 ? ', …' : ''}. \`readfirst prompt\` gives your agent the brief.`] : []),
     ...(a.unchecked.length ? [`- ${a.unchecked.length} rule(s) with no check that shows they hold: ${a.unchecked.slice(0, 10).join(', ')}${a.unchecked.length > 10 ? ', …' : ''}`] : []),
