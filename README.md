@@ -65,6 +65,19 @@ changed; fix what fails.
 When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.
 ```
 
+### As a plugin (Claude Code, Paradev)
+
+The same instructions, packaged: a skill that tells the agent to `read` before editing, `find` before writing new code
+and `verify` before finishing, plus (Claude Code) the read-list hook below.
+
+```sh
+/plugin install readfirst --marketplace jeonghun917/readfirst          # Claude Code 2.1.275 or later
+superset plugins marketplace add jeonghun917/readfirst && superset plugins install readfirst   # Paradev
+```
+
+On Paradev the skill reaches every agent in the workspace (Claude Code, Codex, Cursor, Gemini CLI). It runs the CLI
+locally like everything else here: no MCP server, no network.
+
 ### Or let Claude Code pick it up by itself
 
 ```sh

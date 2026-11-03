@@ -1,0 +1,22 @@
+{
+	"$schema": "https://superset.sh/schemas/plugin/1.0.0.json",
+	"name": "readfirst",
+	"version": "0.1.0",
+	"description": "Before an agent edits a file, it reads the rules, risks and checks your team wrote for it in .readfirst/map.json; before it writes new code, it finds what already exists. Runs locally, no network, no model.",
+	"author": {
+		"name": "Jeonghun Mun",
+		"url": "https://github.com/jeonghun917/readfirst"
+	},
+	"homepage": "https://github.com/jeonghun917/readfirst",
+	"repository": "https://github.com/jeonghun917/readfirst",
+	"license": "MIT",
+	"keywords": ["readfirst", "agents", "codebase", "rules", "context", "review"],
+	"extensions": {
+		"superset": {
+			"interface": {
+				"displayName": "readfirst",
+				"category": "Developer tools"
+			}
+		}
+	}
+}

@@ -1,0 +1,21 @@
+{
+	"$schema": "https://paradev.com/schemas/marketplace/1.0.0.json",
+	"name": "readfirst",
+	"description": "readfirst: what to read before you change a file, for every agent in the workspace.",
+	"owner": {
+		"name": "Jeonghun Mun",
+		"url": "https://github.com/jeonghun917/readfirst"
+	},
+	"plugins": [
+		{
+			"name": "readfirst",
+			"description": "Before an agent edits a file, it reads the rules, risks and checks your team wrote for it in .readfirst/map.json; before it writes new code, it finds what already exists. Runs locally, no network, no model.",
+			"author": {
+				"name": "Jeonghun Mun"
+			},
+			"category": "development",
+			"source": "./plugins/readfirst",
+			"version": "0.1.0"
+		}
+	]
+}
