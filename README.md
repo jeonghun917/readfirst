@@ -22,6 +22,7 @@ npx readfirst init --agent --ci   # first map from your folders, checks from you
 npx readfirst prompt         # a brief for your coding agent to fill in titles, checks, risks and rules
 npx readfirst check          # every tracked file is in exactly one group (or ignored); rules point at real files
 npx readfirst audit          # the whole repository against the map, once: what went stale, what no test reaches
+npx readfirst find payment retry   # before writing something new: what in the code may already do it
 ```
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -48,7 +49,8 @@ npx readfirst fix                # after moving code: place new files, drop patt
 
 ```md
 Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the
-checks it lists. Before you finish, run `npx readfirst verify`: it runs the checks the map lists for everything you
+checks it lists. Before writing a new function or module, run `npx readfirst find <what it does>` and reuse what
+already exists. Before you finish, run `npx readfirst verify`: it runs the checks the map lists for everything you
 changed; fix what fails.
 When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.
 ```
@@ -107,11 +109,23 @@ It reads the checkout and its git history, runs nothing, changes nothing, and re
 
 `--json` gives the same as `readfirst/audit@1`. On a 4,700-file Django repository it takes about two seconds.
 
+### Before writing something new
+
+The commonest waste in agent-written code is a second copy of a helper that already exists. `npx readfirst find
+payment retry` lists the functions, classes and types whose names hold those words (`retryPayment`,
+`retry_failed_payment`), the files whose paths do, and the groups, rules and risks of the map that mention them: the
+closest names first, code before tests, each with how many files use it and its group.
+
+It matches words, not meaning: `retries` meets `retry` and `pay` meets `payment`, the folder a function sits in counts
+too (`webhook/transport` for `signature_for_payload` on "webhook signature"), but `try_again` is not found for "retry".
+Words like "add", "new" or "helper" are ignored. No model, no index, nothing written; on a 4,700-file repository it takes
+under two seconds. `--json` gives `readfirst/find@1`.
+
 ### Any agent, through MCP
 
-`npx readfirst mcp` is an MCP server on stdio with four tools: `read_list` (files → what to read and check before
-changing them), `changed_read_list` (the same for everything changed on the branch), `check_map` and `audit_repo` (the
-audit above). It answers from the checkout as it is and writes nothing.
+`npx readfirst mcp` is an MCP server on stdio with five tools: `read_list` (files → what to read and check before
+changing them), `changed_read_list` (the same for everything changed on the branch), `find_existing` (the search
+above, before writing something new), `check_map` and `audit_repo` (the audit above). It answers from the checkout as it is and writes nothing.
 
 ```sh
 claude mcp add readfirst -- npx --yes readfirst mcp          # Claude Code

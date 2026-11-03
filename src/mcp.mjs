@@ -20,6 +20,15 @@ const TOOLS = [
     args: (a) => ['diff', ...(typeof a.base === 'string' && a.base ? ['--base', a.base] : [])],
   },
   {
+    name: 'find_existing',
+    description: 'Before writing a new function, helper or module: the functions, classes, files and map entries that may already do it, matched by words (not meaning) against names and paths. Give a few words about what it does, e.g. "payment retry" or "csv export". If one fits, use or extend it instead of writing another.',
+    inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'a few words about what you are about to write' } }, required: ['query'] },
+    args: (a) => {
+      if (typeof a.query !== 'string' || !a.query.trim()) throw new Error('query must be a few words about what you are about to write');
+      return ['find', ...a.query.trim().split(/\s+/u)];
+    },
+  },
+  {
     name: 'check_map',
     description: 'Whether .readfirst/map.json still covers the code: files in no group, patterns that match nothing, broken rules.',
     inputSchema: { type: 'object', properties: {} },
@@ -46,7 +55,7 @@ export function mcpHandler({ run, version }) {
         protocolVersion: VERSIONS.includes(asked) ? asked : VERSIONS[0],
         capabilities: { tools: {} },
         serverInfo: { name: 'readfirst', version },
-        instructions: 'Before changing a file, call read_list with it and follow what it says. Before you finish, call changed_read_list and run the checks it lists (or run `npx readfirst verify`).',
+        instructions: 'Before writing a new function or module, call find_existing and reuse what already exists. Before changing a file, call read_list with it and follow what it says. Before you finish, call changed_read_list and run the checks it lists (or run `npx readfirst verify`).',
       });
     }
     if (msg.method === 'ping') return reply({});
