@@ -36,7 +36,7 @@
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read and diff use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false)",
+          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read and diff use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false). `audit` reads the map itself: a map broken in itself (placement: false) prints the problems and exits 1, otherwise it settles the map like check and always exits 0",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -166,7 +166,7 @@
           ]
         },
         {
-          "text": "imports are read with regexes: JS/TS and Python in imports.mjs, Go, Rust, Elixir, C#, Java/Kotlin, Ruby and PHP in langs.mjs. Only edges that resolve to a tracked file count (workspace packages and tsconfig paths aliases included), so packages from outside, aliases set up elsewhere (bundler config, tsconfig extends) and names the approximation misses (Rails constants used unqualified inside a module, C# types reached without a using) leave tests out of the read list",
+          "text": "imports are read with regexes: JS/TS and Python in imports.mjs, Go, Rust, Elixir, C#, Java/Kotlin, Ruby and PHP in langs.mjs. Only edges that resolve to a tracked file count (workspace packages and tsconfig paths aliases included), so packages from outside, aliases set up elsewhere (bundler config, tsconfig extends) and names the approximation misses (Rails constants used unqualified inside a module, C# types reached without a using) leave tests out of the read list and make `audit` list the file as code no test reaches",
           "files": [
             "src/imports.mjs",
             "src/langs.mjs"
@@ -198,6 +198,12 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "which languages count as 'imports read' is a second list: READS_IMPORTS and OTHER_CODE in readlist.mjs decide what audit treats as code to test and as 'not seen' (the same lists feed the read list's `unseen`); a language added to imports.mjs or langs.mjs must be moved into READS_IMPORTS, or audit and read lists keep calling its imports unknown"
+        },
+        {
+          "text": "audit finds when a rule or risk was written by searching the map file for the line containing its JSON-encoded text and taking git blame of that line; a map not written one value per line (or text changed by hand-wrapping) is silently never listed as stale, and lines not committed yet are skipped"
         }
       ]
     },
@@ -359,8 +365,8 @@
     },
     {
       "id": "only-init-and-fix-write",
-      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes, and with --ci .github/workflows/readfirst.yml (never over an existing one); fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; `hook --stop` writes nothing itself and runs only the base branch's check commands, like verify; check, prompt (with or without --labels), read, diff and the mcp server never change the checkout; verify writes nothing itself and only runs the commands the map lists, which may write as they would when run by hand; the Action writes nothing in the checkout, and with auto-fix only commits the map that fix would write to the PR branch through the API",
-      "why": "agents run read and diff freely before every change, and the hook runs before every edit, so it must not touch the working tree",
+      "rule": "only `readfirst init`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, one line in the agent notes, and with --ci .github/workflows/readfirst.yml (never over an existing one); fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; `hook --stop` writes nothing itself and runs only the base branch's check commands, like verify; check, audit (it only reads files and runs git blame and git log), prompt (with or without --labels), read, diff and the mcp server never change the checkout; verify writes nothing itself and only runs the commands the map lists, which may write as they would when run by hand; the Action writes nothing in the checkout, and with auto-fix only commits the map that fix would write to the PR branch through the API",
+      "why": "agents run read and diff freely before every change, and the hook runs before every edit, so it must not touch the working tree; audit is also offered to agents as the audit_repo MCP tool, which answers by calling it",
       "files": [
         "src/cli.mjs"
       ]
@@ -408,5 +414,82 @@
       ]
     }
   ],
-  "ignore": []
+  "ignore": [],
+  "hotspots": [
+    {
+      "file": "src/action.mjs",
+      "symbol": "runAction",
+      "line": 53,
+      "labels": [
+        "secrets"
+      ],
+      "rules": [
+        "fork-pr-does-not-fail"
+      ],
+      "note": "Reads secrets or the environment"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "git",
+      "line": 72,
+      "labels": [
+        "exec"
+      ],
+      "rules": [
+        "only-init-and-fix-write",
+        "no-network-in-cli"
+      ],
+      "note": "Runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "addAgentLine",
+      "line": 109,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "verifyChecks",
+      "line": 138,
+      "labels": [
+        "secrets",
+        "exec"
+      ],
+      "rules": [
+        "only-init-and-fix-write",
+        "no-network-in-cli"
+      ],
+      "note": "Reads secrets or the environment, runs commands"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "runHook",
+      "line": 183,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "writeWorkflow",
+      "line": 268,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    }
+  ]
 }
