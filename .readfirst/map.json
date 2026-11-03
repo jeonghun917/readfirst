@@ -30,7 +30,7 @@
           ]
         },
         {
-          "text": "parse() treats every --option except --json, --help, --force, --agent, --install, --dry-run, --strict, --verify, --stop and --ci as taking a value, so a new on/off flag must be added to that list or it swallows the next argument",
+          "text": "parse() treats every --option it does not list as an on/off flag as taking a value, so a new on/off flag (like --record, --cursor or --check) must be added to that list in parse() or it swallows the next argument",
           "files": [
             "src/cli.mjs"
           ]
