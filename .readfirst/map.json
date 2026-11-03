@@ -199,6 +199,9 @@
             "src/cli.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "audit's 'hot spots nothing checks' counts a group check as a check of its own only if fewer than half the groups share the same `run` string (always, if the map has under two groups). Adding one command such as `npm test` to most groups, or writing the same check with different text, changes which hot spots are listed. A rule check only counts when the rule's files cover the hot spot's file."
         }
       ]
     },
