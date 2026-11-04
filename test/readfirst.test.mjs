@@ -220,11 +220,49 @@ test('draft checks come from the project build files; placeholders and media gro
   assert.deepEqual(map.groups.find((g) => g.id === 'img').checks, []);
 });
 
+test('cli: setup wires the agents a repository shows, keeps what is there, and leaves odd files alone', () => {
+  const { root } = repo({
+    ...FIXTURE,
+    '.cursor/mcp.json': '{"mcpServers": {"other": {"command": "x"}}}',
+    '.vscode/settings.json': '{}',
+    '.gemini/settings.json': '{"theme": "dark"}',
+    '.codex/config.toml': 'model = "x"\n',
+    'opencode.jsonc': '// comments\n{}',
+    '.windsurfrules': 'be nice\n',
+  });
+  const r = run(root, 'setup');
+  assert.equal(r.code, 0);
+  assert.match(r.out, /agents found: cursor, vscode, gemini, codex, opencode, windsurf\./u);
+  const json = (f) => JSON.parse(readFileSync(join(root, f), 'utf8'));
+  assert.deepEqual(Object.keys(json('.cursor/mcp.json').mcpServers), ['other', 'readfirst'], 'keeps the server already there');
+  assert.equal(json('.vscode/mcp.json').servers.readfirst.type, 'stdio');
+  assert.equal(json('.gemini/settings.json').theme, 'dark');
+  assert.deepEqual(json('.gemini/settings.json').mcpServers.readfirst.args, ['--yes', 'readfirst', 'mcp']);
+  assert.match(readFileSync(join(root, 'GEMINI.md'), 'utf8'), /readfirst read/u);
+  assert.match(readFileSync(join(root, '.codex/config.toml'), 'utf8'), /^model = "x"\n\n\[mcp_servers\.readfirst\]/u);
+  assert.match(readFileSync(join(root, '.windsurfrules'), 'utf8'), /readfirst read/u);
+  assert.equal(readFileSync(join(root, 'opencode.jsonc'), 'utf8'), '// comments\n{}', 'a file with comments is not rewritten');
+  assert.match(r.out, /by hand: opencode\.jsonc was left alone \(has comments\)/u);
+  assert.match(r.out, /by hand: Windsurf keeps MCP servers in ~\/\.codeium/u);
+  assert.match(r.out, /Codex reads \.codex\/config\.toml only in a project you have marked as trusted/u);
+  const again = run(root, 'setup');
+  assert.match(again.out, /everything was already set up/u, 'a second run writes nothing');
+  assert.equal(readFileSync(join(root, '.codex/config.toml'), 'utf8').match(/mcp_servers\.readfirst/gu).length, 1);
+
+  const bare = repo(FIXTURE);
+  const none = run(bare.root, 'setup');
+  assert.match(none.out, /no agent settings found/u);
+  assert.ok(existsSync(join(bare.root, 'AGENTS.md')));
+  const named = run(bare.root, 'setup', '--for', 'claude,cursor');
+  assert.match(named.out, /wrote: \.claude\/settings\.json, CLAUDE\.md, \.cursor\/mcp\.json\./u);
+  assert.throws(() => run(bare.root, 'setup', '--for', 'nope'), /unknown agent: nope/u);
+});
+
 test('cli: init --agent adds the line once; read keeps working on a map that is only behind and names the group fix would use', () => {
   const { root } = repo({ ...FIXTURE, 'CLAUDE.md': '# notes\n' });
   const init = run(root, 'init', '--agent');
   assert.match(init.out, /checks found: npm test/u);
-  assert.match(init.out, /added the read-first line to CLAUDE\.md/u);
+  assert.match(init.out, /wrote: CLAUDE\.md/u);
   assert.match(readFileSync(join(root, 'CLAUDE.md'), 'utf8'), /^# notes\n\nBefore changing a file, run `npx readfirst read <file>`/u);
   run(root, 'init', '--force', '--agent');
   assert.equal(readFileSync(join(root, 'CLAUDE.md'), 'utf8').match(/readfirst read/gu).length, 1, 'not added twice');

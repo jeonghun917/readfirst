@@ -39,7 +39,7 @@ npx readfirst fix                # after moving code: place new files, drop patt
 
 ### Tell your agent to use it
 
-`init --agent` adds this to your `CLAUDE.md`, `AGENTS.md` or `.cursorrules` (or a new `AGENTS.md`); or add it yourself:
+`init --agent` and `setup` add this to the agent notes you have (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `GEMINI.md`, `.windsurfrules`, `.github/copilot-instructions.md`, or a new `AGENTS.md`); or add it yourself:
 
 ```md
 Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the
@@ -48,6 +48,20 @@ already exists. Before you finish, run `npx readfirst verify`: it runs the check
 changed; fix what fails.
 When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.
 ```
+
+### Wire every agent at once
+
+```sh
+npx readfirst setup                     # the agents this repository shows signs of
+npx readfirst setup --for cursor,codex  # or name them
+```
+
+It adds the line above to the agent notes, and readfirst's MCP server to each agent's own project config: the Claude
+Code hook in `.claude/settings.json`, `.cursor/mcp.json`, `.vscode/mcp.json` (Copilot), `.gemini/settings.json` (and
+`GEMINI.md`), `.codex/config.toml` and `opencode.json`. It keeps whatever is already in those files, does nothing the
+second time, and never writes outside the repository: a file it cannot parse (JSON with comments) and settings that live
+in your home folder (Windsurf) are printed for you to add by hand. Codex reads `.codex/config.toml` only in a project you
+have marked as trusted. `init --agent` runs it too.
 
 ### As a plugin (Claude Code, Paradev)
 

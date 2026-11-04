@@ -1,5 +1,6 @@
 // readfirst: what to read and check before changing a file.
-//   readfirst init [--agent] [--ci] write a first .readfirst/map.json from the file tree (and the agent-notes line, the Action)
+//   readfirst init [--agent] [--ci] write a first .readfirst/map.json from the file tree (and, with --agent, what setup does; the Action)
+//   readfirst setup [--for a,b]    wire the agents this repository uses: the agent-notes line, the Claude Code hook, MCP configs
 //   readfirst prompt               the brief for a coding agent to fill in titles, checks, risks and rules
 //   readfirst prompt --labels <lang>  the brief for personal labels (a translation and plain notes) for the view
 //   readfirst check                the map covers every tracked file and is well formed
@@ -27,6 +28,7 @@ import { agentBrief } from './prompt.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { find, findText } from './find.mjs';
 import { CURSOR_DIR, cursorPlan } from './export.mjs';
+import { AGENTS, detectAgents, setupAgents } from './agents.mjs';
 import { HELD_PATH, heldInRun, parseHeld, recordHeld } from './held.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
@@ -37,6 +39,8 @@ import { emptyList, readList, toMarkdown } from './readlist.mjs';
 const HELP = `readfirst — what to read and check before changing a file
 
   readfirst init [--agent] [--ci] write a first ${MAP_PATH} from the file tree
+  readfirst setup [--for a,b]    wire the agents this repository uses: the read-first line, the Claude Code hook,
+                                 the MCP server for Cursor, VS Code, Gemini CLI, Codex and OpenCode (project files only)
   readfirst prompt               brief for your coding agent to fill in the map
   readfirst check [--strict]     check the map covers every tracked file (new files beside placed ones pass; --strict fails on them)
   readfirst fix                  place new files, drop patterns for deleted ones
@@ -54,7 +58,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst prompt --labels <lang>  brief for your agent to write personal labels for the view (e.g. ko, en)
 
 Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; default 900), --force (init: replace the map),
-         --agent (init: add the read-first line to CLAUDE.md / AGENTS.md / .cursorrules),
+         --agent (init: also run setup), --for (setup: the agents to wire, e.g. cursor,codex),
          --ci (init: add .github/workflows/readfirst.yml, the Action with auto-fix)`;
 
 function parse(argv) {
@@ -118,17 +122,38 @@ function loadMapLenient(root, files, io) {
 // The one line that makes a coding agent use readfirst, added to the agent notes the project already has (CLAUDE.md,
 // AGENTS.md, .cursorrules), or to a new AGENTS.md when it has none. A file that already mentions readfirst is left alone.
 export const AGENT_LINE = 'Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the checks it lists. Before writing a new function or module, run `npx readfirst find <what it does>` and reuse what already exists. Before you finish, run `npx readfirst verify`: it runs the checks the map lists for everything you changed; fix what fails. When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.';
+// Adds the line to one notes file (created when missing). Returns whether it wrote.
+function addLineTo(root, f) {
+  const at = join(root, f);
+  const now = existsSync(at) ? readFileSync(at, 'utf8') : '';
+  if (/readfirst/u.test(now)) return false;
+  mkdirSync(dirname(at), { recursive: true });
+  writeFileSync(at, `${now}${now && !now.endsWith('\n') ? '\n' : ''}${now ? '\n' : ''}${AGENT_LINE}\n`);
+  return true;
+}
 function addAgentLine(root) {
-  const notes = ['CLAUDE.md', 'AGENTS.md', '.cursorrules'].filter((f) => existsSync(join(root, f)));
-  const wrote = [];
-  for (const f of notes.length ? notes : ['AGENTS.md']) {
-    const at = join(root, f);
-    const now = existsSync(at) ? readFileSync(at, 'utf8') : '';
-    if (/readfirst/u.test(now)) continue;
-    writeFileSync(at, `${now}${now && !now.endsWith('\n') ? '\n' : ''}${now ? '\n' : ''}${AGENT_LINE}\n`);
-    wrote.push(f);
-  }
-  return wrote;
+  const notes = ['CLAUDE.md', 'AGENTS.md', '.cursorrules', 'GEMINI.md', '.windsurfrules', '.github/copilot-instructions.md'].filter((f) => existsSync(join(root, f)));
+  return (notes.length ? notes : ['AGENTS.md']).filter((f) => addLineTo(root, f));
+}
+
+// The agent notes line, plus each detected (or named) agent wired to readfirst: the Claude Code hook, and the MCP server
+// in the project's own config for Cursor, VS Code, Gemini CLI, Codex and OpenCode (src/agents.mjs).
+function setup(root, only) {
+  const agents = only ? only.split(',').map((a) => a.trim().toLowerCase()).filter(Boolean) : detectAgents(root);
+  const unknown = agents.filter((a) => !AGENTS.includes(a));
+  if (unknown.length) throw new Error(`unknown agent: ${unknown.join(', ')} (one of ${AGENTS.join(', ')})`);
+  const wrote = addAgentLine(root);
+  if (agents.includes('claude') && installHook(root)) wrote.push('.claude/settings.json');
+  const done = setupAgents(root, agents, { addLine: (f) => addLineTo(root, f) });
+  return { agents, wrote: [...new Set([...wrote, ...done.wrote])], manual: done.manual };
+}
+function setupReport({ agents, wrote, manual }) {
+  return [
+    agents.length ? `agents found: ${agents.join(', ')}.` : 'no agent settings found in this repository; added the line to the agent notes only (name them with --for, e.g. --for cursor,codex).',
+    wrote.length ? `wrote: ${wrote.join(', ')}.` : 'everything was already set up.',
+    ...manual.map((m) => `by hand: ${m}`),
+    ...(agents.includes('codex') ? ['Codex reads .codex/config.toml only in a project you have marked as trusted.'] : []),
+  ].join('\n') + '\n';
 }
 
 function changedFiles(root, base) {
@@ -366,14 +391,11 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const repoChecks = draftChecks(files, readText(root)).map((c) => c.run);
     const scoped = map.groups.filter((g) => g.checks.length && g.checks.some((c) => !repoChecks.includes(c.run))).length;
     io.out(`wrote ${MAP_PATH}: ${map.groups.length} group${map.groups.length === 1 ? '' : 's'}${repoChecks.length ? `, checks found: ${repoChecks.join(', ')}` : ''}${scoped ? `; ${scoped} workspace package${scoped === 1 ? '' : 's'} got ${scoped === 1 ? 'its' : 'their'} own checks` : ''}.\n`);
-    if (args.agent) {
-      const wrote = addAgentLine(root);
-      io.out(wrote.length ? `added the read-first line to ${wrote.join(', ')}.\n` : 'your agent notes already mention readfirst.\n');
-    }
+    if (args.agent) io.out(setupReport(setup(root, args.for)));
     if (args.ci) io.out(writeWorkflow(root) ? `wrote ${WORKFLOW_PATH}: a PR comment with the read list, and new files placed in the map on the PR branch.\n` : `${WORKFLOW_PATH} already exists; left as it is.\n`);
     const next = [
       'run `readfirst prompt` and give the brief to your coding agent (or fill in titles, risks and rules by hand)',
-      ...(args.agent ? [] : ['`readfirst init --agent` would add the one line your agent needs to CLAUDE.md or AGENTS.md']),
+      ...(args.agent ? [] : ['`readfirst setup` wires the agents this repository uses (Claude Code, Cursor, VS Code, Gemini CLI, Codex, OpenCode) to readfirst']),
       'Claude Code: `readfirst hook --install` gives it the read list before each edit (`--verify` also runs the checks before it finishes)',
       ...(args.ci ? [] : ['`readfirst init --ci` would add the GitHub Action that comments on PRs and keeps the map in step']),
     ];
@@ -415,6 +437,10 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       if (settled.length) io.out(`settled without writing (\`readfirst fix\` writes it down):\n- ${settled.join('\n- ')}\n`);
     }
     return problems.length ? 1 : 0;
+  }
+  if (cmd === 'setup') {
+    io.out(setupReport(setup(root, args.for)));
+    return 0;
   }
   if (cmd === 'hook') {
     io.out(installHook(root, { verify: args.verify })
