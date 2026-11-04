@@ -72,11 +72,46 @@ function hotspotProblems(map, files, p) {
   });
 }
 
+// Files that change together (optional): when a change touches a file matching `when`, it must also change one matching
+// `also`, or `verify` fails ("package.json" with "server.json", a model with its migration). `also` may name files that
+// do not exist yet (a new migration), so only `when` has to match a tracked file.
+function requiresProblems(map, files, p) {
+  if (!Array.isArray(map.requires)) { p.push('requires: a list'); return; }
+  map.requires.forEach((r, i) => {
+    const at = `requires[${i}]`;
+    if (!isRecord(r)) { p.push(`${at}: { when, also, why }`); return; }
+    only(r, ['when', 'also', 'why'], at, p);
+    const when = strings(r.when, `${at}.when`, p);
+    if (!when.length) p.push(`${at}.when: at least one path or pattern`);
+    if (!strings(r.also, `${at}.also`, p).length) p.push(`${at}.also: at least one path or pattern`);
+    if (!text(r.why)) p.push(`${at}.why: text`);
+    for (const f of when) if (!files.some(matcher([f]))) p.push(`${at}.when: ${f} matches no tracked file`);
+  });
+}
+
+// Other repositories that depend on files here (optional): `read` names them, `verify` reminds you of them. readfirst
+// cannot see the other repository; the hosted version checks it.
+export const REPO = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/u;
+function dependentsProblems(map, files, p) {
+  if (!Array.isArray(map.dependents)) { p.push('dependents: a list'); return; }
+  map.dependents.forEach((d, i) => {
+    const at = `dependents[${i}]`;
+    if (!isRecord(d)) { p.push(`${at}: { files, repo, paths?, why }`); return; }
+    only(d, ['files', 'repo', 'paths', 'why'], at, p);
+    const own = strings(d.files, `${at}.files`, p);
+    if (!own.length) p.push(`${at}.files: at least one path or pattern`);
+    for (const f of own) if (!files.some(matcher([f]))) p.push(`${at}.files: ${f} matches no tracked file`);
+    if (typeof d.repo !== 'string' || !REPO.test(d.repo)) p.push(`${at}.repo: owner/name`);
+    if (d.paths !== undefined) strings(d.paths, `${at}.paths`, p);
+    if (!text(d.why)) p.push(`${at}.why: text`);
+  });
+}
+
 // Problems with the map against the list of tracked files. An empty list means the map is good.
 export function mapProblems(map, files, { placement = true } = {}) {
   const p = [];
   if (!isRecord(map)) return ['map: a JSON object'];
-  only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots'], 'map', p);
+  only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots', 'requires', 'dependents'], 'map', p);
   if (map.format !== MAP_FORMAT) p.push(`format: "${MAP_FORMAT}"`);
   if (!Array.isArray(map.groups) || !map.groups.length) return [...p, 'groups: at least one group'];
   const ids = new Set();
@@ -134,6 +169,8 @@ export function mapProblems(map, files, { placement = true } = {}) {
   }
   if (map.ignore !== undefined) strings(map.ignore, 'ignore', p);
   if (map.hotspots !== undefined) hotspotProblems(map, files, p);
+  if (map.requires !== undefined) requiresProblems(map, files, p);
+  if (map.dependents !== undefined) dependentsProblems(map, files, p);
   if (p.length || !placement) return p;
 
   // Placement: each tracked file in exactly one group or ignored; each group pattern matches something.

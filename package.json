@@ -1,16 +1,37 @@
 {
   "name": "readfirst",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "mcpName": "io.github.jeonghun917/readfirst",
   "description": "What to read and check before you (or your AI agent) change a file: project rules, risks and tests tied to code.",
   "type": "module",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/jeonghun917/readfirst.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jeonghun917/readfirst.git"
+  },
   "homepage": "https://github.com/jeonghun917/readfirst#readme",
   "bugs": "https://github.com/jeonghun917/readfirst/issues",
-  "bin": { "readfirst": "bin/readfirst.mjs" },
-  "files": ["bin", "src", "README.md"],
-  "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test test/*.test.mjs" },
-  "keywords": ["ai", "agents", "claude-code", "cursor", "code-review", "impact-analysis", "monorepo"]
+  "bin": {
+    "readfirst": "bin/readfirst.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "keywords": [
+    "ai",
+    "agents",
+    "claude-code",
+    "cursor",
+    "code-review",
+    "impact-analysis",
+    "monorepo"
+  ]
 }
