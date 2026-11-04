@@ -16,7 +16,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.13.0 read <file>` (and `jeonghun917/readfirst@v0.13.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.14.0 read <file>` (and `jeonghun917/readfirst@v0.14.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks

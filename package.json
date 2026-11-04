@@ -1,6 +1,6 @@
 {
   "name": "readfirst",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "mcpName": "io.github.jeonghun917/readfirst",
   "description": "What to read and check before you (or your AI agent) change a file: project rules, risks and tests tied to code.",
   "type": "module",
