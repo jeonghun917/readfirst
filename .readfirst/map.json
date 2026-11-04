@@ -312,6 +312,9 @@
         },
         {
           "text": "plugins/readfirst calls the CLI by command name: SKILL.md runs `readfirst read`, `find`, `verify`, `check` and `init --agent`, and hooks/hooks.json runs `readfirst hook` through `npx --yes`. Renaming or removing one of these commands in cli.mjs breaks the plugin for every agent that installed it, so update SKILL.md and hooks.json together with HELP. - plugins/readfirst/skills/readfirst/SKILL.md:18"
+        },
+        {
+          "text": "README.md links to docs/guide.md by absolute GitHub URL because npm ships only README.md (package.json \"files\"); a relative link such as docs/guide.md or ../docs/... works on GitHub but is dead on the npm page, so keep links from the README to the guide absolute"
         }
       ]
     },
