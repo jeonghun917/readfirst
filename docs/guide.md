@@ -274,6 +274,12 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
       "checks": [{ "run": "npm run e2e:pay" }]
     }
   ],
+  "requires": [
+    { "when": ["src/billing/models.ts"], "also": ["migrations/**"], "why": "a model change needs a migration" }
+  ],
+  "dependents": [
+    { "files": ["src/api/route.js"], "repo": "acme/web", "paths": ["src/client.ts"], "why": "the web app calls this route" }
+  ],
   "ignore": ["img/**"]
 }
 ```
@@ -289,6 +295,21 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
 - **deprecated** (optional, on a group): code being replaced, as `{ "why": "...", "use"?: "billing" }` where `use` is the
   group or path to use instead. Read lists open with "Being replaced", the hook tells the agent not to add to it,
   `find` lists its matches last with what to use instead, and `audit` counts the files outside it that still import it.
+
+- **requires** (optional): files that change together, as `{ "when", "also", "why" }`. When a change touches a file
+  matching `when` and nothing matching `also`, `verify` fails, the Claude Code Stop hook sends the agent back once, and
+  the read list says "Change these too". `also` may name files that don't exist yet (the next migration).
+- **dependents** (optional): other repositories that depend on files here, as `{ "files", "repo", "paths"?, "why" }`.
+  `read` lists them under "Other repositories depend on this" and `verify` reminds you of them. readfirst can't see the
+  other repository from your checkout, so it never says "no impact" there; the hosted version checks it.
+
+### What "done" means
+
+`verify` is the gate: the change is done when every check the map lists for the changed files passes and no file the
+map ties to them (`requires`) was left out. It also names the rules on those files that no check covers ("nothing here
+shows they still hold") and the other repositories that depend on them. Those two don't fail it; they say what is
+still unproven. With `hook --install --verify`, Claude Code runs the same gate before it finishes and gets one try to
+fix what fails. Passing it means the checks you wrote passed, nothing more.
 
 ### When rules last held
 

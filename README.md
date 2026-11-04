@@ -31,7 +31,7 @@ Any language; needs Node 20+.
 ```sh
 npx readfirst init --agent --ci   # a first map, your agents wired to it (Claude Code, Cursor, Codex, Gemini, ...), the PR Action
 npx readfirst read <file>         # before changing a file: its rules, risks, checks, tests and callers
-npx readfirst verify              # before you finish: run the checks for everything your branch changed
+npx readfirst verify              # before you finish: the checks pass and nothing the map ties to the change was left out
 ```
 
 Commit `.readfirst/map.json`. Filled maps for real repositories (vercel/ai, cal.com, excalidraw and two more):

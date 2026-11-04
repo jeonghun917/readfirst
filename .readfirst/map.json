@@ -439,6 +439,49 @@
       ]
     }
   ],
+  "requires": [
+    {
+      "when": [
+        "package.json"
+      ],
+      "also": [
+        "server.json"
+      ],
+      "why": "the MCP registry workflow publishes server.json, whose versions must match package.json"
+    },
+    {
+      "when": [
+        "src/agents.mjs"
+      ],
+      "also": [
+        "docs/guide.md"
+      ],
+      "why": "the guide's \"Wire every agent at once\" section lists what setup writes for each agent"
+    }
+  ],
+  "dependents": [
+    {
+      "files": [
+        "src/map.mjs"
+      ],
+      "repo": "jeonghun917/readfirst-cloud",
+      "paths": [
+        "lib/vendor/map.mjs"
+      ],
+      "why": "the hosted server validates and writes maps with a copy of this file; a new map field must reach that copy before the server writes it"
+    },
+    {
+      "files": [
+        "bin/**",
+        "src/**"
+      ],
+      "repo": "jeonghun917/readfirst-cloud",
+      "paths": [
+        "vendor/readfirst/**"
+      ],
+      "why": "the fill sandbox runs a copy of the CLI named by vendor/readfirst/VERSION; paying users get the old CLI until it is copied again"
+    }
+  ],
   "ignore": [],
   "hotspots": [
     {

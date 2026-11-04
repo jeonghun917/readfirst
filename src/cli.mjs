@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
-import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, settleMap } from './map.mjs';
+import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, matcher, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { find, findText } from './find.mjs';
@@ -191,13 +191,37 @@ export function verifyChecks(root, checks, { dryRun = false, timeout = 900, prog
 
 function verifyText(report, dryRun) {
   if (!report.files.length) return `no files changed since ${report.base}: nothing to verify.\n`;
-  if (!report.checks.length) return `${report.files.length} changed file(s) since ${report.base}; the map lists no checks for them.\n`;
-  if (dryRun) return `checks for ${report.files.length} changed file(s) since ${report.base}:\n${report.checks.map((c) => `- ${c.run}${c.why ? ` — ${c.why}` : ''}`).join('\n')}\n`;
-  const mark = { pass: 'pass', fail: 'FAIL', timeout: 'TIMEOUT' };
-  let s = `\nverify: ${report.checks.length} check(s) for ${report.files.length} changed file(s) since ${report.base}\n`;
-  for (const c of report.checks) s += `${mark[c.status]}  ${c.run}  (${c.seconds}s)\n`;
-  for (const c of report.checks.filter((x) => x.status !== 'pass')) s += `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''}); last lines:\n${c.output}\n`;
-  s += report.ok ? '\nall checks passed.\n' : `\n${report.checks.filter((c) => c.status !== 'pass').length} check(s) failed.\n`;
+  let s = '';
+  if (!report.checks.length) s += `${report.files.length} changed file(s) since ${report.base}; the map lists no checks for them.\n`;
+  else if (dryRun) s += `checks for ${report.files.length} changed file(s) since ${report.base}:\n${report.checks.map((c) => `- ${c.run}${c.why ? ` — ${c.why}` : ''}`).join('\n')}\n`;
+  else {
+    const mark = { pass: 'pass', fail: 'FAIL', timeout: 'TIMEOUT' };
+    s += `\nverify: ${report.checks.length} check(s) for ${report.files.length} changed file(s) since ${report.base}\n`;
+    for (const c of report.checks) s += `${mark[c.status]}  ${c.run}  (${c.seconds}s)\n`;
+    for (const c of report.checks.filter((x) => x.status !== 'pass')) s += `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''}); last lines:\n${c.output}\n`;
+  }
+  s += doneText(report);
+  if (!dryRun) {
+    const failed = report.checks.filter((c) => c.status !== 'pass').length;
+    const left = report.missing.length;
+    s += report.ok ? (report.checks.length || report.together.length ? '\nall checks passed.\n' : '') : `\n${[failed ? `${failed} check(s) failed` : null, left ? `${left} file(s) the map says change together were left out` : null].filter(Boolean).join('; ')}.\n`;
+  }
+  return s;
+}
+
+// The rest of what "done" means beyond the checks: files that change together, rules nothing checks, and other
+// repositories that depend on what changed. Only the first fails verify; the others are said out loud.
+export function doneReport(map, list) {
+  const missing = list.together.filter((t) => !t.changed);
+  const unverified = list.rules.filter((r) => !((map.rules ?? []).find((x) => x.id === r.id)?.checks ?? []).length).map((r) => r.id);
+  return { together: list.together, missing, unverified, dependents: list.dependents };
+}
+
+function doneText(r) {
+  let s = '';
+  for (const t of r.missing) s += `\nNOT CHANGED TOGETHER: ${t.for.join(', ')} changed, but none of ${t.also.join(', ')} did — ${t.why}\n`;
+  if (r.unverified.length) s += `\nno check covers rule(s) ${r.unverified.join(', ')}: nothing here shows they still hold. Give them a check in the map.\n`;
+  for (const d of r.dependents) s += `\nother repository: ${d.repo}${d.paths.length ? ` (${d.paths.join(', ')})` : ''} depends on ${d.for.join(', ')} — ${d.why}. readfirst cannot see it from here: check it before you call this done.\n`;
   return s;
 }
 
@@ -207,6 +231,8 @@ export function brief(list) {
   for (const d of list.deprecated ?? []) lines.push(`Being replaced: group ${d.group}${d.use ? `; use ${d.use} instead` : ''} (${d.why}). Do not add to it.`);
   for (const r of list.rules) lines.push(`Rule ${r.id}: ${r.rule}${r.why ? ` (why: ${r.why})` : ''}`);
   for (const r of list.risks) lines.push(`Risk: ${r.text}`);
+  for (const t of list.together ?? []) lines.push(`Change together: when this file changes, also change ${t.also.join(' or ')} (${t.why}). verify fails otherwise.`);
+  for (const d of list.dependents ?? []) lines.push(`Another repository depends on this: ${d.repo}${d.paths.length ? ` (${d.paths.join(', ')})` : ''} (${d.why}).`);
   for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}`);
   if (list.tests.length) lines.push(`Tests that reach this file: ${list.tests.slice(0, 5).map((t) => t.path).join(', ')}`);
   if (lines.length) for (const u of list.unseen ?? []) lines.push(`Not seen by readfirst: ${u.why}`);
@@ -283,15 +309,19 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     const map = readMapFile(root);
     if (mapProblems(map, files, { placement: false }).length) return null;
     const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, limit: 1 });
-    if (!list.checks.length) return null;
+    // Files left behind: what the map says changes together with an edited file, against everything changed so far.
+    const all = [...new Set([...dirty, ...changed])];
+    const missing = list.together.filter((t) => !all.some(matcher(t.also)));
+    if (!list.checks.length && !missing.length) return null;
     const trusted = trustedRuns(root);
     const skipped = list.checks.filter((c) => !trusted.has(c.run)).map((c) => c.run);
     const result = verifyChecks(root, list.checks.filter((c) => trusted.has(c.run)), { timeout });
     const failed = result.filter((c) => c.status !== 'pass');
     const notRun = skipped.length ? ` Not run, because the base branch's map does not list them yet: ${skipped.map((r) => `\`${r}\``).join(', ')}; run \`npx readfirst verify\` to run them on purpose.` : '';
-    if (!failed.length) return JSON.stringify({ systemMessage: `readfirst verify: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}` });
+    if (!failed.length && !missing.length) return JSON.stringify({ systemMessage: `readfirst verify: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}` });
     const reason = [
-      `readfirst verify: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}`,
+      ...(failed.length ? [`readfirst verify: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}`] : []),
+      ...missing.map((t) => `readfirst: ${t.for.join(', ')} changed, but none of ${t.also.join(', ')} did. The map says they change together: ${t.why}. Change it too, or say why it does not apply, before you finish.`),
       ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}`),
     ].join('\n');
     return JSON.stringify({ decision: 'block', reason });
@@ -536,7 +566,8 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const timeout = Number(args.timeout ?? 900);
     if (!(timeout > 0)) throw new Error('--timeout needs a number of seconds above 0');
     const result = verifyChecks(root, list.checks, { dryRun: args.dryRun, timeout, progress: args.json ? () => {} : io.out });
-    const report = { format: 'readfirst/verify@1', commit, base: changed.ref, files: changed.files, ok: result.every((c) => c.status === 'pass' || c.status === 'listed'), checks: result };
+    const done = doneReport(map, list);
+    const report = { format: 'readfirst/verify@1', commit, base: changed.ref, files: changed.files, ok: result.every((c) => c.status === 'pass' || c.status === 'listed') && !done.missing.length, checks: result, ...done };
     // --record: the rules whose checks all passed in this run, written to .readfirst/held.json at this commit.
     if (args.record && !args.dryRun && commit && changed.files.length) {
       const ids = heldInRun(map, changed.files, result);
