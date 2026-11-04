@@ -208,6 +208,9 @@
         },
         {
           "text": "readfirst's own files (the map, .readfirst/held.json and the exported .cursor/rules/readfirst-*.mdc) belong to no group: isOwnFile in map.mjs (OWN_FILES and OWN_PATTERN) keeps them out of placement, and readlist.mjs reports them as status MAP. A new file readfirst writes into the checkout must be added there, or check fails with it as an unplaced file. The Cursor file name is matched twice (OWN_PATTERN in map.mjs and isCursorExport in export.mjs): change both together. The text export writes is compared byte for byte by `export --cursor --check`, so rewording it makes every user's CI fail until they re-export. - src/map.mjs:10"
+        },
+        {
+          "text": "the agents setup knows are listed in several places: AGENTS, detectAgents, PLAN and SNIPPETS in src/agents.mjs, the notes-file list in addAgentLine (cli.mjs), the HELP text and the 'Wire every agent at once' section of docs/guide.md. A new agent must be added to all of them: without a PLAN entry setupAgents throws on it, and without a SNIPPETS entry the by-hand message for an unparsable file says only 'the readfirst MCP server'. Setup writes a file only when it parses as plain JSON (or, for Codex, when no [mcp_servers.readfirst] table exists), and a readfirst key that is already there is never compared or updated."
         }
       ]
     },
@@ -298,7 +301,7 @@
           ]
         },
         {
-          "text": "server.json lists readfirst in the official MCP Registry (mcp-registry.yml, after a release is published and npm shows the version); its version and packages[0].version must equal package.json's version (and package-lock.json's two version fields: run `npm install --package-lock-only` after bumping), and its name must equal package.json's mcpName, or the release or the listing fails (bump all three together)",
+          "text": "server.json lists readfirst in the official MCP Registry (mcp-registry.yml, after a release is published and npm shows the version); its version and packages[0].version must equal package.json's version (and package-lock.json's two version fields: run `npm install --package-lock-only` after bumping), and its name must equal package.json's mcpName, or the release or the listing fails (bump all three together). docs/guide.md also pins the release version twice (`npx readfirst@X.Y.Z` and the Action's `@vX.Y.Z`); update both on every version bump or the guide tells people to pin an old release",
           "files": [
             "server.json",
             "package.json",
@@ -309,7 +312,7 @@
           "text": "plugins/readfirst is listed twice: in .agent-marketplace.json (Paradev, with version) and .claude-plugin/marketplace.json (Claude Code). Its version lives in plugins/readfirst/plugin.json, plugins/readfirst/.claude-plugin/plugin.json and the .agent-marketplace.json entry; change all three together, and a Paradev release is the git tag readfirst@<version>, so bump the version instead of moving a tag - .agent-marketplace.json:18"
         },
         {
-          "text": ".claude/settings.json and CLAUDE.md call this checkout's bin/readfirst.mjs (`node \"$CLAUDE_PROJECT_DIR/bin/readfirst.mjs\" hook` and `hook --stop`), because `npx readfirst` does not resolve inside its own package. Running `hook --install` here would overwrite them with `npx readfirst` commands that fail. If bin/readfirst.mjs moves, or the hook, read, find or verify commands are renamed, update both files. - .claude/settings.json:9"
+          "text": ".claude/settings.json and CLAUDE.md call this checkout's bin/readfirst.mjs (`node \"$CLAUDE_PROJECT_DIR/bin/readfirst.mjs\" hook` and `hook --stop`), because `npx readfirst` does not resolve inside its own package. Running `hook --install` here would overwrite them with `npx readfirst` commands that fail, and so would `setup` or `init --agent`, which now call the same installHook as soon as they see `.claude/` or CLAUDE.md. If bin/readfirst.mjs moves, or the hook, read, find or verify commands are renamed, update both files. - .claude/settings.json:9"
         },
         {
           "text": "plugins/readfirst calls the CLI by command name: SKILL.md runs `readfirst read`, `find`, `verify`, `check` and `init --agent`, and hooks/hooks.json runs `readfirst hook` through `npx --yes`. Renaming or removing one of these commands in cli.mjs breaks the plugin for every agent that installed it, so update SKILL.md and hooks.json together with HELP. - plugins/readfirst/skills/readfirst/SKILL.md:18"
@@ -441,20 +444,20 @@
     {
       "file": "src/cli.mjs",
       "symbol": "git",
-      "line": 84,
+      "line": 88,
       "labels": [
         "exec"
       ],
       "rules": [
-        "only-init-and-fix-write",
-        "no-network-in-cli"
+        "no-network-in-cli",
+        "only-init-and-fix-write"
       ],
       "note": "Runs commands"
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "addAgentLine",
-      "line": 121,
+      "symbol": "addLineTo",
+      "line": 126,
       "labels": [
         "fs-write"
       ],
@@ -466,21 +469,21 @@
     {
       "file": "src/cli.mjs",
       "symbol": "verifyChecks",
-      "line": 150,
+      "line": 175,
       "labels": [
         "secrets",
         "exec"
       ],
       "rules": [
-        "only-init-and-fix-write",
-        "no-network-in-cli"
+        "no-network-in-cli",
+        "only-init-and-fix-write"
       ],
       "note": "Reads secrets or the environment, runs commands"
     },
     {
       "file": "src/cli.mjs",
       "symbol": "runHook",
-      "line": 196,
+      "line": 221,
       "labels": [
         "fs-write"
       ],
@@ -492,7 +495,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "writeWorkflow",
-      "line": 281,
+      "line": 306,
       "labels": [
         "fs-write"
       ],
