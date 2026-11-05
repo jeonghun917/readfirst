@@ -55,6 +55,9 @@ test('patterns: paths, folders and one-segment globs', () => {
   assert.ok(patternToRegExp('README.md').test('README.md') && !patternToRegExp('README.md').test('xREADME.md'));
   assert.ok(patternToRegExp('src/?/**').test('src/a/x.js') && !patternToRegExp('src/?/**').test('src/abc/x.js'), '? is one character, also before /**');
   assert.ok(!patternToRegExp('a.b/**').test('axb/c.js'), 'dots are literal');
+  for (const f of ['src/test/x.js', 'src/a/test/x.js', 'src/a/b/test/deep.js']) assert.ok(patternToRegExp('src/**/test/**').test(f), `**/ before a trailing /** is any depth: ${f}`);
+  for (const f of ['foo/x.js', 'a/foo/x.js', 'a/b/foo/x.js']) assert.ok(patternToRegExp('**/foo/**').test(f), f);
+  assert.ok(!patternToRegExp('src/**/test/**').test('src/testing/x.js'));
 });
 
 test('imports: JS/TS (import, export from, require, .js for .ts, folder index) and Python (relative, absolute, sub-modules)', () => {
@@ -137,6 +140,8 @@ test('cli: init, check, prompt, read and diff on a real git repository', () => {
   writeFileSync(join(root, 'src/util/new.ts'), 'export {};\n');
   const diff = JSON.parse(run(root, 'diff', '--json').out);
   assert.deepEqual(diff.targets.map((t) => t.path), ['src/util/money.ts', 'src/util/new.ts'], 'changed and new files');
+  writeFileSync(join(root, 'src/util/café.ts'), 'export {};\n');
+  assert.ok(JSON.parse(run(root, 'diff', '--json').out).targets.some((t) => t.path === 'src/util/café.ts'), 'a non-ASCII name is not quoted by git');
   writeFileSync(join(root, 'stray.txt'), 'x');
   const settled = run(root, 'check');
   assert.equal(settled.code, 0, 'a new file beside placed ones passes');
@@ -149,6 +154,9 @@ test('cli: init, check, prompt, read and diff on a real git repository', () => {
   const top = run(root, 'check');
   assert.equal(top.code, 1);
   assert.match(top.out, /new top-level folder tools\/ is in no group/u);
+  mkdirSync(join(root, '.vscode'), { recursive: true });
+  writeFileSync(join(root, '.vscode/settings.json'), '{}\n');
+  assert.match(run(root, 'check').out, /new top-level folder \.vscode\/ is in no group/u, 'a dot-folder is a new top-level folder too');
   assert.ok(JSON.parse(readFileSync(join(root, '.readfirst/map.json'), 'utf8')).groups.length > 0);
 });
 

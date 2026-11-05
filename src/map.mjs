@@ -18,10 +18,11 @@ const text = (v, max = 2000) => typeof v === 'string' && v.trim() !== '' && v.le
 export function patternToRegExp(pattern) {
   // Within one segment: `*` is any run of characters, `?` one character; everything else is literal.
   const segment = (s) => s.replace(/[.+^${}()|[\]\\]/gu, '\\$&').replace(/\*/gu, '[^/]*').replace(/\?/gu, '[^/]');
-  if (pattern.endsWith('/**')) return new RegExp(`^${segment(pattern.slice(0, -3))}/`, 'u');
+  // `**/` is zero or more folders wherever it stands, also in front of a trailing `/**`.
+  const body = (p) => p.split('**/').map(segment).join('(?:.*/)?');
+  if (pattern.endsWith('/**')) return new RegExp(`^${body(pattern.slice(0, -3))}/`, 'u');
   if (pattern === '**') return /^/u;
-  const body = pattern.split('**/').map(segment).join('(?:.*/)?');
-  return new RegExp(`^${body}$`, 'u');
+  return new RegExp(`^${body(pattern)}$`, 'u');
 }
 
 export const matcher = (patterns) => {
@@ -354,7 +355,7 @@ export function settleMap(map, files) {
   let fixed;
   try { fixed = fixMap(map, files); } catch { return { map, problems, settled: [] }; }
   const owned = matcher(map.groups.flatMap((g) => g.files));
-  const newTop = fixed.changes.map((c) => c.match(/^groups\.[^:]+: added ((\w[^/]*)\/.*)$/u)).filter((m) => m && !files.some((f) => f.startsWith(`${m[2]}/`) && owned(f)));
+  const newTop = fixed.changes.map((c) => c.match(/^groups\.[^:]+: added (([^/]+)\/.*)$/u)).filter((m) => m && !files.some((f) => f.startsWith(`${m[2]}/`) && owned(f)));
   const left = [...fixed.problems, ...newTop.map((m) => `new top-level folder ${m[2]}/ is in no group: give it one (\`readfirst fix\` would put ${m[1]} with the root files)`)];
   return { map: left.length ? map : fixed.map, problems: left.length ? problems.filter((p) => !/in no group|matches no/u.test(p)).concat(left) : [], settled: left.length ? fixed.changes.filter((c) => !newTop.some((m) => c.endsWith(`added ${m[1]}`))) : fixed.changes };
 }
