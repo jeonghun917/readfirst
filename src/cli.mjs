@@ -65,6 +65,8 @@ function parse(argv) {
   const args = { _: [], json: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    // Everything after `--` is a name, never an option: the MCP server passes file names and words from the agent.
+    if (a === '--') { args._.push(...argv.slice(i + 1)); break; }
     if (a === '--json') args.json = true;
     else if (a === '--force') args.force = true;
     else if (a === '--agent') args.agent = true;

@@ -8,7 +8,9 @@ import { moreEdges } from './langs.mjs';
 
 const JS = /\.(?:m?js|cjs|tsx?|jsx|mts|cts|vue|svelte)$/u;
 const PY = /\.py$/u;
-const JS_IMPORT = /\b(?:import|export)\s+(?:type\s+)?(?:[\w*{}\s,$]+?\s+from\s*)?['"]([^'"\n]+)['"]|\bimport\(\s*['"]([^'"\n]+)['"]\s*\)|\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/gu;
+// The names before `from` are runs of name characters separated by whitespace: a class that also took whitespace
+// overlapped `\s+` and backtracked (cubic) on a long whitespace run after the keyword (self-review, readfirst#89).
+const JS_IMPORT = /\b(?:import|export)\s+(?:type\s+)?(?:[\w*{}$,]+(?:\s+[\w*{}$,]+)*\s+from\s*)?['"]([^'"\n]+)['"]|\bimport\(\s*['"]([^'"\n]+)['"]\s*\)|\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/gu;
 // `from a import (b,\n c)` may span lines inside its parentheses.
 const PY_IMPORT = /^[ \t]*(?:from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+(\([^)]*\)|[\w*, \t]+)|import[ \t]+([\w., \t]+))/gmu;
 const JS_EXT = ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.mts', '.vue', '.svelte', '/index.js', '/index.ts', '/index.tsx', '/index.mjs'];

@@ -10,14 +10,17 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string' }, description: 'paths relative to the repository root' } }, required: ['files'] },
     args: (a) => {
       if (!Array.isArray(a.files) || !a.files.length || a.files.some((f) => typeof f !== 'string' || !f)) throw new Error('files must be a non-empty list of paths');
-      return ['read', ...a.files];
+      return ['read', '--', ...a.files];
     },
   },
   {
     name: 'changed_read_list',
     description: 'The same read list for every file changed on this branch since the base (default origin/main, else main). Call it before finishing, then run the checks it lists.',
     inputSchema: { type: 'object', properties: { base: { type: 'string', description: 'git ref to compare against' } } },
-    args: (a) => ['diff', ...(typeof a.base === 'string' && a.base ? ['--base', a.base] : [])],
+    args: (a) => {
+      if (typeof a.base === 'string' && a.base.startsWith('-')) throw new Error('base must be a git ref, not an option');
+      return ['diff', ...(typeof a.base === 'string' && a.base ? ['--base', a.base] : [])];
+    },
   },
   {
     name: 'find_existing',
@@ -25,7 +28,7 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'a few words about what you are about to write' } }, required: ['query'] },
     args: (a) => {
       if (typeof a.query !== 'string' || !a.query.trim()) throw new Error('query must be a few words about what you are about to write');
-      return ['find', ...a.query.trim().split(/\s+/u)];
+      return ['find', '--', ...a.query.trim().split(/\s+/u)];
     },
   },
   {
