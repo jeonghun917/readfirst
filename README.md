@@ -12,17 +12,29 @@ No server, no account, no model calls. MIT. It reads your git checkout and `.rea
 
 ## What it caught
 
-Making maps for open source projects, a check for lines whose result is thrown away found real bugs. The ones already
-with their maintainers:
+The hosted version scans for fixed bug shapes taken from real bugs: a result computed and thrown away, a range check
+with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories and checked by hand:
+
+- **62 bugs in app code**, 28 of them low-severity secret comparisons
+- **36 tests that can never fail**, every one the same shape: `expect(promise).resolves...` with no `await` or
+  `return`, so the test ends before the assertion runs
+- the false positives are kept on record too; the counts come after tuning on the same repositories, so read them as
+  "what is there", not as precision
+
+Fixed by the maintainers:
 
 - **saleor**: an "only recalculate what changed" option recalculated every discounted price
   ([saleor/saleor#19984](https://github.com/saleor/saleor/pull/19984)).
 - **wagtail**: a superuser who submits a page for moderation got the moderation email about their own submission
   ([wagtail/wagtail#14790](https://github.com/wagtail/wagtail/pull/14790)).
-- **Tandoor**: a `?category=` filter on an API endpoint never applied
-  ([TandoorRecipes/recipes#4917](https://github.com/TandoorRecipes/recipes/pull/4917)).
-- **mealie**: a safety filter on households never applied; the maintainers fixed it
+- **mealie**: a safety filter on households never applied
   ([mealie-recipes/mealie#8964](https://github.com/mealie-recipes/mealie/issues/8964)).
+- **django-allauth**: a provider callback returned a 500 instead of a clean failure on a non-ASCII value; fixed the
+  day it was reported.
+
+Still with their maintainers: a Tandoor filter that never applied
+([TandoorRecipes/recipes#4917](https://github.com/TandoorRecipes/recipes/pull/4917)), and findings sent privately to
+other projects, which stay unnamed until they are fixed.
 
 ## Start
 
