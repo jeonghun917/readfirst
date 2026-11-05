@@ -55,6 +55,9 @@ test('patterns: paths, folders and one-segment globs', () => {
   assert.ok(patternToRegExp('README.md').test('README.md') && !patternToRegExp('README.md').test('xREADME.md'));
   assert.ok(patternToRegExp('src/?/**').test('src/a/x.js') && !patternToRegExp('src/?/**').test('src/abc/x.js'), '? is one character, also before /**');
   assert.ok(!patternToRegExp('a.b/**').test('axb/c.js'), 'dots are literal');
+  for (const f of ['src/test/x.js', 'src/a/test/x.js', 'src/a/b/test/deep.js']) assert.ok(patternToRegExp('src/**/test/**').test(f), `**/ before a trailing /** is any depth: ${f}`);
+  for (const f of ['foo/x.js', 'a/foo/x.js', 'a/b/foo/x.js']) assert.ok(patternToRegExp('**/foo/**').test(f), f);
+  assert.ok(!patternToRegExp('src/**/test/**').test('src/testing/x.js'));
 });
 
 test('imports: JS/TS (import, export from, require, .js for .ts, folder index) and Python (relative, absolute, sub-modules)', () => {
@@ -137,6 +140,8 @@ test('cli: init, check, prompt, read and diff on a real git repository', () => {
   writeFileSync(join(root, 'src/util/new.ts'), 'export {};\n');
   const diff = JSON.parse(run(root, 'diff', '--json').out);
   assert.deepEqual(diff.targets.map((t) => t.path), ['src/util/money.ts', 'src/util/new.ts'], 'changed and new files');
+  writeFileSync(join(root, 'src/util/café.ts'), 'export {};\n');
+  assert.ok(JSON.parse(run(root, 'diff', '--json').out).targets.some((t) => t.path === 'src/util/café.ts'), 'a non-ASCII name is not quoted by git');
   writeFileSync(join(root, 'stray.txt'), 'x');
   const settled = run(root, 'check');
   assert.equal(settled.code, 0, 'a new file beside placed ones passes');
@@ -149,6 +154,9 @@ test('cli: init, check, prompt, read and diff on a real git repository', () => {
   const top = run(root, 'check');
   assert.equal(top.code, 1);
   assert.match(top.out, /new top-level folder tools\/ is in no group/u);
+  mkdirSync(join(root, '.vscode'), { recursive: true });
+  writeFileSync(join(root, '.vscode/settings.json'), '{}\n');
+  assert.match(run(root, 'check').out, /new top-level folder \.vscode\/ is in no group/u, 'a dot-folder is a new top-level folder too');
   assert.ok(JSON.parse(readFileSync(join(root, '.readfirst/map.json'), 'utf8')).groups.length > 0);
 });
 
@@ -417,6 +425,14 @@ test('verify: no changes means nothing to run', () => {
   assert.match(r.out, /nothing to verify/u);
 });
 
+test('imports: a long whitespace run after import/export does not backtrack, and the usual forms still read', () => {
+  const t = Date.now();
+  assert.deepEqual(importEdges(['a.js'], () => `export${' '.repeat(20000)}x\n`), []);
+  assert.ok(Date.now() - t < 500, `took ${Date.now() - t} ms`);
+  const tree = { 'a.ts': "import x, { y,\n  z as w } from './b';\nexport * from './c';\nimport type { T } from './d';\nexport { q } from './e';\nimport './f';\n", 'b.ts': '', 'c.ts': '', 'd.ts': '', 'e.ts': '', 'f.ts': '' };
+  assert.deepEqual(importEdges(Object.keys(tree), (f) => tree[f]).map((e) => e.to).sort(), ['b.ts', 'c.ts', 'd.ts', 'e.ts', 'f.ts']);
+});
+
 test('mcp: initialize, tools/list and tools/call over stdio answer from the checkout as it is', async () => {
   const { root } = repo({ 'src/a.js': "import './b.js'\n", 'src/b.js': '' });
   run(root, 'init');
@@ -432,8 +448,12 @@ test('mcp: initialize, tools/list and tools/call over stdio answer from the chec
   send({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'read_list', arguments: { files: [] } } });
   send({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'check_map', arguments: {} } });
   send({ jsonrpc: '2.0', id: 6, method: 'nope' });
+  // Arguments are data: a file named like an option must not point the server at another checkout (readfirst#89).
+  send({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'read_list', arguments: { files: ['--root', '/', 'src/b.js'] } } });
+  send({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'find_existing', arguments: { query: '--json b' } } });
+  send({ jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'changed_read_list', arguments: { base: '--root=/' } } });
   child.stdin.write('not json\n');
-  await new Promise((resolve, reject) => { const t = setTimeout(() => reject(new Error(`only ${lines.length} answers`)), 10000); const iv = setInterval(() => { if (lines.length >= 7) { clearInterval(iv); clearTimeout(t); resolve(); } }, 20); });
+  await new Promise((resolve, reject) => { const t = setTimeout(() => reject(new Error(`only ${lines.length} answers`)), 10000); const iv = setInterval(() => { if (lines.length >= 10) { clearInterval(iv); clearTimeout(t); resolve(); } }, 20); });
   child.kill();
   const by = Object.fromEntries(lines.filter((l) => l.id != null).map((l) => [l.id, l]));
   assert.equal(by[1].result.protocolVersion, '2025-03-26');
@@ -446,7 +466,11 @@ test('mcp: initialize, tools/list and tools/call over stdio answer from the chec
   assert.match(by[5].result.content[0].text, /is good/u);
   assert.equal(by[6].error.code, -32601);
   assert.equal(lines.find((l) => l.id === null).error.code, -32700);
-  assert.equal(lines.length, 7); // the notification got no answer
+  assert.match(by[7].result.content[0].text, /Read first: [\s\S]*src\/b\.js/u, 'read in this checkout');
+  assert.match(by[7].result.content[0].text, /--root/u, '--root is looked up as a file name');
+  assert.doesNotMatch(by[8].result.content[0].text, /^\{/u, '--json is a word, not the JSON option');
+  assert.equal(by[9].result.isError, true);
+  assert.equal(lines.length, 10); // the notification got no answer
 });
 
 test('diff and verify explain a shallow clone instead of failing with a git error', () => {

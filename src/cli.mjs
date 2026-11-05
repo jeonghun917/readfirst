@@ -65,6 +65,8 @@ function parse(argv) {
   const args = { _: [], json: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    // Everything after `--` is a name, never an option: the MCP server passes file names and words from the agent.
+    if (a === '--') { args._.push(...argv.slice(i + 1)); break; }
     if (a === '--json') args.json = true;
     else if (a === '--force') args.force = true;
     else if (a === '--agent') args.agent = true;
@@ -164,8 +166,9 @@ function changedFiles(root, base) {
     throw new Error(`cannot find where this branch left ${ref}, often because the clone is shallow: fetch more history (git fetch --deepen=100, or fetch-depth: 0 in actions/checkout) or pass --base <ref>`);
   }
   const names = new Set([
-    ...git(root, 'diff', '--name-only', since).split('\n'),
-    ...git(root, 'ls-files', '--others', '--exclude-standard').split('\n'),
+    // -z: without it git quotes names with non-ASCII characters ("src/caf\303\251.js"), which then match nothing.
+    ...git(root, 'diff', '--name-only', '-z', since).split('\0'),
+    ...git(root, 'ls-files', '-z', '--others', '--exclude-standard').split('\0'),
   ].filter(Boolean));
   return { ref, files: [...names].sort() };
 }
