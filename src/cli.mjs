@@ -38,6 +38,7 @@ import { viewData } from './view.mjs';
 import { mcpHandler, serveMcp } from './mcp.mjs';
 import { cityData, viewHtmlCity } from './view-city.mjs';
 import { emptyList, readList, toMarkdown } from './readlist.mjs';
+import { brokeBefore, readScarLog } from './history.mjs';
 
 const HELP = `readfirst — what to read and check before changing a file
 
@@ -115,7 +116,13 @@ function loadMap(root, files) {
 
 // read and diff keep working while the map is only behind the code (new files in no group, patterns for deleted files):
 // they warn and point at `readfirst fix`. A map that is broken in itself still stops them.
-function loadMapLenient(root, files, io) {
+// Without a map, read and diff still work: `readfirst read` then shows where the code broke before, from git history, and
+// loadMapLenient gives null (the read list leaves map entries out). With allowNone false a missing map throws as before.
+function loadMapLenient(root, files, io, { allowNone = false } = {}) {
+  if (allowNone && !existsSync(join(root, MAP_PATH))) {
+    io.err(`note: no ${MAP_PATH} here, so only git history is shown; \`readfirst init\` writes a first map.\n`);
+    return null;
+  }
   const map = readMapFile(root);
   const broken = mapProblems(map, files, { placement: false });
   if (broken.length) throw new Error(`${MAP_PATH} has problems:\n- ${broken.join('\n- ')}`);
@@ -240,6 +247,11 @@ export function brief(list) {
   for (const r of list.risks) lines.push(`Risk: ${r.text}`);
   for (const t of list.together ?? []) lines.push(`Change together: when this file changes, also change ${t.also.join(' or ')} (${t.why}). verify fails otherwise.`);
   for (const d of list.dependents ?? []) lines.push(`Another repository depends on this: ${d.repo}${d.paths.length ? ` (${d.paths.join(', ')})` : ''} (${d.why}).`);
+  for (const t of list.targets ?? []) {
+    const b = t.brokeBefore;
+    if (b && !b.notFetched) lines.push(`Broke before: ${b.count} fix${b.count === 1 ? '' : 'es'} in ${t.path}, last ${b.last.date} ${b.last.sha} "${b.last.subject}"`);
+    else if (b) lines.push(`Broke before: history not fetched for ${t.path} (shallow clone)`);
+  }
   for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}`);
   if (list.tests.length) lines.push(`Tests that reach this file: ${list.tests.slice(0, 5).map((t) => t.path).join(', ')}`);
   if (lines.length) for (const u of list.unseen ?? []) lines.push(`Not seen by readfirst: ${u.why}`);
@@ -259,22 +271,24 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
     const cwd = event.cwd ?? process.cwd();
     const root = git(cwd, 'rev-parse', '--show-toplevel').trim();
     const path = (isAbsolute(file) ? relative(root, file) : file).replace(/\\/gu, '/');
-    if (path.startsWith('..') || path === MAP_PATH || !existsSync(join(root, MAP_PATH))) return null;
+    if (path.startsWith('..') || path === MAP_PATH) return null;
     const seenAt = seenFile(stateDir, event.session_id);
     let seen = {};
     try { seen = JSON.parse(readFileSync(seenAt, 'utf8')); } catch { seen = {}; }
     if (seen[path] && now - seen[path] < 6 * 3600_000) return null;
     const files = repoFiles(root);
-    const map = readMapFile(root);
-    if (mapProblems(map, files, { placement: false }).length) return null;
-    const list = readList({ map, files: files.includes(path) ? files : [...files, path].sort(), imports: importEdges(files, readText(root)), targets: [path], limit: 10, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) });
+    // Without a map the hook still says where the file broke before.
+    const map = existsSync(join(root, MAP_PATH)) ? readMapFile(root) : null;
+    if (map && mapProblems(map, files, { placement: false }).length) return null;
+    const all = files.includes(path) ? files : [...files, path].sort();
+    const list = readList({ map, files: all, imports: map ? importEdges(files, readText(root)) : [], targets: [path], limit: 10, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke: brokeBefore(root, [path], new Set(all)) });
     const lines = brief(list);
     seen[path] = now;
     try { writeFileSync(seenAt, JSON.stringify(seen)); } catch { /* best effort */ }
     if (!lines.length) return null;
     const shown = lines.slice(0, 12);
     if (lines.length > shown.length) shown.push(`${lines.length - shown.length} more in \`npx readfirst read ${path}\``);
-    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `readfirst notes for ${path} (from ${MAP_PATH}):\n- ${shown.join('\n- ')}` } });
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `readfirst notes for ${path}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${shown.join('\n- ')}` } });
   } catch {
     return null;
   }
@@ -357,6 +371,8 @@ export function writeWorkflow(root) {
     '    runs-on: ubuntu-latest',
     '    steps:',
     '      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0',
+    '        with:',
+    '          fetch-depth: 200  # the comment lists files that broke before, from git history',
     '      - uses: jeonghun917/readfirst@v0',
     '        with:',
     '          auto-fix: true',
@@ -532,6 +548,14 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     return 0;
   }
   if (cmd === 'audit') {
+    // Without a map the audit still lists where the code broke most, from git history alone.
+    const noMap = !existsSync(join(root, MAP_PATH));
+    const broke = readScarLog(root);
+    if (noMap) {
+      const report = audit({ map: null, files, imports: [], commit, broke });
+      io.out(args.json ? `${JSON.stringify(report, null, 2)}\n` : auditText(report));
+      return 0;
+    }
     const map = readMapFile(root);
     const broken = mapProblems(map, files, { placement: false });
     const { map: settled, problems } = broken.length ? { map, problems: broken } : settleMap(map, files);
@@ -548,12 +572,12 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       const oldest = Math.min(...blame.filter(Boolean).map((b) => b.time), ...heldTimes);
       if (Number.isFinite(oldest)) history = parseLog(git(root, 'log', '--no-merges', `--since=${new Date((oldest - 1) * 1000).toISOString()}`, '--format=%x01%H %ct', '--name-only', 'HEAD'));
     } catch { /* the map is not committed yet, or no history: nothing is stale */ }
-    const report = audit({ map: settled, problems, files, imports: importEdges(files, readText(root)), read: readText(root), blame, history, commit, held: parseHeld(readText(root)(HELD_PATH)) });
+    const report = audit({ map: settled, problems, files, imports: importEdges(files, readText(root)), read: readText(root), blame, history, commit, held: parseHeld(readText(root)(HELD_PATH)), broke });
     io.out(args.json ? `${JSON.stringify(report, null, 2)}\n` : auditText(report));
     return 0;
   }
   if (cmd === 'read' || cmd === 'diff') {
-    const map = loadMapLenient(root, files, io);
+    const map = loadMapLenient(root, files, io, { allowNone: true });
     let targets = rest;
     if (cmd === 'diff') {
       const changed = changedFiles(root, args.base);
@@ -565,7 +589,8 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     }
     const limit = Number(args.limit ?? 30);
     if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
-    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) });
+    const broke = brokeBefore(root, targets, new Set(files));
+    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
     return 0;
   }
