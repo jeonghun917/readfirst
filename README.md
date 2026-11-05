@@ -33,6 +33,8 @@ Fixed by the maintainers:
   ([wagtail/wagtail#14790](https://github.com/wagtail/wagtail/pull/14790)).
 - **mealie**: a safety filter on households never applied
   ([mealie-recipes/mealie#8964](https://github.com/mealie-recipes/mealie/issues/8964)).
+- **n8n**: the RabbitMQ node handed back its channel before the queue bindings were made, and a failed bind escaped
+  as an unhandled rejection ([n8n-io/n8n#43017](https://github.com/n8n-io/n8n/issues/43017)).
 - **django-allauth**: a provider callback returned a 500 instead of a clean failure on a non-ASCII value; fixed the
   day it was reported.
 
