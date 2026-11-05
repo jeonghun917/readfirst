@@ -12,6 +12,10 @@ No server, no account, no model calls. MIT. It reads your git checkout and `.rea
 
 ## What it caught
 
+```sh
+npx readfirst scan   # no map needed: QuerySet/string results thrown away, expect(...).resolves nobody awaits
+```
+
 The hosted version scans for fixed bug shapes taken from real bugs: a result computed and thrown away, a range check
 with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories and checked by hand:
 

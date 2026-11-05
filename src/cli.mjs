@@ -8,6 +8,8 @@
 //   readfirst export --cursor      the map as Cursor rules (.cursor/rules/readfirst-<group>.mdc); --check: fail if stale
 //   readfirst audit                the whole repository against the map, as a report: stale rules, moved hot spots,
 //                                  what was never filled in, code no test reaches, what readfirst could not see
+//   readfirst scan                 published bug shapes across the code (a QuerySet .filter() whose result is dropped, an
+//                                  expect(...).resolves nobody awaits); no map needed, no model, writes nothing
 //   readfirst find <words>...      before writing something new: functions, files and map entries that may already do it
 //   readfirst read <file>...       the read list for files you are about to change
 //   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
@@ -23,6 +25,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFile
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
+import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, matcher, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
@@ -46,6 +49,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst fix                  place new files, drop patterns for deleted ones
   readfirst audit                the whole repository against the map: stale rules, moved hot spots, code no test reaches
   readfirst export --cursor      write the map as Cursor rules, one .mdc per group (--check: fail if they are out of date)
+  readfirst scan                 look for known bug shapes: results thrown away, test assertions nobody awaits (no map needed)
   readfirst find <words>...      before writing something new: what in the code may already do it
   readfirst read <file>...       read list for files you are about to change
   readfirst diff [--base <ref>]  read list for files changed since <ref>
@@ -520,6 +524,11 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     io.out(plan.write.length || plan.remove.length
       ? `${plan.write.length ? `wrote ${plan.write.join(', ')}` : ''}${plan.write.length && plan.remove.length ? '; ' : ''}${plan.remove.length ? `removed ${plan.remove.join(', ')}` : ''}.\nCommit them; \`readfirst export --cursor --check\` in CI keeps them in step with the map.\n`
       : `Cursor rules already match ${MAP_PATH} (${Object.keys(plan.want).length} file(s)).\n`);
+    return 0;
+  }
+  if (cmd === 'scan') {
+    const report = scan(files, readText(root));
+    io.out(args.json ? `${JSON.stringify(report, null, 2)}\n` : scanTextReport(report));
     return 0;
   }
   if (cmd === 'audit') {
