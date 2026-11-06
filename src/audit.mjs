@@ -7,9 +7,11 @@
 //     group or in a rule that covers them, and no test that reaches their file;
 //   - what was never filled in: groups still titled "TODO:" from `init`, rules no check verifies;
 //   - code no test reaches through imports, the most used first;
-//   - what readfirst could not see: languages whose imports it does not read, modules loaded by computed names.
+//   - what readfirst could not see: languages whose imports it does not read, modules loaded by computed names;
+//   - where the code broke most in the last 12 months (git log only, so it works with no map at all).
 // Every part is computed from the checkout and its git history; nothing runs.
 import { MAP_PATH, matcher, groupOf } from './map.mjs';
+import { brokeMost, BROKE_MOST_MIN_COMMITS, BROKE_MOST_MIN_SCORE } from './history.mjs';
 import { isTest, OTHER_CODE, READS_IMPORTS, unseenIn } from './readlist.mjs';
 
 export const AUDIT_FORMAT = 'readfirst/audit@1';
@@ -45,8 +47,6 @@ export function parseLog(text) {
   });
 }
 
-// map: the map (settled), problems: what check reports, files: tracked files, imports: import edges, read(path): text or
-// null, blame: parseBlame of the map file (or []), history: parseLog since the oldest blamed line (or []).
 // Code nothing else uses: in a module other files import, an export (JavaScript, TypeScript) or a top-level def or
 // class (Python) whose name no other file holds and its own file does not use. Names a framework calls by convention
 // (route verbs, loaders, config) and decorated Python functions (a route, a task, a fixture) are left out; a name built
@@ -88,7 +88,11 @@ export function unusedCode({ code, users, read }) {
   return out.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
 }
 
-export function audit({ map, problems = [], files, imports, read = () => null, blame = [], history = [], commit = null, held = null }) {
+// map: the map (settled), or null when there is none (only "Broke most" is then worked out), problems: what check reports,
+// files: tracked files, imports: import edges, read(path): text or null, blame: parseBlame of the map file (or []),
+// history: parseLog since the oldest blamed line (or []), broke: parseScarLog of the last 12 months (or []).
+export function audit({ map, problems = [], files, imports, read = () => null, blame = [], history = [], commit = null, held = null, broke = [] }) {
+  if (!map) return { format: AUDIT_FORMAT, commit, files: files.length, noMap: true, brokeMost: brokeMostRows(null, broke, files) };
   const lines = (read(MAP_PATH) ?? '').split('\n');
   const writtenAt = (value) => {
     const needle = JSON.stringify(value);
@@ -198,6 +202,7 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
     held: lastHeld,
     placeholders,
     unchecked,
+    brokeMost: brokeMostRows(map, broke, files),
     untested: {
       code: code.length,
       reached: code.length - untested.length,
@@ -213,11 +218,32 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
   };
 }
 
+// The "Broke most" rows with whether a map risk or rule covers each file (null when there is no map).
+function brokeMostRows(map, log, files) {
+  const exists = new Set(files);
+  return brokeMost(log, exists).map((r) => {
+    if (!map) return r;
+    const group = groupOf(map, r.path);
+    const risk = (group?.risks ?? []).some((x) => !x.files || matcher(x.files)(r.path));
+    const rules = (map.rules ?? []).filter((x) => matcher(x.files)(r.path)).map((x) => x.id);
+    return { ...r, covered: { risk, rules } };
+  });
+}
+
 export const PRO_LINE = 'A whole-repository scan for results thrown away (a filter, replace or strip whose result is dropped, so the line does nothing) runs on readfirst Pro: https://readfirst-cloud.vercel.app/#pricing';
 
 export function auditText(a) {
   const out = [`# readfirst audit: ${a.files} files${a.commit ? ` at ${a.commit.slice(0, 7)}` : ''}`, ''];
   const section = (title, rows) => { if (rows.length) out.push(`## ${title}`, '', ...rows, ''); };
+  const covers = (r) => (!r.covered ? '' : r.covered.risk || r.covered.rules.length ? ` _(map: ${[r.covered.risk ? 'a risk' : null, r.covered.rules.length ? `rule ${r.covered.rules.join(', ')}` : null].filter(Boolean).join(' and ')})_` : ' _(no map risk or rule covers it)_');
+  const brokeRows = a.brokeMost.map((r) => `- \`${r.path}\`: weight ${r.score}, ${r.commits} fixes, last ${r.last.date} ${r.last.sha} "${r.last.subject}"${covers(r)}`);
+  if (a.noMap) {
+    section(`Broke most (last 12 months; ${BROKE_MOST_MIN_COMMITS}+ fixes and weight ${BROKE_MOST_MIN_SCORE}+)`, brokeRows);
+    if (!brokeRows.length) out.push('No file broke often enough in the last 12 months to list (or this clone has too little history).', '');
+    out.push('There is no .readfirst/map.json. `readfirst init` writes a first map, and audit then also checks it against the code.', '', '---', PRO_LINE, '');
+    return out.join('\n');
+  }
+  section(`Broke most (last 12 months; ${BROKE_MOST_MIN_COMMITS}+ fixes and weight ${BROKE_MOST_MIN_SCORE}+)`, brokeRows);
   section('Map problems (as `readfirst check` reports them)', a.problems.map((p) => `- ${p}`));
   section(`Rules and risks that may be out of date (${STALE_COMMITS}+ commits changed their files since they were written)`, [...a.stale.slice(0, TOP).map((s) =>
     `- ${s.kind === 'rule' ? `rule **${s.id}**` : `risk in group ${s.group}`}: "${s.text.length > 100 ? `${s.text.slice(0, 100)}…` : s.text}" — written ${s.written.date} (${s.written.commit}); ${s.commits} commits changed ${s.files} of its files since. Still true?`), ...(a.stale.length > TOP ? [`- …and ${a.stale.length - TOP} more (\`readfirst audit --json\` lists all)`] : [])]);
