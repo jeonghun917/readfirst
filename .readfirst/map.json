@@ -237,7 +237,7 @@
           ]
         },
         {
-          "text": "the scar rules in src/history.mjs (SIGNALS, NOISE, NOT_CODE, TEST, scar, spreadScars) are a copy of the hosted version's lib/history.mjs, kept in one module so the hosted side can import them from the package; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
+          "text": "the scar rules in src/history.mjs (SIGNALS, NOISE, NOT_CODE, TEST, scar, spreadScars) are the one source for the hosted version too: readfirst-cloud's lib/history.mjs imports scar, NOT_CODE and TEST from the published package, pinned to an exact version; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
           "files": [
             "src/history.mjs"
           ]
@@ -532,7 +532,7 @@
       "paths": [
         "lib/history.mjs"
       ],
-      "why": "src/history.mjs holds the scar rules the hosted version keeps a copy of (lib/history.mjs); a change to a regex or weight on either side belongs on both"
+      "why": "readfirst-cloud now imports scar, NOT_CODE and TEST from the published readfirst package (pinned to an exact version, in lib/history.mjs) instead of keeping a copy; a change to the regexes or weights reaches the server only after a release and a version bump there"
     }
   ],
   "ignore": [],
