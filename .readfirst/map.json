@@ -36,7 +36,7 @@
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read, diff, view, verify and export --cursor use loadMapLenient (read and diff, and the PreToolUse hook and audit, also work with no map at all: they then show only where the code broke before, from git history, and `readList` gets a null map): they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
+          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read, diff, view, verify and export --cursor use loadMapLenient: they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -62,13 +62,6 @@
           "files": [
             "src/mcp.mjs",
             "src/cli.mjs"
-          ]
-        },
-        {
-          "text": "brokeBefore (src/history.mjs) runs one `git log` per code file for read, diff, the hook and the Action, and never throws: a missing git, a non-repository or a repository with no commits gives {} (nothing shown). A shallow clone with fewer than 200 commits gives { notFetched: true } for files with nothing to show, so a test that runs read in a `--depth 1` clone sees 'history not fetched'; a clone fetched to depth 200 or more counts as having the history",
-          "files": [
-            "src/cli.mjs",
-            "src/history.mjs"
           ]
         }
       ]
@@ -124,12 +117,6 @@
           "files": [
             "src/action.mjs"
           ]
-        },
-        {
-          "text": "the changed files still come from the GitHub API, but the 'Files in this PR that broke before' section reads the checkout's git log (brokeBefore) and says 'history not fetched (set fetch-depth: 200 on actions/checkout)' when the checkout is shallow; the workflow `init --ci` writes and this repository's ci.yml both set fetch-depth: 200, so keep the three in step",
-          "files": [
-            "src/action.mjs"
-          ]
         }
       ]
     },
@@ -151,8 +138,7 @@
         "src/agents.mjs",
         "src/lex.mjs",
         "src/scan.mjs",
-        "src/shapes.mjs",
-        "src/history.mjs"
+        "src/shapes.mjs"
       ],
       "checks": [
         {
@@ -234,12 +220,6 @@
           "files": [
             "src/shapes.mjs",
             "src/lex.mjs"
-          ]
-        },
-        {
-          "text": "the scar rules in src/history.mjs (SIGNALS, NOISE, NOT_CODE, TEST, scar, spreadScars) are the one source for the hosted version too: readfirst-cloud's lib/history.mjs imports scar, NOT_CODE and TEST from the published package, pinned to an exact version; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
-          "files": [
-            "src/history.mjs"
           ]
         }
       ]
@@ -377,8 +357,7 @@
         "src/imports.mjs",
         "src/langs.mjs",
         "src/readlist.mjs",
-        "src/prompt.mjs",
-        "src/history.mjs"
+        "src/prompt.mjs"
       ]
     },
     {
@@ -496,7 +475,10 @@
         "src/map.mjs"
       ],
       "repo": "jeonghun917/readfirst-cloud",
-      "why": "readfirst-cloud imports src/map.mjs from the published readfirst package (pinned to an exact version) since readfirst-cloud#104, in the files under lib/ that read or write a map; a new map field or a change to its checks reaches the server only after a release and a version bump there"
+      "paths": [
+        "lib/vendor/map.mjs"
+      ],
+      "why": "the hosted server validates and writes maps with a copy of this file; a new map field must reach that copy before the server writes it"
     },
     {
       "files": [
@@ -520,16 +502,6 @@
         "lib/lex.mjs"
       ],
       "why": "src/shapes.mjs is the published subset of the server's bug shapes; a fix to one of these shapes on either side belongs on both"
-    },
-    {
-      "files": [
-        "src/history.mjs"
-      ],
-      "repo": "jeonghun917/readfirst-cloud",
-      "paths": [
-        "lib/history.mjs"
-      ],
-      "why": "readfirst-cloud now imports scar, NOT_CODE and TEST from the published readfirst package (pinned to an exact version, in lib/history.mjs) instead of keeping a copy; a change to the regexes or weights reaches the server only after a release and a version bump there"
     }
   ],
   "ignore": [],

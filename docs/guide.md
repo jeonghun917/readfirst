@@ -4,21 +4,19 @@ Everything the [README](../README.md) leaves out: setup for each agent, the PR A
 
 ## Start
 
-Any language; needs Node 20+ for `npx`. `audit`, `read` and `diff` work without a map.
+Any language; needs Node 20+ for `npx`.
 
 ```sh
-npx readfirst audit          # no setup: the files that broke most in the last 12 months, from git history
-npx readfirst read <file>    # no map needed: where the file broke before, from git history (a map adds rules, risks, checks)
 npx readfirst init --agent --ci   # first map from your folders, checks from your scripts, the line for CLAUDE.md / AGENTS.md,
                                   # and the GitHub Action that comments on PRs and keeps the map in step
 npx readfirst prompt         # a brief for your coding agent to fill in titles, checks, risks and rules
 npx readfirst check          # every tracked file is in exactly one group (or ignored); rules point at real files
-npx readfirst audit          # with a map too: what went stale, what no test reaches
+npx readfirst audit          # the whole repository against the map, once: what went stale, what no test reaches
 npx readfirst find payment retry   # before writing something new: what in the code may already do it
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.17.0 read <file>` (and `jeonghun917/readfirst@v0.17.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.17.1 read <file>` (and `jeonghun917/readfirst@v0.17.1` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -38,27 +36,6 @@ npx readfirst diff --json        # the same, for tools and agents
 npx readfirst verify             # run the checks the map lists for everything your branch changed (exit 1 if one fails)
 npx readfirst fix                # after moving code: place new files, drop patterns for deleted ones
 ```
-
-### Where the code broke before
-
-`read`, `diff`, the MCP tools and the Claude Code hook add a **Broke before** section for each file, from `git log` alone:
-no map, no network, nothing written. A commit counts as a scar when its subject says something broke: a revert or
-rollback (weight 3), a hotfix, regression or "broke", "crash", "outage" (2), or a fix (1). Dependency bumps, formatting,
-typos, docs, tests and new features do not count. A file shows the section when its scars weigh 2 or more, with the
-count, the latest one and the strongest three:
-
-```
-- `src/billing/charge.ts`: broke before: 4 fixes, last 2026-10-28 a1b2c3d "fix: webhook bind before queue"
-  - 2026-09-02 77ab3e1 revert: "Revert "cache totals""
-  - 2026-10-28 a1b2c3d fix: "fix: webhook bind before queue"
-  - 2026-10-01 0c9e4f2 fix: "fix: amounts were in dollars"
-```
-
-It looks at the last 200 commits that touched the file (no rename following, so history from before a rename is not
-carried over). Tests count half, so the code they test ranks above them; lock files, docs, generated output and media
-never show. In a shallow clone with fewer than 200 commits the section says "history not fetched" instead of nothing.
-`--json` adds an optional `brokeBefore` field per target (`{ count, weight, top: [{ sha, date, kind, subject }], last }`,
-or `{ notFetched: true }`); nothing else in `readfirst/read-list@1` changes. Not a git repository, or no git: nothing is shown.
 
 ### Tell your agent to use it
 
@@ -150,12 +127,6 @@ It reads the checkout and its git history, runs nothing, changes nothing, and re
 - **code no test reaches through imports**, the most used first, with a count per group;
 - **code being replaced that is still used** (groups marked `deprecated`), and, with `.readfirst/held.json`, **rules
   never recorded as holding** or whose files changed after they last held;
-- **where the code broke most**: the files with the highest scar weight over the last 12 months, top 10, from one pass
-  over `git log`, each with whether a map risk or rule covers it. A commit's weight is spread over its files
-  (weight divided by the square root of the file count; commits touching more than 25 code files are skipped), tests count
-  half, and package manifests, container files, schema dumps, translation files and tool folders are left out. A file is
-  listed from a weight of 2 with at least 2 scar commits, so on a small or young repository the list is empty rather than
-  weak. This part needs no map: `npx readfirst audit` works on any repository;
 - **what readfirst could not see**: languages whose imports it does not read, and modules loaded by a computed name
   (``import(`./plugins/${name}`)``, `importlib.import_module(settings.X)`). An empty "used by" for those means unknown,
   not none; read lists now say so too.
@@ -177,7 +148,7 @@ under two seconds. `--json` gives `readfirst/find@1`.
 ### Any agent, through MCP
 
 `npx readfirst mcp` is an MCP server on stdio with five tools: `read_list` (files → what to read and check before
-changing them, and where they broke before), `changed_read_list` (the same for everything changed on the branch), `find_existing` (the search
+changing them), `changed_read_list` (the same for everything changed on the branch), `find_existing` (the search
 above, before writing something new), `check_map` and `audit_repo` (the audit above). It answers from the checkout as it is and writes nothing.
 
 ```sh
@@ -237,18 +208,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 200   # for "Files in this PR that broke before"
       - uses: jeonghun917/readfirst@v0
 ```
 
 Each PR gets one comment, updated on every push, that lists:
 - the rules, risks and checks for the files the PR changes, with the checks as boxes to tick;
-- the tests that reach the changed code;
-- **Files in this PR that broke before**, from the checkout's git log (see above). `actions/checkout` fetches only the
-  last commit by default, so give it `fetch-depth: 200`; at depth 1 the section says "history not fetched (set
-  fetch-depth: 200 on actions/checkout)". The changed files themselves come from the GitHub API at any depth, and
-  `init --ci` writes `fetch-depth: 200` into the workflow it creates.
+- the tests that reach the changed code.
 
 A new file next to files the map already places joins their group without anyone touching the map: the check passes
 and the comment notes where it went (`npx readfirst fix` writes it down whenever you like). The check fails only on what
@@ -370,9 +335,9 @@ Everything above is free and stays free. The GitHub App adds the parts that take
 - **First map:** install [readfirst-app](https://github.com/apps/readfirst-app/installations/new) on a repository and
   comment `/readfirst fill` on any issue. 5–20 minutes later a pull request arrives with the map, each risk and rule
   citing the file and line it came from. Free once per account, for repositories up to 200 files.
-- **Pro, $19/month:** fills for up to 3 private repositories that also read the known traps of their libraries; after
-  each merge, a small PR when the map needs it; on every pull request, a comment on the lines that look like they break
-  a rule in your map.
+- **Pro, $19/month:** fills for up to 3 private repositories that also read where the code broke before and the known
+  traps of its libraries; after each merge, a small PR when the map needs it; on every pull request, a comment on the
+  lines that look like they break a rule in your map and the files it touches that broke before.
   [Get Pro](https://readfirst-cloud.vercel.app/#pricing).
 - **Map setup, $290 once:** we write the first maps for up to 3 repositories from your code, its history, your docs and
   a short email Q&A, and send them as pull requests with the Action and your agent's setup. No calls; 5 business days;
