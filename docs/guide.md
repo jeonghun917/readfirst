@@ -141,7 +141,8 @@ payment retry` lists the functions, classes and types whose names hold those wor
 closest names first, code before tests, each with how many files use it and its group.
 
 It matches words, not meaning: `retries` meets `retry` and `pay` meets `payment`, the folder a function sits in counts
-too (`webhook/transport` for `signature_for_payload` on "webhook signature"), but `try_again` is not found for "retry".
+too (`webhook/transport` for `signature_for_payload` on "webhook signature"), and so does the comment right above a
+definition or a Python docstring (shown as "in its comment"), but `try_again` with no comment is not found for "retry".
 Words like "add", "new" or "helper" are ignored. No model, no index, nothing written; on a 4,700-file repository it takes
 under two seconds. `--json` gives `readfirst/find@1`.
 

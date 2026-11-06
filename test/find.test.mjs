@@ -65,3 +65,17 @@ test('find matches a definition through the folder it sits in, and says so when 
   assert.match(findText(none), /Nothing matched[^\n]*English words the code would use/u);
   assert.match(findText(find({ query: 'add a new helper', files: [] })), /Only words like "add"/u);
 });
+
+test('find reads the comment that says what a definition does, above it or as a Python docstring', () => {
+  const texts = {
+    'lib/refs.js': '// Table references in a piece of SQL: which tables a line writes or reads.\nexport function lineRefs(text) {\n  return [];\n}\n',
+    'app/money.py': '@cached\ndef settle(x):\n    """Pay out the balance owed to a seller."""\n    return x\n',
+    'lib/other.js': 'export function unrelated() {}\n',
+  };
+  const r = find({ query: 'sql table references', files: Object.keys(texts), read: (p) => texts[p] ?? null });
+  assert.equal(r.code[0].name, 'lineRefs');
+  assert.deepEqual(r.code[0].inComment, ['sql', 'table'], 'reference meets the name (ref)');
+  assert.match(findText(r), /in its comment/u);
+  const py = find({ query: 'seller payout balance', files: Object.keys(texts), read: (p) => texts[p] ?? null });
+  assert.equal(py.code[0].name, 'settle');
+});
