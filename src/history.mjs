@@ -13,15 +13,16 @@ export const SIGNALS = [
   [1, 'fix', /^(?:fix|bugfix)(?:\(.*?\))?!?:|\bfix(?:es|ed)?\b|\bbug\b/iu],
 ];
 
-// Changes that say nothing about traps in the code: dependency bumps, formatting, typos, docs, tests, new features.
-export const NOISE = /\b(?:bump|deps?|dependabot|renovate|typos?|lint|format(?:ting)?|prettier|readme|changelog|release v?\d|merge branch)\b|^(?:docs?|test|tests|chore|style|ci|build|refactor|perf|feat)(?:\(.*?\))?!?:|^fix\((?:docs?|ci|tests?|deps?|build|examples?|readme)\)/iu;
+// Changes that say nothing about traps in the code: dependency bumps, formatting, typos, docs, tests, new features, and
+// release commits (a subject that starts with a version, "0.17.0: ..." or "v1.2.3 ...").
+export const NOISE = /\b(?:bump|deps?|dependabot|renovate|typos?|lint|format(?:ting)?|prettier|readme|changelog|release v?\d|merge branch)\b|^(?:docs?|test|tests|chore|style|ci|build|refactor|perf|feat)(?:\(.*?\))?!?:|^fix\((?:docs?|ci|tests?|deps?|build|examples?|readme)\)|^v?\d+\.\d+\.\d+\b/iu;
 // Files that are never where the trap is: lock files, generated output, media.
 export const NOT_CODE = /^\.github\/|^\.readfirst\/|^\.[^/]+$|\.(?:md|mdx|rst|txt)$|(?:^|\/)(?:package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|go\.sum|CHANGELOG(?:\.md)?)$|\.(?:png|jpe?g|gif|svg|ico|webp|mp4|mp3|wav|woff2?|ttf|glb|gltf|zip|gz|min\.js|map|snap)$|(?:^|\/)(?:dist|build|vendor|node_modules)\//iu;
 
 // Files NOT_CODE lets through that change with almost every fix without being where it broke: tool and CI folders,
-// container files, schema or API dumps, package manifests and translation files. They are left out of the "Broke most"
+// container files, schema or API dumps, package manifests, translation files and data files (a ledger or dataset whose commits mention fixes). They are left out of the "Broke most"
 // ranking only; `read` on one of them still shows its history.
-export const NOT_TRAP = /(?:^|\/)\.[^/]+\/|(?:^|\/)(?:Dockerfile[^/]*|docker-compose[^/]*\.ya?ml|schema\.(?:graphql|json)|openapi[^/]*\.(?:json|ya?ml)|package\.json|pnpm-workspace\.ya?ml|tsconfig[^/]*\.json|pyproject\.toml|Cargo\.toml|go\.mod|composer\.json|Gemfile|Pipfile)$|(?:^|\/)(?:locales?|i18n|translations?|lang)\/[^/]*\.(?:json|po|ya?ml)$/iu;
+export const NOT_TRAP = /(?:^|\/)\.[^/]+\/|(?:^|\/)(?:Dockerfile[^/]*|docker-compose[^/]*\.ya?ml|schema\.(?:graphql|json)|openapi[^/]*\.(?:json|ya?ml)|package\.json|pnpm-workspace\.ya?ml|tsconfig[^/]*\.json|pyproject\.toml|Cargo\.toml|go\.mod|composer\.json|Gemfile|Pipfile)$|\.(?:jsonl|ndjson|csv|tsv)$|(?:^|\/)(?:locales?|i18n|translations?|lang)\/[^/]*\.(?:json|po|ya?ml)$/iu;
 
 export const TEST = /(?:^|\/)(?:tests?|__tests__|spec)\/|\.(?:test|spec)\.[cm]?[jt]sx?$|(?:^|\/)test_[^/]+\.py$/iu;
 
@@ -81,27 +82,38 @@ function git(root, args) {
 
 // Whether the clone has cut-off history short enough that "no scars found" says little: shallow, and fewer commits than
 // the log looks at. A clone fetched to depth 200 or more is shallow too, but has what `read` looks at.
-export function historyNotFetched(root) {
+export function historyNotFetched(root, rev = 'HEAD') {
   if (git(root, ['rev-parse', '--is-shallow-repository'])?.trim() !== 'true') return false;
-  const n = Number(git(root, ['rev-list', '--count', 'HEAD'])?.trim());
+  const n = Number(git(root, ['rev-list', '--count', rev])?.trim());
   return !Number.isFinite(n) || n < LOG_LIMIT;
+}
+
+// The revision whose history a PR's "broke before" reads: the base the PR was opened against, so the PR's own commits
+// (a "fix: ..." that is the change being reviewed) do not make its files look like they broke before. baseSha, when that
+// commit is in the checkout; else HEAD^1 when HEAD is a merge commit (the refs/pull/N/merge checkout); else HEAD.
+export function baseRevision(root, baseSha = null) {
+  if (/^[0-9a-f]{7,40}$/iu.test(baseSha ?? '') && git(root, ['cat-file', '-e', `${baseSha}^{commit}`]) !== null) return baseSha;
+  const parents = git(root, ['rev-list', '--parents', '-n', '1', 'HEAD'])?.trim().split(' ') ?? [];
+  return parents.length > 2 ? 'HEAD^1' : 'HEAD';
 }
 
 // For each tracked code file among `targets`: { count, weight, top, last }, or { notFetched: true } when a shallow
 // clone has too little history to say. Files with nothing to show are left out; with no git at all the result is {}.
-export function brokeBefore(root, targets, tracked = null) {
+// rev: the revision whose history is read (default HEAD; `diff` and the Action pass the base of the change).
+export function brokeBefore(root, targets, tracked = null, rev = 'HEAD') {
   const out = {};
+  if (rev.startsWith('-')) return out;
   if (git(root, ['rev-parse', '--git-dir']) === null) return out;
   let notFetched = null;
   for (const raw of targets) {
     const path = raw.replace(/^\.\//u, '').replace(/\\/gu, '/');
     if (NOT_CODE.test(path) || (tracked && !tracked.has(path))) continue;
-    const text = git(root, ['log', '--no-merges', '--format=%H%x00%ct%x00%s', '-n', String(LOG_LIMIT), '--', `:(literal)${path}`]);
+    const text = git(root, ['log', '--no-merges', '--format=%H%x00%ct%x00%s', '-n', String(LOG_LIMIT), rev, '--', `:(literal)${path}`]);
     if (text === null) continue;
     const commits = text.split('\n').filter(Boolean).map((l) => { const [sha, time, subject] = l.split('\0'); return { sha, time: Number(time), subject: subject ?? '' }; });
     const found = summarizeScars(path, commits);
     if (found) out[path] = found;
-    else { notFetched ??= historyNotFetched(root); if (notFetched) out[path] = { notFetched: true }; }
+    else { notFetched ??= historyNotFetched(root, rev); if (notFetched) out[path] = { notFetched: true }; }
   }
   return out;
 }

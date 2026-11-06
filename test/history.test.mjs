@@ -8,7 +8,7 @@ import { commentBody, runAction } from '../src/action.mjs';
 import { audit, auditText } from '../src/audit.mjs';
 import { mcpHandler } from '../src/mcp.mjs';
 import { main, runHook, writeWorkflow, WORKFLOW_PATH } from '../src/cli.mjs';
-import { brokeBefore, brokeMost, NOISE, NOT_CODE, NOT_TRAP, parseScarLog, scar, SIGNALS, spreadScars, summarizeScars, TEST } from '../src/history.mjs';
+import { baseRevision, brokeBefore, brokeMost, NOISE, NOT_CODE, NOT_TRAP, parseScarLog, scar, SIGNALS, spreadScars, summarizeScars, TEST } from '../src/history.mjs';
 import { readList, toMarkdown } from '../src/readlist.mjs';
 
 test('scar: the subject says something broke, noise does not count', () => {
@@ -20,6 +20,9 @@ test('scar: the subject says something broke, noise does not count', () => {
   for (const m of ['Bump express from 4.18 to 4.19', 'fix typo in README', 'add prefix to fixtures', 'Merge branch main',
     'feat: discounts', 'docs: fix typos in lib comments', 'fix(ci): update scorecard',
     'test: expand coverage\n\nguards against the regression in #4']) assert.equal(scar(m), null, m);
+  // Release commits are not scars, whatever words the subject uses.
+  for (const m of ['0.16.0: readfirst scan, the published bug shapes', 'v2.1.0 fix login', '0.17.0: Broke before, where the code broke']) assert.equal(scar(m), null, m);
+  assert.equal(scar('fix: login loop after the 2.1.0 upgrade').kind, 'fix', 'a version later in the subject is not a release commit');
   assert.ok(SIGNALS.length && NOISE instanceof RegExp && NOT_CODE.test('package-lock.json') && TEST.test('src/a.test.ts'));
 });
 
@@ -202,6 +205,7 @@ test('audit shows nothing rather than a weak list: files that sit at one or two 
   assert.deepEqual(brokeMost([at(['src/a.js'], 'fix: a', 1), at(['src/b.js'], 'fix: b', 2)], exists), [], 'one fix each');
   assert.deepEqual(brokeMost([at(['src/a.js'], 'Revert "a"', 1)], exists), [], 'one revert is weight 3 but a single commit');
   assert.deepEqual(brokeMost([at(['package.json', 'Dockerfile'], 'fix: a', 1), at(['package.json', 'Dockerfile'], 'fix: b', 2), at(['package.json'], 'fix: c', 3)], exists), [], 'manifests and container files');
+  for (const f of ['eval/patterns/ledger.jsonl', 'data/events.ndjson', 'a/b.csv', 'x.tsv']) assert.ok(NOT_TRAP.test(f), f);
   assert.ok(NOT_TRAP.test('packages/x/package.json') && NOT_TRAP.test('src/locales/en.json') && NOT_TRAP.test('.devcontainer/x.yml') && !NOT_TRAP.test('src/app.ts'));
   assert.deepEqual(brokeMost([at(['src/a.js'], 'fix: a', 1), at(['src/a.js'], 'fix: b', 2)], exists).map((r) => [r.path, r.score, r.commits]), [['src/a.js', 2, 2]]);
   const noMap = audit({ map: null, files: ['src/a.js'], imports: [], broke: parseScarLog('\x01aaa\x001800000000\x00fix: a\n\nsrc/a.js\n') });
@@ -209,10 +213,48 @@ test('audit shows nothing rather than a weak list: files that sit at one or two 
   assert.match(auditText(noMap), /No file broke often enough/u);
 });
 
+test('diff reads the history at the commit the branch left, not the branch\'s own commits; read stays on HEAD', () => {
+  const { root, git } = history({ map: true });
+  writeFileSync(join(root, 'src/f.js'), 'export const f = 1;\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'feat: f');
+  git('checkout', '-q', '-b', 'feat');
+  writeFileSync(join(root, 'src/f.js'), 'export const f = 2;\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'hotfix: f');
+  assert.match(run(root, 'read', 'src/f.js').out, /`src\/f\.js`: broke before: 1 fix/u, 'read looks at HEAD');
+  const d = run(root, 'diff', '--base', 'main');
+  assert.ok(!d.out.includes('`src/f.js`: broke before'), d.out);
+  assert.equal(JSON.parse(run(root, 'diff', '--base', 'main', '--json').out).targets.find((t) => t.path === 'src/f.js').brokeBefore, undefined);
+  // A file that did break on the base still shows.
+  writeFileSync(join(root, 'src/pay.js'), 'again\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'wip');
+  assert.match(run(root, 'diff', '--base', 'main').out, /`src\/pay\.js`: broke before: 3 fixes/u);
+});
+
+test('baseRevision: the PR base when it is in the checkout, else the first parent of a merge checkout, else HEAD', () => {
+  const { root, git } = history();
+  const base = git('rev-parse', 'HEAD').trim();
+  assert.equal(baseRevision(root, base), base);
+  assert.equal(baseRevision(root, 'f'.repeat(40)), 'HEAD', 'not in the checkout, not a merge');
+  assert.equal(baseRevision(root, null), 'HEAD');
+  git('checkout', '-q', '-b', 'topic');
+  writeFileSync(join(root, 'src/t.js'), 't\n');
+  git('add', '-A');
+  git('commit', '-q', '-m', 'hotfix: t');
+  git('checkout', '-q', 'main');
+  git('merge', '-q', '--no-ff', '-m', 'Merge pull request', 'topic');
+  assert.equal(baseRevision(root, 'f'.repeat(40)), 'HEAD^1', 'the refs/pull/N/merge checkout');
+  assert.ok('src/t.js' in brokeBefore(root, ['src/t.js'], null, 'HEAD'), 'the topic\'s own hotfix is weight 2 at HEAD...');
+  assert.ok(!('src/t.js' in brokeBefore(root, ['src/t.js'], null, 'HEAD^1')), '...and not at the base');
+  assert.deepEqual(brokeBefore(root, ['src/pay.js'], null, '--all'), {}, 'a revision cannot be an option');
+});
+
 test('the Action comment lists the PR\'s files that broke before, and says when the checkout is too shallow', async () => {
-  const send = (root, files) => {
+  const send = (root, files, baseSha) => {
     const event = join(root, '..', `${root.split('/').pop()}-event.json`);
-    writeFileSync(event, JSON.stringify({ pull_request: { number: 7, head: { sha: 'abcdef1234567' } } }));
+    writeFileSync(event, JSON.stringify({ pull_request: { number: 7, head: { sha: 'abcdef1234567' }, ...(baseSha ? { base: { sha: baseSha } } : {}) } }));
     const posted = [];
     const fetchImpl = async (url, init) => {
       const u = new URL(url);
@@ -229,6 +271,18 @@ test('the Action comment lists the PR\'s files that broke before, and says when 
   const body = await send(root, changed);
   assert.match(body, /## Files in this PR that broke before\n\n- `src\/pay\.js`: broke before: 3 fixes, last/u);
   assert.ok(!body.includes('README.md`: broke before'));
+  // The PR's own commits are not history: a hotfix on the branch does not make its file "broke before".
+  const { root: prRoot, git: prGit } = history({ map: true });
+  const baseSha = prGit('rev-parse', 'HEAD').trim();
+  prGit('checkout', '-q', '-b', 'pr');
+  writeFileSync(join(prRoot, 'src/f.js'), 'export const f = 1;\n');
+  prGit('add', '-A');
+  prGit('commit', '-q', '-m', 'hotfix: f');
+  const prFiles = [{ filename: 'src/f.js', status: 'added' }, { filename: 'src/pay.js', status: 'modified' }];
+  const fromBase = await send(prRoot, prFiles, baseSha);
+  assert.match(fromBase, /- `src\/pay\.js`: broke before: 3 fixes/u);
+  assert.ok(!fromBase.includes('`src/f.js`: broke before'), 'f broke nowhere before this PR');
+  assert.match(await send(prRoot, prFiles), /`src\/f\.js`: broke before: 1 fix/u, 'with no base known it reads HEAD');
   // Depth 1, as actions/checkout does by default: the changed files still come from the API, the section says what is missing.
   const shallow = mkdtempSync(join(tmpdir(), 'readfirst-action-shallow-'));
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${root}`, shallow]);

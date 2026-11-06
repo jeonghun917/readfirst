@@ -6,7 +6,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { readMapFile, readText, repoFiles } from './cli.mjs';
 import { HELD_PATH, parseHeld } from './held.mjs';
 import { importEdges } from './imports.mjs';
-import { brokeBefore } from './history.mjs';
+import { baseRevision, brokeBefore } from './history.mjs';
 import { MAP_PATH, settleMap } from './map.mjs';
 import { brokeSection, readList, toMarkdown } from './readlist.mjs';
 
@@ -89,8 +89,8 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const list = targets.length && !problems.length
     ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
     : null;
-  // From the checkout's git log, whatever the map says. A checkout fetched at depth 1 has none: that is said, not hidden.
-  const found = brokeBefore(root, targets, new Set(files));
+  // From the checkout's git log at the PR's base (not the PR's own commits), whatever the map says. A checkout fetched at depth 1 has none: that is said, not hidden.
+  const found = brokeBefore(root, targets, new Set(files), baseRevision(root, pr.base?.sha));
   const broke = targets.filter((t) => found[t]).map((t) => ({ path: t, brokeBefore: found[t] }));
   const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled, committed, broke });
   summary(body);

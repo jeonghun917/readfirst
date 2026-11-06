@@ -181,7 +181,7 @@ function changedFiles(root, base) {
     ...git(root, 'diff', '--name-only', '-z', since).split('\0'),
     ...git(root, 'ls-files', '-z', '--others', '--exclude-standard').split('\0'),
   ].filter(Boolean));
-  return { ref, files: [...names].sort() };
+  return { ref, since, files: [...names].sort() };
 }
 
 // Runs each check with the shell in the repository root, one after another, and keeps the end of the output of the ones
@@ -579,8 +579,12 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   if (cmd === 'read' || cmd === 'diff') {
     const map = loadMapLenient(root, files, io, { allowNone: true });
     let targets = rest;
+    // read looks at HEAD; diff at the commit where the branch left its base, so the branch's own "fix: ..." commits are not
+    // counted as the file having broken before.
+    let rev = 'HEAD';
     if (cmd === 'diff') {
       const changed = changedFiles(root, args.base);
+      rev = changed.since;
       targets = changed.files;
       if (!targets.length) {
         io.out(args.json ? `${JSON.stringify(emptyList(commit), null, 2)}\n` : `no files changed since ${changed.ref}.\n`);
@@ -589,7 +593,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     }
     const limit = Number(args.limit ?? 30);
     if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
-    const broke = brokeBefore(root, targets, new Set(files));
+    const broke = brokeBefore(root, targets, new Set(files), rev);
     const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
     return 0;
