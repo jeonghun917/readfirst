@@ -18,6 +18,38 @@ const COMPUTED_LOAD = {
   py: { test: /\.py$/u, re: /\b(?:importlib\.import_module|__import__|import_string)\(\s*(?!['"])(?=[^)\s])/u },
 };
 
+// A line with the insides of its string literals (and, in JavaScript, regex literals) blanked, so text that only
+// mentions `require(` or `import(` (a pattern, a message) is not taken for code that loads a module.
+export function codeOnly(line, js = true) {
+  let out = '';
+  let prev = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === "'" || c === '"' || c === '`') {
+      let j = i + 1;
+      while (j < line.length && line[j] !== c) j += line[j] === '\\' ? 2 : 1;
+      out += c + c;
+      i = j;
+      prev = c;
+      continue;
+    }
+    if (js && c === '/' && line[i + 1] !== '/' && line[i + 1] !== '*' && (/^$|[(,=:[!&|?{};+\-*%<>~^]$/u.test(prev) || /\b(?:return|typeof|case|in|of)$/u.test(out.trimEnd()))) {
+      let j = i + 1;
+      let cls = false;
+      while (j < line.length && (cls || line[j] !== '/')) {
+        if (line[j] === '\\') j++;
+        else if (line[j] === '[') cls = true;
+        else if (line[j] === ']') cls = false;
+        j++;
+      }
+      if (j < line.length) { out += '/x/'; i = j; prev = '/'; continue; }
+    }
+    out += c;
+    if (!/\s/u.test(c)) prev = c;
+  }
+  return out;
+}
+
 // What readfirst could not see about one file: a language whose imports it does not read, or a module loaded by a
 // computed name. read(path) gives the file's text, or null.
 export function unseenIn(path, read = () => null) {
@@ -27,7 +59,7 @@ export function unseenIn(path, read = () => null) {
   const body = read(path);
   if (!body) return [];
   const lines = body.split('\n');
-  const at = lines.findIndex((l) => !/^\s*(?:\/\/|#|\*)/u.test(l) && kind.re.test(l));
+  const at = lines.findIndex((l) => !/^\s*(?:\/\/|#|\*)/u.test(l) && kind.re.test(l) && kind.re.test(codeOnly(l, kind === COMPUTED_LOAD.js)));
   return at < 0 ? [] : [{ path, line: at + 1, why: `line ${at + 1} loads a module by a computed name: what it loads is not followed` }];
 }
 

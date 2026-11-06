@@ -95,6 +95,10 @@ test('audit and the read list say what readfirst could not see', () => {
   assert.deepEqual(unseenIn('src/plugins.js', read).map((u) => u.line), [2]);
   assert.deepEqual(unseenIn('app/load.py', read).map((u) => u.line), [2]);
   assert.deepEqual(unseenIn('src/ok.js', read), [], 'string specifiers are followed');
+  // A pattern or message that only mentions require( or import( is not code that loads a module.
+  const text = (p) => ({ 'src/re.js': "const CHECK = /\\b(?:requireRole|require(?=\\(\\s*Perm))\\b/u;\nconst msg = 'call import(name) here';\nconst t = `require(${x})`;\n", 'src/div.js': 'const r = a / b; require(name);\n' })[p] ?? null;
+  assert.deepEqual(unseenIn('src/re.js', text), [], 'regex and string literals are not code');
+  assert.deepEqual(unseenIn('src/div.js', text).map((u) => u.line), [1], 'division is not a regex literal');
   assert.match(unseenIn('ios/App.swift')[0].why, /unknown, not none/u);
   const map = { format: 'readfirst/map@1', groups: [{ id: 'all', title: 'all', files: ['**'] }] };
   const files = ['src/plugins.js', 'app/load.py', 'src/ok.js', 'ios/App.swift', 'ios/View.swift'];
