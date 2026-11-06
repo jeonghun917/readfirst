@@ -8,16 +8,14 @@ knowledge in one file next to the code and hands it out, file by file, at the mo
 
 ![npx readfirst read src/imports.mjs prints the rules, risks, checks, tests and callers for that file](docs/readfirst-read.gif)
 
-No server, no account, no model calls. MIT. It reads your git checkout and `.readfirst/map.json`.
+No server, no account, no model calls. MIT. It reads your git checkout and `.readfirst/map.json`. `audit`, `read` and `diff`
+work without a map.
 
 ## What it caught
 
 ```sh
 npx readfirst scan   # no map needed: QuerySet/string results thrown away, expect(...).resolves nobody awaits
-npx readfirst audit  # no map needed: the files that broke most in the last 12 months, from git history
 ```
-
-On the free side, readfirst shows where your code broke before, from git history, on the first run, no map needed.
 
 The hosted version scans for fixed bug shapes taken from real bugs: a result computed and thrown away, a range check
 with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories and checked by hand:
@@ -48,6 +46,20 @@ other projects, which stay unnamed until they are fixed.
 ## Start
 
 Any language; needs Node 20+.
+
+```sh
+npx readfirst audit   # no setup: the files that broke most in the last 12 months, from git history
+```
+
+On n8n-io/n8n at commit 4b5ea1d (readfirst 0.17.0, 2026-11-06), the first three lines of its "Broke most" list:
+
+```text
+- `packages/cli/src/modules/instance-ai/instance-ai.adapter.service.ts`: weight 20.9, 52 fixes, last 2026-10-23 9184012 "fix(core): Apply execution redaction to Assistant one-off node runs (#41582)"
+- `packages/frontend/editor-ui/src/features/credentials/components/CredentialEdit/CredentialEdit.vue`: weight 17.4, 35 fixes, last 2026-10-30 3cbe84c "fix(core, editor): Use the managed OAuth app after a switch from a custom app (#42593)"
+- `packages/frontend/editor-ui/src/features/credentials/components/NodeCredentials.vue`: weight 16.7, 34 fixes, last 2026-10-19 b98640f "fix(editor): Improve NDV credential options performance on large instances (#40198)"
+```
+
+Then give it a map so agents get your rules, not just your history:
 
 ```sh
 npx readfirst init --agent --ci   # a first map, your agents wired to it (Claude Code, Cursor, Codex, Gemini, ...), the PR Action
