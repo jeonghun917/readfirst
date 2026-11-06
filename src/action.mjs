@@ -1,12 +1,14 @@
 // The GitHub Action: on a pull request, one comment with the read list for the files the PR changes (kept up to date
 // on each push), and a failed check when the map no longer covers the code. Off a pull request it only checks the map.
-// The changed files come from the GitHub API, so any checkout depth works.
+// The changed files come from the GitHub API, so any checkout depth works; only the "broke before" section reads the
+// checkout's git log, and says so when the checkout is too shallow to have it.
 import { appendFileSync, readFileSync } from 'node:fs';
 import { readMapFile, readText, repoFiles } from './cli.mjs';
 import { HELD_PATH, parseHeld } from './held.mjs';
 import { importEdges } from './imports.mjs';
+import { baseRevision, brokeBefore } from './history.mjs';
 import { MAP_PATH, settleMap } from './map.mjs';
-import { readList, toMarkdown } from './readlist.mjs';
+import { brokeSection, readList, toMarkdown } from './readlist.mjs';
 
 export const MARKER = '<!-- readfirst:pr-comment -->';
 const MAX_COMMENT = 60000;
@@ -31,7 +33,9 @@ async function pages(fetchImpl, env, path) {
   return all;
 }
 
-export function commentBody({ list, problems, removed, commit, fixes = [], settled = [], committed = null }) {
+export const FETCH_DEPTH_HINT = ' (set fetch-depth: 200 on actions/checkout)';
+
+export function commentBody({ list, problems, removed, commit, fixes = [], settled = [], committed = null, broke = [] }) {
   const parts = [MARKER, '## readfirst', ''];
   if (problems.length) {
     parts.push(`> [!WARNING]\n> \`${MAP_PATH}\` no longer matches the code (${problems.length} problem${problems.length > 1 ? 's' : ''}). Run \`npx readfirst check\` and fix the map in this PR.`, '');
@@ -42,8 +46,9 @@ export function commentBody({ list, problems, removed, commit, fixes = [], settl
   } else if (settled.length) {
     parts.push(`<details><summary>New files placed by their neighbours (${settled.length})</summary>`, '', ...settled.slice(0, 20).map((f) => `- ${f}`), ...(settled.length > 20 ? [`- …and ${settled.length - 20} more`] : []), '', '`npx readfirst fix` writes this into the map; nothing to do for this PR.', '</details>', '');
   }
-  if (list) parts.push(toMarkdown(list, { checklist: true, heading: null }));
-  else if (!problems.length) parts.push('No changed files to look up.', '');
+  if (list) parts.push(toMarkdown(list, { checklist: true, heading: null, broke: false }));
+  else if (!problems.length && !broke.length) parts.push('No changed files to look up.', '');
+  parts.push(...brokeSection(broke, { title: 'Files in this PR that broke before', hint: FETCH_DEPTH_HINT }));
   if (removed.length) parts.push(`Removed in this PR: ${removed.map((f) => `\`${f}\``).join(', ')}`, '');
   parts.push(`<sub>From \`${MAP_PATH}\`${commit ? ` at ${commit.slice(0, 7)}` : ''}. Tick each check once it has run.</sub>`);
   let body = parts.join('\n');
@@ -84,7 +89,10 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const list = targets.length && !problems.length
     ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
     : null;
-  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled, committed });
+  // From the checkout's git log at the PR's base (not the PR's own commits), whatever the map says. A checkout fetched at depth 1 has none: that is said, not hidden.
+  const found = brokeBefore(root, targets, new Set(files), baseRevision(root, pr.base?.sha));
+  const broke = targets.filter((t) => found[t]).map((t) => ({ path: t, brokeBefore: found[t] }));
+  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled, committed, broke });
   summary(body);
 
   if ((env.INPUT_COMMENT ?? 'true') !== 'false') {

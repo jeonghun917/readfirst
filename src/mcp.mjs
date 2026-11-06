@@ -6,7 +6,7 @@ const VERSIONS = ['2025-06-18', '2025-03-26', '2024-11-05'];
 const TOOLS = [
   {
     name: 'read_list',
-    description: 'What to read and check before changing these files: the project rules and risks that apply, the checks to run, the tests that reach the code and the files that use it. Call it before editing.',
+    description: 'What to read and check before changing these files: the project rules and risks that apply, the checks to run, the tests that reach the code and the files that use it, and where the file broke before (from git history). Call it before editing.',
     inputSchema: { type: 'object', properties: { files: { type: 'array', items: { type: 'string' }, description: 'paths relative to the repository root' } }, required: ['files'] },
     args: (a) => {
       if (!Array.isArray(a.files) || !a.files.length || a.files.some((f) => typeof f !== 'string' || !f)) throw new Error('files must be a non-empty list of paths');
@@ -39,7 +39,7 @@ const TOOLS = [
   },
   {
     name: 'audit_repo',
-    description: 'The whole repository against .readfirst/map.json, as a report: rules and risks whose files changed a lot since they were written, hot spots that moved, groups never filled in, code no test reaches through imports, and what readfirst could not see. Use it before larger work, or to decide what to add to the map.',
+    description: 'The whole repository against .readfirst/map.json, as a report: rules and risks whose files changed a lot since they were written, hot spots that moved, groups never filled in, code no test reaches through imports, what readfirst could not see, and the files that broke most in the last 12 months (this part needs no map). Use it before larger work, or to decide what to add to the map.',
     inputSchema: { type: 'object', properties: {} },
     args: () => ['audit'],
   },
