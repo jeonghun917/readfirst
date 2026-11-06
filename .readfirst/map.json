@@ -303,7 +303,8 @@
         "CLAUDE.md",
         ".agent-marketplace.json",
         ".claude-plugin/**",
-        "plugins/**"
+        "plugins/**",
+        ".githooks/**"
       ],
       "checks": [
         {
@@ -349,6 +350,13 @@
         },
         {
           "text": "README.md links to docs/guide.md by absolute GitHub URL because npm ships only README.md (package.json \"files\"); a relative link such as docs/guide.md or ../docs/... works on GitHub but is dead on the npm page, so keep links from the README to the guide absolute"
+        },
+        {
+          "text": ".claude/hooks/no-ai-signature.mjs blocks AI signatures (Co-Authored-By: Claude, Claude-Session, Generated with Claude Code) in commits (.githooks/commit-msg, set by the SessionStart hook), Claude Code tool calls and CI; the owner forbids them (CLAUDE.md). A tool that adds them by default must be turned off, not worked around",
+          "files": [
+            ".claude/hooks/no-ai-signature.mjs",
+            ".githooks/**"
+          ]
         }
       ]
     },

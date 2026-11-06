@@ -6,6 +6,16 @@
   "hooks": {
     "PreToolUse": [
       {
+        "matcher": "Bash|mcp__github__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/no-ai-signature.mjs\" hook",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
@@ -23,6 +33,17 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/bin/readfirst.mjs\" hook --stop",
             "timeout": 1800
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/no-ai-signature.mjs\" setup",
+            "timeout": 10
           }
         ]
       }
