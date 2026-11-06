@@ -28,6 +28,9 @@ Merged as [wagtail/wagtail#14790](https://github.com/wagtail/wagtail/pull/14790)
 - **n8n**: the RabbitMQ node handed back its channel before the queue bindings were made, and a failed bind escaped
   as an unhandled rejection ([n8n-io/n8n#43033](https://github.com/n8n-io/n8n/pull/43033), reported in
   [#43017](https://github.com/n8n-io/n8n/issues/43017)).
+- **Mealie**: the household filter readfirst flagged ([#8964](https://github.com/mealie-recipes/mealie/issues/8964)) is
+  gone on main: it was removed in the maintainers' scope fix
+  [#8965](https://github.com/mealie-recipes/mealie/pull/8965) (merged 2026-11-03).
 - **django-allauth**: a provider callback returned a 500 instead of a clean failure on a non-ASCII value, fixed on
   2026-11-05 ([commit f1e06cc050eb](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb6cab98905d731fcdeac6fb3c0196)).
 
@@ -50,9 +53,10 @@ npx readfirst scan   # no map needed: QuerySet/string results thrown away, expec
 ```
 
 The hosted version scans for fixed bug shapes taken from real bugs: a result computed and thrown away, a range check
-with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories and checked by hand:
+with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories, 616 hits judged and
+recorded:
 
-- **62 bugs in app code**, 28 of them low-severity secret comparisons
+- **91 bugs in app code**, 28 of them low-severity secret comparisons
 - **36 tests that can never fail**, every one the same shape: `expect(promise).resolves...` with no `await` or
   `return`, so the test ends before the assertion runs
 - the false positives are kept on record too; the counts come after tuning on the same repositories, so read them as
