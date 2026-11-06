@@ -15,10 +15,7 @@ work without a map.
 
 ```sh
 npx readfirst scan   # no map needed: QuerySet/string results thrown away, expect(...).resolves nobody awaits
-npx readfirst audit  # no map needed: the files that broke most in the last 12 months, from git history
 ```
-
-On the free side, readfirst shows where your code broke before, from git history, on the first run, no map needed.
 
 The hosted version scans for fixed bug shapes taken from real bugs: a result computed and thrown away, a range check
 with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories and checked by hand:
