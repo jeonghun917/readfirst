@@ -76,7 +76,8 @@ function hotspotProblems(map, files, p) {
 // Flows (optional): where outside input enters (a route, a webhook) and what it reaches, worked out from the code with
 // no model. Each names the entry (`entry` text such as "POST /orders/:id", its file and line), the checks found on the
 // way (`checks`: names of the functions or decorators that decide who may do it; empty when none was found) and the
-// functions it reaches that do something that matters (`reaches`: file, symbol, line, labels such as db-write).
+// functions it reaches that do something that matters (`reaches`: file, symbol, line, labels such as db-write, and
+// optionally `tables`: the database tables that code writes or reads).
 // Written by tools, read by `read`.
 export const MAX_FLOWS = 500;
 function flowProblems(map, files, p) {
@@ -99,9 +100,10 @@ function flowProblems(map, files, p) {
     f.reaches.forEach((r, k) => {
       const rat = `${at}.reaches[${k}]`;
       if (!isRecord(r)) { p.push(`${rat}: { file, symbol, line, labels }`); return; }
-      only(r, ['file', 'symbol', 'line', 'labels'], rat, p);
+      only(r, ['file', 'symbol', 'line', 'labels', 'tables'], rat, p);
       place(r, rat);
       if (!text(r.symbol, 200)) p.push(`${rat}.symbol: text`);
+      if (r.tables !== undefined) for (const t of strings(r.tables, `${rat}.tables`, p, 200)) if (!/^[\w.$"-]+$/u.test(t)) p.push(`${rat}.tables: ${t}: a table name`);
       const labels = strings(r.labels, `${rat}.labels`, p, 64);
       if (!labels.length) p.push(`${rat}.labels: at least one label`);
       for (const l of labels) if (!ID.test(l)) p.push(`${rat}.labels: ${l}: lowercase letters, digits and "-"`);

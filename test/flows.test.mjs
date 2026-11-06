@@ -50,3 +50,13 @@ test('read shows the flows through a file, from either end, with their checks or
   assert.match(md, /checked by `requireRole`/u);
   assert.deepEqual(readList({ map: base(), files, imports: [], targets: ['src/web/page.js'] }).flows, []);
 });
+
+test('a reach may name the tables it writes or reads; read shows them', () => {
+  const withTables = { ...flow(), reaches: [{ ...flow().reaches[0], tables: ['orders', 'public.refunds'] }] };
+  assert.deepEqual(mapProblems({ ...base(), flows: [withTables] }, files), []);
+  const p = (t) => mapProblems({ ...base(), flows: [{ ...flow(), reaches: [{ ...flow().reaches[0], tables: t }] }] }, files).join('\n');
+  assert.match(p('orders'), /tables: a list/u);
+  assert.match(p(['orders; drop']), /a table name/u);
+  const md = toMarkdown(readList({ map: { ...base(), flows: [withTables] }, files, imports: [], targets: ['src/billing/charge.js'] }));
+  assert.match(md, /db-write, money on `orders`, `public\.refunds`\)/u);
+});
