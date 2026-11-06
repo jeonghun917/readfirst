@@ -122,10 +122,7 @@ test('read list: rules, risks, checks, tests (direct first, then through other f
 
 test('cli: init, check, prompt, read and diff on a real git repository', () => {
   const { root, git } = repo(FIXTURE);
-  // read and diff work without a map (they then show git history only); the commands that need one still say so.
-  assert.equal(run(root, 'read', 'src/main.js').code, 0);
-  assert.throws(() => run(root, 'check'), /run `readfirst init` first/u);
-  assert.throws(() => run(root, 'prompt'), /run `readfirst init` first/u);
+  assert.throws(() => run(root, 'read', 'src/main.js'), /run `readfirst init` first/u);
   assert.equal(run(root, 'init').code, 0);
   assert.throws(() => run(root, 'init'), /already exists/u);
   assert.equal(run(root, 'init', '--force').code, 0, '--force is a switch, not a value');

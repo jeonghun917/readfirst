@@ -36,13 +36,8 @@ export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit,
 
 // read(path), optional, gives a file's text: with it, code that loads modules by computed names is listed as unseen.
 // held, optional, is .readfirst/held.json: each rule then says the commit it last held at (null when never).
-// broke, optional, is brokeBefore() from history.mjs (path -> { count, weight, top, last } or { notFetched: true }): each
-// target it names gets that as `brokeBefore`. map may be null (no .readfirst/map.json): the list then carries no map
-// entries and does not call files "not covered".
-export function readList({ map: mapIn, files, imports, targets, commit = null, limit = 30, read = () => null, held = null, broke = {} }) {
+export function readList({ map, files, imports, targets, commit = null, limit = 30, read = () => null, held = null }) {
   if (!targets.length || targets.some((t) => !t.trim())) throw new Error('give at least one file path, none empty');
-  const mapped = mapIn !== null && mapIn !== undefined;
-  const map = mapped ? mapIn : { format: 'readfirst/map@1', groups: [] };
   const tracked = new Set(files);
   const ignored = matcher(map.ignore ?? []);
   const importers = new Map();
@@ -75,9 +70,7 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
     if (isOwnFile(target)) { out.targets.push({ path: target, group: null, status: 'MAP' }); continue; }
     const group = groupOf(map, target);
     out.targets.push({ path: target, group: group?.id ?? null, status: group ? 'IN_MAP' : ignored(target) ? 'IGNORED' : 'NO_GROUP' });
-    if (!group && !mapped) {
-      // no map at all: nothing to be "not covered" by
-    } else if (!group) {
+    if (!group) {
       const suggest = ignored(target) ? null : suggestFor(target);
       out.notCovered.push({ path: target, why: ignored(target) ? 'ignored by the map' : suggest ? `in no group: \`readfirst fix\` would add it to group ${suggest.group}` : 'in no group: run `readfirst check`' });
     } else {
@@ -110,7 +103,6 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
     if (isTest(target)) note('tests', target, { path: target, via: null }, target);
     out.unseen.push(...unseenIn(target, read));
   }
-  for (const t of out.targets) if (broke[t.path]) t.brokeBefore = broke[t.path];
   // Whether the files given include one the entry asks to change too: for a change (verify, the Action) the targets are
   // everything changed, so `changed: false` is a file left behind; for one file being read, it is a reminder.
   const given = out.targets.map((t) => t.path);
@@ -125,26 +117,8 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
   return out;
 }
 
-// The "Broke before" section as lines: one bullet per file with scars, and one line for files whose history was not
-// fetched. targets: [{ path, brokeBefore? }]. Nothing to show gives [].
-export function brokeSection(targets, { title = 'Broke before', hint = ' (this clone is shallow: `git fetch --unshallow` fetches it)' } = {}) {
-  const shown = targets.filter((t) => t.brokeBefore && !t.brokeBefore.notFetched);
-  const missing = targets.filter((t) => t.brokeBefore?.notFetched);
-  if (!shown.length && !missing.length) return [];
-  const lines = [`## ${title}`, ''];
-  for (const t of shown) {
-    const b = t.brokeBefore;
-    lines.push(`- \`${t.path}\`: broke before: ${b.count} fix${b.count === 1 ? '' : 'es'}, last ${b.last.date} ${b.last.sha} "${b.last.subject}"`);
-    if (b.count > 1) for (const c of b.top) lines.push(`  - ${c.date} ${c.sha} ${c.kind}: "${c.subject}"`);
-  }
-  if (missing.length) lines.push(`- history not fetched for ${missing.length === 1 ? `\`${missing[0].path}\`` : `${missing.length} files`}${hint}`);
-  lines.push('');
-  return lines;
-}
-
-// checklist: checks as task-list boxes (for PR comments); heading: the title line, or null for none; broke: false leaves
-// out the "Broke before" section (the Action writes its own).
-export function toMarkdown(list, { checklist = false, heading, broke = true } = {}) {
+// checklist: checks as task-list boxes (for PR comments); heading: the title line, or null for none.
+export function toMarkdown(list, { checklist = false, heading } = {}) {
   const title = heading === undefined ? `# Read first: ${list.targets.map((t) => `\`${t.path}\``).join(', ')}` : heading;
   const lines = title === null ? [] : [title, ''];
   const many = list.targets.length > 1;
@@ -160,7 +134,6 @@ export function toMarkdown(list, { checklist = false, heading, broke = true } = 
   const heldNote = (r) => (r.held ? ` _(held at ${r.held.commit.slice(0, 7)} on ${r.held.date})_` : r.held === null ? ' _(never recorded as holding)_' : '');
   section('Rules that must keep holding', list.rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${heldNote(r)}${forWhom(r)}`);
   section('Watch out', list.risks, (r) => `- ${r.text}${forWhom(r, `group ${r.group}`)}`);
-  if (broke) lines.push(...brokeSection(list.targets));
   section('Hot spots in this code', list.hotspots ?? [], (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`);
   section('Change these too', list.together ?? [], (t) => `- ${t.also.map((a) => `\`${a}\``).join(' or ')}${t.changed ? ' (changed)' : ''} — ${t.why}${forWhom(t)}`);
   section('Other repositories depend on this', list.dependents ?? [], (d) => `- **${d.repo}**${d.paths.length ? ` (${d.paths.map((x) => `\`${x}\``).join(', ')})` : ''} — ${d.why}${forWhom(d)}`);
@@ -172,7 +145,7 @@ export function toMarkdown(list, { checklist = false, heading, broke = true } = 
   if (list.usedByIndirectly) lines.push(`${list.usedByIndirectly} more file(s) use this code indirectly.`, '');
   section('Not covered by the map', list.notCovered, (n) => `- \`${n.path}\`: ${n.why}`);
   section('Not seen by readfirst (an empty list above may mean unknown here)', list.unseen ?? [], (n) => `- \`${n.path}\`: ${n.why}`);
-  if (!(broke && brokeSection(list.targets).length) && !list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length && !(list.unseen ?? []).length && !(list.deprecated ?? []).length && !(list.together ?? []).length && !(list.dependents ?? []).length)
+  if (!list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length && !(list.unseen ?? []).length && !(list.deprecated ?? []).length && !(list.together ?? []).length && !(list.dependents ?? []).length)
     lines.push('Nothing in the map is tied to these files.', '');
   return lines.join('\n');
 }
