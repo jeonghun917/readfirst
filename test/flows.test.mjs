@@ -83,3 +83,11 @@ test('vocabulary: the repository\'s own checks, sinks, non-checks and public ent
   const md = toMarkdown(readList({ map: { ...base(), vocabulary }, files, imports: [], targets: ['src/routes/orders.js'] }));
   assert.match(md, /## This repository's words\n\n- `requireRole` \(`src\/routes\/orders\.js:7`\) decides who may do something: answers 403/u);
 });
+
+test('a reach may name the inputs that reach it; read shows them', () => {
+  const f = { ...flow(), reaches: [{ ...flow().reaches[0], inputs: ['req.body', 'amount'] }] };
+  assert.deepEqual(mapProblems({ ...base(), flows: [f] }, files), []);
+  assert.match(mapProblems({ ...base(), flows: [{ ...flow(), reaches: [{ ...flow().reaches[0], inputs: 'x' }] }] }, files).join('\n'), /inputs: a list/u);
+  const md = toMarkdown(readList({ map: { ...base(), flows: [f] }, files, imports: [], targets: ['src/billing/charge.js'] }));
+  assert.match(md, /db-write, money, with input `req\.body`, `amount`\)/u);
+});

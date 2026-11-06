@@ -299,8 +299,9 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   file being changed under "Hot spots in this code"; `fix` drops those whose file is gone.
 - **flows** (optional, written by a tool): where outside input enters and what it reaches, as
   `{ "entry": "POST /orders/:id", "file", "line", "checks": ["requireRole"], "reaches": [{ "file", "symbol", "line",
-  "labels": ["db-write"], "tables"?: ["orders"] }] }`. `checks` names what decides who may do it on the way, and is empty
-  when none was found; `tables`, when known, names the database tables the reached code writes or reads.
+  "labels": ["db-write"], "tables"?: ["orders"], "inputs"?: ["amount"] }] }`. `checks` names what decides who may do it on the way, and is empty
+  when none was found; `tables`, when known, names the database tables the reached code writes or reads, and
+  `inputs` the names that may carry outside input to its calls (`req.body`, `amount`).
   `read` lists the flows that start in or reach the file being changed under "Outside input reaches this code"; `fix`
   drops those whose files are gone. Older readfirst versions reject maps that have it.
 - **vocabulary** (optional): the repository's own words, for tools that read the code with no model, as
