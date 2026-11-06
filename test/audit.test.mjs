@@ -95,6 +95,10 @@ test('audit and the read list say what readfirst could not see', () => {
   assert.deepEqual(unseenIn('src/plugins.js', read).map((u) => u.line), [2]);
   assert.deepEqual(unseenIn('app/load.py', read).map((u) => u.line), [2]);
   assert.deepEqual(unseenIn('src/ok.js', read), [], 'string specifiers are followed');
+  // A pattern or message that only mentions require( or import( is not code that loads a module.
+  const text = (p) => ({ 'src/re.js': "const CHECK = /\\b(?:requireRole|require(?=\\(\\s*Perm))\\b/u;\nconst msg = 'call import(name) here';\nconst t = `require(${x})`;\n", 'src/div.js': 'const r = a / b; require(name);\n' })[p] ?? null;
+  assert.deepEqual(unseenIn('src/re.js', text), [], 'regex and string literals are not code');
+  assert.deepEqual(unseenIn('src/div.js', text).map((u) => u.line), [1], 'division is not a regex literal');
   assert.match(unseenIn('ios/App.swift')[0].why, /unknown, not none/u);
   const map = { format: 'readfirst/map@1', groups: [{ id: 'all', title: 'all', files: ['**'] }] };
   const files = ['src/plugins.js', 'app/load.py', 'src/ok.js', 'ios/App.swift', 'ios/View.swift'];
@@ -171,4 +175,25 @@ test('audit lists hot spots no check names and no test reaches, and leaves guard
   const suite = structuredClone(map);
   for (const g of suite.groups) g.checks = [{ run: 'npm test' }];
   assert.deepEqual(audit({ map: suite, files, imports: [{ from: 'tests/sync.test.js', to: 'jobs/sync.js', line: 1 }], read }).unguarded.map((h) => h.symbol), ['charge', 'save']);
+});
+
+test('audit lists code nothing else uses: exports and top-level defs named in no other file, convention names and decorated ones left out', async () => {
+  const { unusedCode } = await import('../src/audit.mjs');
+  const texts = {
+    'src/lib.js': 'export function used() {}\nexport function orphan() {}\nexport const GET = 1;\nexport function inner() {}\ninner();\nexport { a as alias, gone };\n',
+    'src/app.js': 'import { used, alias } from "./lib.js";\nused(); alias();\n',
+    'app/util.py': 'def helper():\n    pass\n\n\ndef lonely():\n    pass\n\n\n@app.task\ndef job():\n    pass\n',
+    'app/main.py': 'from app.util import helper\nhelper()\n',
+  };
+  const users = new Map([['src/lib.js', 1], ['app/util.py', 1]]);
+  const out = unusedCode({ code: Object.keys(texts), users, read: (p) => texts[p] ?? null });
+  assert.deepEqual(out.map((u) => `${u.path}:${u.name}`), ['app/util.py:lonely', 'src/lib.js:orphan', 'src/lib.js:gone']);
+});
+
+test('audit says when another repository may use code nothing here uses (map dependents)', () => {
+  const texts = { 'src/lib.js': 'export function orphan() {}\nexport function used() {}\n', 'src/app.js': 'import { used } from "./lib.js";\nused();\n' };
+  const map = { format: 'readfirst/map@1', groups: [{ id: 'all', title: 'all', files: ['**'] }], dependents: [{ repo: 'o/server', files: ['src/lib.js'], why: 'copies it' }] };
+  const a = audit({ map, files: Object.keys(texts), imports: [{ from: 'src/app.js', to: 'src/lib.js' }], read: (p) => texts[p] ?? null });
+  assert.deepEqual(a.unused.names.map((u) => [u.name, u.dependents]), [['orphan', ['o/server']]]);
+  assert.match(auditText(a), /`orphan` in `src\/lib\.js:1` — the map says o\/server depends on this file/u);
 });

@@ -16,7 +16,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.17.1 read <file>` (and `jeonghun917/readfirst@v0.17.1` for
+exactly the version you reviewed, pin it: `npx readfirst@0.18.0 read <file>` (and `jeonghun917/readfirst@v0.18.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -125,6 +125,10 @@ It reads the checkout and its git history, runs nothing, changes nothing, and re
   reaches their file and no check of their own covers them (a check most groups share, like the whole suite, does not count);
 - **what was never filled in**: groups still titled `TODO:` from `init`, rules no check verifies;
 - **code no test reaches through imports**, the most used first, with a count per group;
+- **code nothing else uses**: in a module other files import, an export (JavaScript, TypeScript) or a top-level `def` or
+  `class` (Python) that no other file names and its own file does not use. Names a framework calls by convention
+  (`GET`, `loader`, `config`) and decorated Python functions are left out. A name built at run time is not seen, so each
+  one is a place to look before deleting, not a verdict;
 - **code being replaced that is still used** (groups marked `deprecated`), and, with `.readfirst/held.json`, **rules
   never recorded as holding** or whose files changed after they last held;
 - **what readfirst could not see**: languages whose imports it does not read, and modules loaded by a computed name
@@ -141,7 +145,8 @@ payment retry` lists the functions, classes and types whose names hold those wor
 closest names first, code before tests, each with how many files use it and its group.
 
 It matches words, not meaning: `retries` meets `retry` and `pay` meets `payment`, the folder a function sits in counts
-too (`webhook/transport` for `signature_for_payload` on "webhook signature"), but `try_again` is not found for "retry".
+too (`webhook/transport` for `signature_for_payload` on "webhook signature"), and so does the comment right above a
+definition or a Python docstring (shown as "in its comment"), but `try_again` with no comment is not found for "retry".
 Words like "add", "new" or "helper" are ignored. No model, no index, nothing written; on a 4,700-file repository it takes
 under two seconds. `--json` gives `readfirst/find@1`.
 
@@ -294,9 +299,18 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   file being changed under "Hot spots in this code"; `fix` drops those whose file is gone.
 - **flows** (optional, written by a tool): where outside input enters and what it reaches, as
   `{ "entry": "POST /orders/:id", "file", "line", "checks": ["requireRole"], "reaches": [{ "file", "symbol", "line",
-  "labels": ["db-write"] }] }`. `checks` names what decides who may do it on the way, and is empty when none was found.
+  "labels": ["db-write"], "tables"?: ["orders"], "inputs"?: ["amount"] }] }`. `checks` names what decides who may do it on the way, and is empty
+  when none was found; `tables`, when known, names the database tables the reached code writes or reads, and
+  `inputs` the names that may carry outside input to its calls (`req.body`, `amount`).
   `read` lists the flows that start in or reach the file being changed under "Outside input reaches this code"; `fix`
   drops those whose files are gone. Older readfirst versions reject maps that have it.
+- **vocabulary** (optional): the repository's own words, for tools that read the code with no model, as
+  `{ "checks": [{ "name", "evidence", "why"? }], "sinks": [{ "call", "label", "evidence", "why"? }], "notChecks": [{ "name",
+  "why", "evidence"? }], "public": [{ "entry", "why" }] }`. `checks` are functions that decide who may do something,
+  `sinks` calls that do something that matters (label such as `db-write`), `notChecks` names that look like checks but
+  refuse no one, `public` entries open to anyone on purpose. A name may hold `*`; `evidence` is `file:line`. `read` lists
+  the ones whose evidence is in the file being changed; `fix` drops those whose file is gone. Older readfirst versions
+  reject maps that have it.
 - **deprecated** (optional, on a group): code being replaced, as `{ "why": "...", "use"?: "billing" }` where `use` is the
   group or path to use instead. Read lists open with "Being replaced", the hook tells the agent not to add to it,
   `find` lists its matches last with what to use instead, and `audit` counts the files outside it that still import it.

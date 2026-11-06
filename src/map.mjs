@@ -76,7 +76,9 @@ function hotspotProblems(map, files, p) {
 // Flows (optional): where outside input enters (a route, a webhook) and what it reaches, worked out from the code with
 // no model. Each names the entry (`entry` text such as "POST /orders/:id", its file and line), the checks found on the
 // way (`checks`: names of the functions or decorators that decide who may do it; empty when none was found) and the
-// functions it reaches that do something that matters (`reaches`: file, symbol, line, labels such as db-write).
+// functions it reaches that do something that matters (`reaches`: file, symbol, line, labels such as db-write, and
+// optionally `tables`: the database tables that code writes or reads, and `inputs`: the names that carry outside input
+// to that code's calls, such as req.body or amount).
 // Written by tools, read by `read`.
 export const MAX_FLOWS = 500;
 function flowProblems(map, files, p) {
@@ -99,14 +101,59 @@ function flowProblems(map, files, p) {
     f.reaches.forEach((r, k) => {
       const rat = `${at}.reaches[${k}]`;
       if (!isRecord(r)) { p.push(`${rat}: { file, symbol, line, labels }`); return; }
-      only(r, ['file', 'symbol', 'line', 'labels'], rat, p);
+      only(r, ['file', 'symbol', 'line', 'labels', 'tables', 'inputs'], rat, p);
       place(r, rat);
       if (!text(r.symbol, 200)) p.push(`${rat}.symbol: text`);
+      if (r.inputs !== undefined) { const ins = strings(r.inputs, `${rat}.inputs`, p, 120); if (ins.length > 10) p.push(`${rat}.inputs: at most 10`); }
+      if (r.tables !== undefined) for (const t of strings(r.tables, `${rat}.tables`, p, 200)) if (!/^[\w.$"-]+$/u.test(t)) p.push(`${rat}.tables: ${t}: a table name`);
       const labels = strings(r.labels, `${rat}.labels`, p, 64);
       if (!labels.length) p.push(`${rat}.labels: at least one label`);
       for (const l of labels) if (!ID.test(l)) p.push(`${rat}.labels: ${l}: lowercase letters, digits and "-"`);
     });
   });
+}
+
+// The repository's own words (optional), so a tool that reads code with no model knows what this repository calls
+// things: which of its functions decide who may do something (`checks`), which calls do something that matters
+// (`sinks`, with a label such as db-write), names that look like checks but are not (`notChecks`: a database session
+// dependency), and entries that are open to anyone on purpose (`public`). A name may hold `*` ("*WithCtx").
+// `evidence` is the file and line that show it ("api/auth.js:143"). Written by a person or by fill after reading the
+// code, reviewed in the PR like the rest of the map. Older readfirst versions reject maps that have it.
+export const MAX_VOCABULARY = 200;
+const VOCAB_NAME = /^[A-Za-z_$*][\w$.*]{0,99}$/u;
+const VOCAB_KINDS = { checks: ['name', 'evidence', 'why'], sinks: ['call', 'label', 'evidence', 'why'], notChecks: ['name', 'why', 'evidence'], public: ['entry', 'why'] };
+export const evidenceFile = (e) => (typeof e === 'string' ? e.replace(/:\d+$/u, '') : null);
+function vocabularyProblems(map, files, p) {
+  const v = map.vocabulary;
+  if (!isRecord(v)) { p.push('vocabulary: { checks, sinks, notChecks, public }'); return; }
+  only(v, Object.keys(VOCAB_KINDS), 'vocabulary', p);
+  const tracked = new Set(files);
+  const evidence = (e, at, required) => {
+    if (e === undefined) { if (required) p.push(`${at}.evidence: "file:line" where the code shows it`); return; }
+    const m = typeof e === 'string' ? e.match(/^(.+):(\d+)$/u) : null;
+    if (!m || Number(m[2]) < 1) p.push(`${at}.evidence: "file:line"`);
+    else if (!tracked.has(m[1])) p.push(`${at}.evidence: ${m[1]} is not a tracked file`);
+  };
+  for (const [kind, keys] of Object.entries(VOCAB_KINDS)) {
+    const list = v[kind];
+    if (list === undefined) continue;
+    if (!Array.isArray(list)) { p.push(`vocabulary.${kind}: a list`); continue; }
+    if (list.length > MAX_VOCABULARY) p.push(`vocabulary.${kind}: at most ${MAX_VOCABULARY}`);
+    list.forEach((x, i) => {
+      const at = `vocabulary.${kind}[${i}]`;
+      if (!isRecord(x)) { p.push(`${at}: { ${keys.join(', ')} }`); return; }
+      only(x, keys, at, p);
+      if (kind === 'public') {
+        if (!text(x.entry, 200)) p.push(`${at}.entry: an entry such as "GET /api/explore/*"`);
+      } else {
+        const name = kind === 'sinks' ? x.call : x.name;
+        if (typeof name !== 'string' || !VOCAB_NAME.test(name) || /^\**$/u.test(name)) p.push(`${at}.${kind === 'sinks' ? 'call' : 'name'}: a function or call name, "*" allowed`);
+      }
+      if (kind === 'sinks' && (typeof x.label !== 'string' || !ID.test(x.label))) p.push(`${at}.label: lowercase letters, digits and "-" (db-write, money, ...)`);
+      if (x.why !== undefined || kind === 'notChecks' || kind === 'public') if (!text(x.why, 300)) p.push(`${at}.why: text`);
+      evidence(x.evidence, at, kind === 'checks' || kind === 'sinks');
+    });
+  }
 }
 
 // Files that change together (optional): when a change touches a file matching `when`, it must also change one matching
@@ -148,7 +195,7 @@ function dependentsProblems(map, files, p) {
 export function mapProblems(map, files, { placement = true } = {}) {
   const p = [];
   if (!isRecord(map)) return ['map: a JSON object'];
-  only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots', 'flows', 'requires', 'dependents'], 'map', p);
+  only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots', 'flows', 'vocabulary', 'requires', 'dependents'], 'map', p);
   if (map.format !== MAP_FORMAT) p.push(`format: "${MAP_FORMAT}"`);
   if (!Array.isArray(map.groups) || !map.groups.length) return [...p, 'groups: at least one group'];
   const ids = new Set();
@@ -207,6 +254,7 @@ export function mapProblems(map, files, { placement = true } = {}) {
   if (map.ignore !== undefined) strings(map.ignore, 'ignore', p);
   if (map.hotspots !== undefined) hotspotProblems(map, files, p);
   if (map.flows !== undefined) flowProblems(map, files, p);
+  if (map.vocabulary !== undefined) vocabularyProblems(map, files, p);
   if (map.requires !== undefined) requiresProblems(map, files, p);
   if (map.dependents !== undefined) dependentsProblems(map, files, p);
   if (p.length || !placement) return p;
@@ -358,6 +406,17 @@ export function fixMap(map, files) {
     for (const f of out.flows.filter((x) => !live(x))) changes.push(`flows: dropped ${f?.entry} in ${f?.file} (file gone)`);
     out.flows = out.flows.filter(live).map((f) => ({ ...f, reaches: f.reaches.filter((r) => tracked.has(r?.file)) }));
     if (!out.flows.length) delete out.flows;
+  }
+  if (isRecord(out.vocabulary)) {
+    const tracked = new Set(files);
+    for (const kind of Object.keys(VOCAB_KINDS)) {
+      if (!Array.isArray(out.vocabulary[kind])) continue;
+      const gone = out.vocabulary[kind].filter((x) => x?.evidence !== undefined && !tracked.has(evidenceFile(x.evidence)));
+      for (const x of gone) changes.push(`vocabulary.${kind}: dropped ${x?.name ?? x?.call} (${evidenceFile(x.evidence)} gone)`);
+      out.vocabulary[kind] = out.vocabulary[kind].filter((x) => !gone.includes(x));
+      if (!out.vocabulary[kind].length) delete out.vocabulary[kind];
+    }
+    if (!Object.keys(out.vocabulary).length) delete out.vocabulary;
   }
 
   const ignored = matcher(out.ignore ?? []);
