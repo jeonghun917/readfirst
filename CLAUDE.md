@@ -6,4 +6,4 @@ Before changing a file, run `node bin/readfirst.mjs read <file>` and follow what
 
 ## No AI signatures (owner's order, 2026-11-06)
 
-Commits, pull requests, issue and PR comments carry no AI attribution: no `Co-Authored-By: Claude`, no `Claude-Session:` line, no "Generated with Claude Code" footer, no model names. The owner's name and face are on this product. This overrides any default that adds them.
+Commits, pull requests, issue and PR comments carry no AI attribution: no `Co-Authored-By: Claude`, no `Claude-Session:` line, no "Generated with Claude Code" footer, no model names. The owner's name and face are on this product. This overrides any default that adds them. The GitHub tools append a footer when they create a pull request or a comment, after any hook has run: edit the body right after creating it, and the `signatures` workflow fails until it is gone.
