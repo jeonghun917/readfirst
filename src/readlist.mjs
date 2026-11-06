@@ -1,6 +1,6 @@
 // The read list for files someone is about to change: the rules that cover them, the risks written for their group,
 // the checks to run (the group's commands, the rules' commands, and the tests that import them), and who uses them.
-import { fixMap, groupOf, isOwnFile, matcher } from './map.mjs';
+import { evidenceFile, fixMap, groupOf, isOwnFile, matcher } from './map.mjs';
 
 export const READ_LIST_FORMAT = 'readfirst/read-list@1';
 // Test files by folder or name, across the languages imports.mjs reads: JS/TS, Python, Go, Rust (tests/), Elixir,
@@ -64,7 +64,7 @@ export function unseenIn(path, read = () => null) {
 }
 
 // The read list for no files, so `diff --json` is always JSON.
-export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], flows: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [], deprecated: [], together: [], dependents: [], truncated: { tests: 0, usedBy: 0 } });
+export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], flows: [], vocabulary: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [], deprecated: [], together: [], dependents: [], truncated: { tests: 0, usedBy: 0 } });
 
 // read(path), optional, gives a file's text: with it, code that loads modules by computed names is listed as unseen.
 // held, optional, is .readfirst/held.json: each rule then says the commit it last held at (null when never).
@@ -75,8 +75,8 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
   const importers = new Map();
   for (const e of imports) importers.set(e.to, [...(importers.get(e.to) ?? []), e]);
 
-  const out = { format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], flows: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [], deprecated: [], together: [], dependents: [] };
-  const seen = { rules: new Map(), risks: new Map(), hotspots: new Map(), flows: new Map(), checks: new Map(), tests: new Map(), usedBy: new Map(), deprecated: new Map(), together: new Map(), dependents: new Map() };
+  const out = { format: READ_LIST_FORMAT, commit, targets: [], rules: [], risks: [], hotspots: [], flows: [], vocabulary: [], checks: [], tests: [], usedBy: [], usedByIndirectly: 0, notCovered: [], unseen: [], deprecated: [], together: [], dependents: [] };
+  const seen = { rules: new Map(), risks: new Map(), hotspots: new Map(), flows: new Map(), vocabulary: new Map(), checks: new Map(), tests: new Map(), usedBy: new Map(), deprecated: new Map(), together: new Map(), dependents: new Map() };
   const note = (kind, key, item, target) => {
     const have = seen[kind].get(key);
     if (have) { if (!have.for.includes(target)) have.for.push(target); return; }
@@ -113,6 +113,8 @@ export function readList({ map, files, imports, targets, commit = null, limit = 
     (map.requires ?? []).forEach((r, i) => { if (matcher(r.when)(target)) note('together', i, { when: r.when, also: r.also, why: r.why }, target); });
     for (const d of map.dependents ?? []) if (matcher(d.files)(target)) note('dependents', `${d.repo}\0${d.files.join('\0')}`, { repo: d.repo, paths: d.paths ?? [], why: d.why }, target);
     for (const f of map.flows ?? []) if (f.file === target || f.reaches.some((r) => r.file === target)) note('flows', `${f.file}\0${f.line}\0${f.entry}`, { entry: f.entry, file: f.file, line: f.line, checks: f.checks, reaches: f.reaches }, target);
+    // The repository's own words whose evidence is in this file: what readfirst treats as a check or a sink here.
+    for (const [kind, list] of Object.entries(map.vocabulary ?? {})) for (const x of list ?? []) if (evidenceFile(x.evidence) === target) note('vocabulary', `${kind}\0${x.name ?? x.call}`, { kind, name: x.name ?? x.call, ...(x.label ? { label: x.label } : {}), evidence: x.evidence, why: x.why ?? null }, target);
     for (const h of map.hotspots ?? []) if (h.file === target) note('hotspots', `${h.file}\0${h.symbol}\0${h.line}`, { file: h.file, symbol: h.symbol, line: h.line, labels: h.labels, rules: h.rules ?? [], note: h.note ?? null }, target);
     for (const rule of map.rules ?? []) {
       if (!matcher(rule.files)(target)) continue;
@@ -169,6 +171,8 @@ export function toMarkdown(list, { checklist = false, heading } = {}) {
   section('Watch out', list.risks, (r) => `- ${r.text}${forWhom(r, `group ${r.group}`)}`);
   section('Hot spots in this code', list.hotspots ?? [], (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`);
   section('Outside input reaches this code', list.flows ?? [], (f) => `- **${f.entry}** (\`${f.file}:${f.line}\`) reaches ${f.reaches.map((r) => `\`${r.symbol}\` (\`${r.file}:${r.line}\`: ${r.labels.join(', ')}${r.tables?.length ? ` on ${r.tables.map((t) => `\`${t}\``).join(', ')}` : ''})`).join(', ')}; ${f.checks.length ? `checked by ${f.checks.map((c) => `\`${c}\``).join(', ')}` : 'no check of who may do it found on the way'}${forWhom(f)}`);
+  const said = { checks: 'decides who may do something', sinks: 'does something that matters', notChecks: 'is not a check' };
+  section('This repository\'s words', list.vocabulary ?? [], (v) => `- \`${v.name}\` (\`${v.evidence}\`) ${said[v.kind] ?? v.kind}${v.label ? ` (${v.label})` : ''}${v.why ? `: ${v.why}` : ''}${forWhom(v)}`);
   section('Change these too', list.together ?? [], (t) => `- ${t.also.map((a) => `\`${a}\``).join(' or ')}${t.changed ? ' (changed)' : ''} — ${t.why}${forWhom(t)}`);
   section('Other repositories depend on this', list.dependents ?? [], (d) => `- **${d.repo}**${d.paths.length ? ` (${d.paths.map((x) => `\`${x}\``).join(', ')})` : ''} — ${d.why}${forWhom(d)}`);
   section('Run these checks', list.checks, (c) => `- ${checklist ? '[ ] ' : ''}\`${c.run}\` — ${c.why}${forWhom(c)}`);
@@ -179,7 +183,7 @@ export function toMarkdown(list, { checklist = false, heading } = {}) {
   if (list.usedByIndirectly) lines.push(`${list.usedByIndirectly} more file(s) use this code indirectly.`, '');
   section('Not covered by the map', list.notCovered, (n) => `- \`${n.path}\`: ${n.why}`);
   section('Not seen by readfirst (an empty list above may mean unknown here)', list.unseen ?? [], (n) => `- \`${n.path}\`: ${n.why}`);
-  if (!list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !(list.flows ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length && !(list.unseen ?? []).length && !(list.deprecated ?? []).length && !(list.together ?? []).length && !(list.dependents ?? []).length)
+  if (!list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !(list.flows ?? []).length && !(list.vocabulary ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length && !(list.unseen ?? []).length && !(list.deprecated ?? []).length && !(list.together ?? []).length && !(list.dependents ?? []).length)
     lines.push('Nothing in the map is tied to these files.', '');
   return lines.join('\n');
 }

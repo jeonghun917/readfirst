@@ -21,7 +21,13 @@ Do this:
    in the code or docs. Ask the user for the ones only they know.
 4. If a group is being replaced (old code new work must not extend), add "deprecated": {"why": "...", "use": "new-group-id or path"}.
    Read lists and \`readfirst find\` then send people and agents to the replacement.
-5. Run \`npx readfirst check\` until it says the map is good (\`npx readfirst fix\` places new files and drops dead
+5. Add "vocabulary": this repository's own words, so tools that read code with no model know them. Only what you saw
+   in the code, each with "evidence": "file:line":
+   - "checks": functions that decide who may do something, {"name": "requireTester", "evidence": "...", "why": "..."}.
+   - "sinks": calls that write data, move money or call out, {"call": "*WithCtx", "label": "db-write", "evidence": "..."}.
+   - "notChecks": names that look like checks but refuse no one (a database session dependency), {"name", "why"}.
+   - "public": entries open to anyone on purpose, {"entry": "GET /api/explore/*", "why": "..."}.
+6. Run \`npx readfirst check\` until it says the map is good (\`npx readfirst fix\` places new files and drops dead
    patterns for you), then show the user the diff of ${MAP_PATH}.
 
 Current groups: ${map.groups.map((g) => `${g.id} (${g.files.join(', ')})`).join('; ')}.

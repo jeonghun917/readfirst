@@ -60,3 +60,26 @@ test('a reach may name the tables it writes or reads; read shows them', () => {
   const md = toMarkdown(readList({ map: { ...base(), flows: [withTables] }, files, imports: [], targets: ['src/billing/charge.js'] }));
   assert.match(md, /db-write, money on `orders`, `public\.refunds`\)/u);
 });
+
+test('vocabulary: the repository\'s own checks, sinks, non-checks and public entries, with evidence; fix drops gone files; read shows them', () => {
+  const vocabulary = {
+    checks: [{ name: 'requireRole', evidence: 'src/routes/orders.js:7', why: 'answers 403 unless the role matches' }],
+    sinks: [{ call: '*WithCtx', label: 'db-write', evidence: 'src/billing/charge.js:40' }],
+    notChecks: [{ name: 'get_db', why: 'opens a database session; refuses no one' }],
+    public: [{ entry: 'GET /explore/*', why: 'the public explore page' }],
+  };
+  assert.deepEqual(mapProblems({ ...base(), vocabulary }, files), []);
+  const p = (v) => mapProblems({ ...base(), vocabulary: v }, files).join('\n');
+  assert.match(p({ checks: [{ name: 'requireRole' }] }), /evidence: "file:line"/u);
+  assert.match(p({ checks: [{ name: 'x y', evidence: 'src/web/page.js:1' }] }), /a function or call name/u);
+  assert.match(p({ checks: [{ name: '*', evidence: 'src/web/page.js:1' }] }), /a function or call name/u);
+  assert.match(p({ sinks: [{ call: 'save', label: 'DB', evidence: 'src/web/page.js:1' }] }), /lowercase/u);
+  assert.match(p({ notChecks: [{ name: 'get_db' }] }), /why: text/u);
+  assert.match(p({ checks: [{ name: 'a', evidence: 'gone.js:3' }] }), /not a tracked file/u);
+  assert.match(p({ other: [] }), /other/u);
+  const { map, changes } = fixMap({ ...base(), vocabulary }, files.filter((f) => f !== 'src/billing/charge.js'));
+  assert.equal(map.vocabulary.sinks, undefined);
+  assert.ok(changes.some((c) => /vocabulary\.sinks: dropped \*WithCtx/u.test(c)));
+  const md = toMarkdown(readList({ map: { ...base(), vocabulary }, files, imports: [], targets: ['src/routes/orders.js'] }));
+  assert.match(md, /## This repository's words\n\n- `requireRole` \(`src\/routes\/orders\.js:7`\) decides who may do something: answers 403/u);
+});

@@ -299,6 +299,13 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   when none was found; `tables`, when known, names the database tables the reached code writes or reads.
   `read` lists the flows that start in or reach the file being changed under "Outside input reaches this code"; `fix`
   drops those whose files are gone. Older readfirst versions reject maps that have it.
+- **vocabulary** (optional): the repository's own words, for tools that read the code with no model, as
+  `{ "checks": [{ "name", "evidence", "why"? }], "sinks": [{ "call", "label", "evidence", "why"? }], "notChecks": [{ "name",
+  "why", "evidence"? }], "public": [{ "entry", "why" }] }`. `checks` are functions that decide who may do something,
+  `sinks` calls that do something that matters (label such as `db-write`), `notChecks` names that look like checks but
+  refuse no one, `public` entries open to anyone on purpose. A name may hold `*`; `evidence` is `file:line`. `read` lists
+  the ones whose evidence is in the file being changed; `fix` drops those whose file is gone. Older readfirst versions
+  reject maps that have it.
 - **deprecated** (optional, on a group): code being replaced, as `{ "why": "...", "use"?: "billing" }` where `use` is the
   group or path to use instead. Read lists open with "Being replaced", the hook tells the agent not to add to it,
   `find` lists its matches last with what to use instead, and `audit` counts the files outside it that still import it.
