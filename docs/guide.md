@@ -125,6 +125,10 @@ It reads the checkout and its git history, runs nothing, changes nothing, and re
   reaches their file and no check of their own covers them (a check most groups share, like the whole suite, does not count);
 - **what was never filled in**: groups still titled `TODO:` from `init`, rules no check verifies;
 - **code no test reaches through imports**, the most used first, with a count per group;
+- **code nothing else uses**: in a module other files import, an export (JavaScript, TypeScript) or a top-level `def` or
+  `class` (Python) that no other file names and its own file does not use. Names a framework calls by convention
+  (`GET`, `loader`, `config`) and decorated Python functions are left out. A name built at run time is not seen, so each
+  one is a place to look before deleting, not a verdict;
 - **code being replaced that is still used** (groups marked `deprecated`), and, with `.readfirst/held.json`, **rules
   never recorded as holding** or whose files changed after they last held;
 - **what readfirst could not see**: languages whose imports it does not read, and modules loaded by a computed name

@@ -176,3 +176,16 @@ test('audit lists hot spots no check names and no test reaches, and leaves guard
   for (const g of suite.groups) g.checks = [{ run: 'npm test' }];
   assert.deepEqual(audit({ map: suite, files, imports: [{ from: 'tests/sync.test.js', to: 'jobs/sync.js', line: 1 }], read }).unguarded.map((h) => h.symbol), ['charge', 'save']);
 });
+
+test('audit lists code nothing else uses: exports and top-level defs named in no other file, convention names and decorated ones left out', async () => {
+  const { unusedCode } = await import('../src/audit.mjs');
+  const texts = {
+    'src/lib.js': 'export function used() {}\nexport function orphan() {}\nexport const GET = 1;\nexport function inner() {}\ninner();\nexport { a as alias, gone };\n',
+    'src/app.js': 'import { used, alias } from "./lib.js";\nused(); alias();\n',
+    'app/util.py': 'def helper():\n    pass\n\n\ndef lonely():\n    pass\n\n\n@app.task\ndef job():\n    pass\n',
+    'app/main.py': 'from app.util import helper\nhelper()\n',
+  };
+  const users = new Map([['src/lib.js', 1], ['app/util.py', 1]]);
+  const out = unusedCode({ code: Object.keys(texts), users, read: (p) => texts[p] ?? null });
+  assert.deepEqual(out.map((u) => `${u.path}:${u.name}`), ['app/util.py:lonely', 'src/lib.js:orphan', 'src/lib.js:gone']);
+});

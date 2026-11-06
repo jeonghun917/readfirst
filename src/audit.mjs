@@ -47,6 +47,47 @@ export function parseLog(text) {
 
 // map: the map (settled), problems: what check reports, files: tracked files, imports: import edges, read(path): text or
 // null, blame: parseBlame of the map file (or []), history: parseLog since the oldest blamed line (or []).
+// Code nothing else uses: in a module other files import, an export (JavaScript, TypeScript) or a top-level def or
+// class (Python) whose name no other file holds and its own file does not use. Names a framework calls by convention
+// (route verbs, loaders, config) and decorated Python functions (a route, a task, a fixture) are left out; a name built
+// at run time (getattr, a computed import) is not seen, so each one is a place to look, not a verdict.
+const CONVENTION = /^(?:default|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|loader|action|config|metadata|generateMetadata|generateStaticParams|getServerSideProps|getStaticProps|getStaticPaths|middleware|handler|main|setup|teardown|run|Meta)$/u;
+export function unusedCode({ code, users, read }) {
+  const texts = new Map(code.map((f) => [f, read(f) ?? '']));
+  const where = new Map(); // identifier -> files that hold it
+  for (const [f, t] of texts) for (const w of new Set(t.match(/[A-Za-z_$][\w$]*/gu) ?? [])) { if (!where.has(w)) where.set(w, new Set()); where.get(w).add(f); }
+  const out = [];
+  for (const [f, t] of texts) {
+    if (!(users.get(f) > 0)) continue; // a file nothing imports is an entry point or a script, not a library
+    const lines = t.split('\n');
+    const names = [];
+    if (/\.py$/u.test(f)) {
+      lines.forEach((l, i) => {
+        const m = l.match(/^(?:async\s+)?(?:def|class)\s+([A-Za-z]\w*)/u);
+        if (m && !/^\s*@/u.test(lines[i - 1] ?? '') && !/^test_?/u.test(m[1])) names.push({ name: m[1], line: i + 1 });
+      });
+      const all = t.match(/__all__\s*=\s*[[(]([^\])]*)/u);
+      if (all) for (const n of all[1].matchAll(/['"](\w+)['"]/gu)) { const k = names.findIndex((x) => x.name === n[1]); if (k >= 0) names.splice(k, 1); }
+    } else {
+      lines.forEach((l, i) => {
+        const m = l.match(/^export\s+(?:declare\s+)?(?:async\s+)?(?:function\*?|const|let|var|class|enum)\s+([A-Za-z_$][\w$]*)/u);
+        if (m) names.push({ name: m[1], line: i + 1 });
+        const list = l.match(/^export\s*\{([^}]*)\}\s*;?\s*$/u);
+        if (list) for (const part of list[1].split(',')) { const n = part.trim().split(/\s+as\s+/u).pop(); if (/^[A-Za-z_$][\w$]*$/u.test(n ?? '')) names.push({ name: n, line: i + 1 }); }
+      });
+    }
+    for (const { name, line } of names) {
+      if (CONVENTION.test(name)) continue;
+      const holders = where.get(name) ?? new Set();
+      if ([...holders].some((h) => h !== f)) continue;
+      const own = (t.match(new RegExp(`(?<![\\w$])${name.replace(/\$/gu, '\\$')}(?![\\w$])`, 'gu')) ?? []).length;
+      if (own > 1) continue; // used in its own file; only the export is unneeded
+      out.push({ path: f, name, line });
+    }
+  }
+  return out.sort((a, b) => a.path.localeCompare(b.path) || a.line - b.line);
+}
+
 export function audit({ map, problems = [], files, imports, read = () => null, blame = [], history = [], commit = null, held = null }) {
   const lines = (read(MAP_PATH) ?? '').split('\n');
   const writtenAt = (value) => {
@@ -142,6 +183,8 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
   const other = new Map();
   for (const f of files) if (OTHER_CODE.test(f) && !ignored(f) && !SKIP_CODE.test(f)) { const ext = f.split('.').pop().toLowerCase(); other.set(ext, (other.get(ext) ?? 0) + 1); }
   const computed = code.flatMap((f) => unseenIn(f, read));
+  // Tests count as users: an export only a test names is still listed under "no test reaches" if untested, not here.
+  const unused = unusedCode({ code: files.filter((f) => f !== MAP_PATH && /\.(?:[cm]?[jt]sx?|py)$/u.test(f) && !SKIP_CODE.test(f) && !ignored(f)), users: new Map([...users]), read }).filter((u) => !isTest(u.path));
 
   return {
     format: AUDIT_FORMAT, commit, files: files.length,
@@ -159,6 +202,7 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
       files: untested.map((f) => ({ path: f, group: groupOf(map, f)?.id ?? null, usedBy: users.get(f) ?? 0 })).sort((a, b) => b.usedBy - a.usedBy || a.path.localeCompare(b.path)).slice(0, TOP),
       byGroup: [...byGroup].map(([group, count]) => ({ group, count })).sort((a, b) => b.count - a.count),
     },
+    unused: { names: unused.slice(0, TOP), count: unused.length },
     unseen: {
       languages: [...other].map(([ext, count]) => ({ ext, count })).sort((a, b) => b.count - a.count),
       computed: computed.slice(0, TOP),
@@ -192,6 +236,12 @@ export function auditText(a) {
     ...u.files.map((f) => `- \`${f.path}\`${f.usedBy ? ` — used by ${f.usedBy} file(s)` : ''}${f.group ? ` _(group ${f.group})_` : ''}`),
     ...(u.code - u.reached > u.files.length ? [`- …and ${u.code - u.reached - u.files.length} more`] : []),
     ...(u.byGroup.length > 1 ? ['', `By group: ${u.byGroup.slice(0, 10).map((g) => `${g.group ?? '(no group)'} ${g.count}`).join(', ')}`] : []),
+  ]);
+  if (a.unused?.count) section(`Code nothing else uses (${a.unused.count}: exported or top-level, named in no other file and not used in its own)`, [
+    ...a.unused.names.map((u) => `- \`${u.name}\` in \`${u.path}:${u.line}\``),
+    ...(a.unused.count > a.unused.names.length ? [`- …and ${a.unused.count - a.unused.names.length} more (\`readfirst audit --json\` lists ${TOP})`] : []),
+    '',
+    `A name built at run time (getattr, a computed import, a string key) is not seen: check before deleting.${a.unseen.computedCount ? ` This repository loads ${a.unseen.computedCount} module(s) by computed names.` : ''}`,
   ]);
   section('Not seen by readfirst', [
     ...a.unseen.languages.map((l) => `- ${l.count} .${l.ext} file(s): imports in this language are not read, so their users and tests are unknown`),
