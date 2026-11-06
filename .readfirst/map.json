@@ -237,7 +237,7 @@
           ]
         },
         {
-          "text": "the scar rules in src/history.mjs (SIGNALS, NOISE, NOT_CODE, TEST, scar, spreadScars) are the one source for the hosted version too: readfirst-cloud's lib/history.mjs imports scar, NOT_CODE and TEST from the published package, pinned to an exact version; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
+          "text": "the scar rules in src/history.mjs (SIGNALS, NOISE, NOT_CODE, TEST, scar, spreadScars) are a copy of the hosted version's lib/history.mjs, kept in one module so the hosted side can import them from the package; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
           "files": [
             "src/history.mjs"
           ]
@@ -496,7 +496,10 @@
         "src/map.mjs"
       ],
       "repo": "jeonghun917/readfirst-cloud",
-      "why": "readfirst-cloud imports src/map.mjs from the published readfirst package (pinned to an exact version) since readfirst-cloud#104, in the files under lib/ that read or write a map; a new map field or a change to its checks reaches the server only after a release and a version bump there"
+      "paths": [
+        "lib/vendor/map.mjs"
+      ],
+      "why": "the hosted server validates and writes maps with a copy of this file; a new map field must reach that copy before the server writes it"
     },
     {
       "files": [
@@ -529,7 +532,7 @@
       "paths": [
         "lib/history.mjs"
       ],
-      "why": "readfirst-cloud now imports scar, NOT_CODE and TEST from the published readfirst package (pinned to an exact version, in lib/history.mjs) instead of keeping a copy; a change to the regexes or weights reaches the server only after a release and a version bump there"
+      "why": "src/history.mjs holds the scar rules the hosted version keeps a copy of (lib/history.mjs); a change to a regex or weight on either side belongs on both"
     }
   ],
   "ignore": [],
