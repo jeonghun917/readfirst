@@ -156,6 +156,23 @@ function vocabularyProblems(map, files, p) {
   }
 }
 
+// A rule written as structure (optional `flow` on a rule), so a tool can check it on the map's flows with no model:
+// which flows it is about (`entry`: an entry such as "POST /api/orders/*" or a path "/api/pay*"; `reaches`: a label such
+// as payments-api, `table:<name>`, or a function name; `*` allowed) and what each must have on the way (`must`):
+// `check` (some check of who may do it), `check:<name>` (that one), `once` (a unique key, upsert or idempotency key, so
+// running twice is safe), `no-input` (no outside input reaches the call).
+const FLOW_MUST = /^(?:check(?::[\w$.*-]{1,100})?|once|no-input)$/u;
+function ruleFlowProblems(flow, at, p) {
+  if (!isRecord(flow)) { p.push(`${at}: { entry?, reaches?, must }`); return; }
+  only(flow, ['entry', 'reaches', 'must'], at, p);
+  if (flow.entry === undefined && flow.reaches === undefined) p.push(`${at}: entry or reaches, to say which flows it is about`);
+  if (flow.entry !== undefined && !text(flow.entry, 200)) p.push(`${at}.entry: an entry such as "POST /api/orders/*"`);
+  if (flow.reaches !== undefined && !text(flow.reaches, 200)) p.push(`${at}.reaches: a label, table:<name> or a function name`);
+  const must = strings(flow.must, `${at}.must`, p, 120);
+  if (!must.length) p.push(`${at}.must: at least one of check, check:<name>, once, no-input`);
+  for (const m of must) if (!FLOW_MUST.test(m)) p.push(`${at}.must: ${m}: one of check, check:<name>, once, no-input`);
+}
+
 // Files that change together (optional): when a change touches a file matching `when`, it must also change one matching
 // `also`, or `verify` fails ("package.json" with "server.json", a model with its migration). `also` may name files that
 // do not exist yet (a new migration), so only `when` has to match a tracked file.
@@ -238,7 +255,7 @@ export function mapProblems(map, files, { placement = true } = {}) {
       map.rules.forEach((r, i) => {
         const at = `rules[${i}]`;
         if (!isRecord(r)) { p.push(`${at}: an object`); return; }
-        only(r, ['id', 'rule', 'why', 'files', 'checks'], at, p);
+        only(r, ['id', 'rule', 'why', 'files', 'checks', 'flow'], at, p);
         if (typeof r.id !== 'string' || !ID.test(r.id)) p.push(`${at}.id: lowercase letters, digits and "-"`);
         else if (ruleIds.has(r.id)) p.push(`${at}.id: ${r.id} is used twice`);
         ruleIds.add(r.id);
@@ -246,6 +263,7 @@ export function mapProblems(map, files, { placement = true } = {}) {
         if (r.why !== undefined && !text(r.why)) p.push(`${at}.why: text`);
         if (!strings(r.files, `${at}.files`, p).length) p.push(`${at}.files: at least one path or pattern`);
         checkList(r.checks, `${at}.checks`, p);
+        if (r.flow !== undefined) ruleFlowProblems(r.flow, `${at}.flow`, p);
         for (const f of Array.isArray(r.files) ? r.files.filter((x) => typeof x === 'string') : [])
           if (!files.some(matcher([f]))) p.push(`${at}.files: ${f} matches no tracked file`);
       });
