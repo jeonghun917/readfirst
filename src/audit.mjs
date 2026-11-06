@@ -184,7 +184,9 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
   for (const f of files) if (OTHER_CODE.test(f) && !ignored(f) && !SKIP_CODE.test(f)) { const ext = f.split('.').pop().toLowerCase(); other.set(ext, (other.get(ext) ?? 0) + 1); }
   const computed = code.flatMap((f) => unseenIn(f, read));
   // Tests count as users: an export only a test names is still listed under "no test reaches" if untested, not here.
-  const unused = unusedCode({ code: files.filter((f) => f !== MAP_PATH && /\.(?:[cm]?[jt]sx?|py)$/u.test(f) && !SKIP_CODE.test(f) && !ignored(f)), users: new Map([...users]), read }).filter((u) => !isTest(u.path));
+  // A file the map says another repository depends on (`dependents`) may be used there: such names are listed apart.
+  const elsewhere = (f) => (map.dependents ?? []).filter((d) => matcher(d.files)(f)).map((d) => d.repo);
+  const unused = unusedCode({ code: files.filter((f) => f !== MAP_PATH && /\.(?:[cm]?[jt]sx?|py)$/u.test(f) && !SKIP_CODE.test(f) && !ignored(f)), users: new Map([...users]), read }).filter((u) => !isTest(u.path)).map((u) => (elsewhere(u.path).length ? { ...u, dependents: [...new Set(elsewhere(u.path))] } : u));
 
   return {
     format: AUDIT_FORMAT, commit, files: files.length,
@@ -238,7 +240,7 @@ export function auditText(a) {
     ...(u.byGroup.length > 1 ? ['', `By group: ${u.byGroup.slice(0, 10).map((g) => `${g.group ?? '(no group)'} ${g.count}`).join(', ')}`] : []),
   ]);
   if (a.unused?.count) section(`Code nothing else uses (${a.unused.count}: exported or top-level, named in no other file and not used in its own)`, [
-    ...a.unused.names.map((u) => `- \`${u.name}\` in \`${u.path}:${u.line}\``),
+    ...a.unused.names.map((u) => `- \`${u.name}\` in \`${u.path}:${u.line}\`${u.dependents?.length ? ` — the map says ${u.dependents.join(', ')} depends on this file: look there before deleting` : ''}`),
     ...(a.unused.count > a.unused.names.length ? [`- …and ${a.unused.count - a.unused.names.length} more (\`readfirst audit --json\` lists ${TOP})`] : []),
     '',
     `A name built at run time (getattr, a computed import, a string key) is not seen: check before deleting.${a.unseen.computedCount ? ` This repository loads ${a.unseen.computedCount} module(s) by computed names.` : ''}`,

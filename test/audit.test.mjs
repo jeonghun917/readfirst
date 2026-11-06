@@ -189,3 +189,11 @@ test('audit lists code nothing else uses: exports and top-level defs named in no
   const out = unusedCode({ code: Object.keys(texts), users, read: (p) => texts[p] ?? null });
   assert.deepEqual(out.map((u) => `${u.path}:${u.name}`), ['app/util.py:lonely', 'src/lib.js:orphan', 'src/lib.js:gone']);
 });
+
+test('audit says when another repository may use code nothing here uses (map dependents)', () => {
+  const texts = { 'src/lib.js': 'export function orphan() {}\nexport function used() {}\n', 'src/app.js': 'import { used } from "./lib.js";\nused();\n' };
+  const map = { format: 'readfirst/map@1', groups: [{ id: 'all', title: 'all', files: ['**'] }], dependents: [{ repo: 'o/server', files: ['src/lib.js'], why: 'copies it' }] };
+  const a = audit({ map, files: Object.keys(texts), imports: [{ from: 'src/app.js', to: 'src/lib.js' }], read: (p) => texts[p] ?? null });
+  assert.deepEqual(a.unused.names.map((u) => [u.name, u.dependents]), [['orphan', ['o/server']]]);
+  assert.match(auditText(a), /`orphan` in `src\/lib\.js:1` — the map says o\/server depends on this file/u);
+});
