@@ -53,7 +53,7 @@ npx readfirst scan   # no map needed: QuerySet/string results thrown away, expec
 ```
 
 The hosted version scans for fixed bug shapes taken from real bugs: a result computed and thrown away, a range check
-with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories, 616 hits judged and
+with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories, 614 hits judged and
 recorded:
 
 - **91 bugs in app code**, 28 of them low-severity secret comparisons
