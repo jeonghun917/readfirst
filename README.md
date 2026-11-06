@@ -59,9 +59,8 @@ with no type check, a secret compared with `!==`, and more. Run over 44 open-sou
   "what is there", not as precision
 
 Still with their maintainers: a Tandoor filter that never applied
-([TandoorRecipes/recipes#4917](https://github.com/TandoorRecipes/recipes/pull/4917)), a Mealie household filter that
-never applied (reported, [mealie-recipes/mealie#8964](https://github.com/mealie-recipes/mealie/issues/8964)), and
-findings sent privately to other projects, which stay unnamed until they are fixed.
+([TandoorRecipes/recipes#4917](https://github.com/TandoorRecipes/recipes/pull/4917)), and findings sent privately to
+other projects, which stay unnamed until they are fixed.
 
 ## Start
 
