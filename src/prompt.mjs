@@ -18,7 +18,9 @@ Do this:
    Patterns: a path, "folder/**", or a "*" glob within one segment.
 3. Add "rules": promises the code must keep, each {"id": "kebab-id", "rule": "...", "why": "...", "files": [...],
    "checks": [{"run": "..."}]}. Take them from comments, docs, tests and commit messages. Only write rules you can point to
-   in the code or docs. Ask the user for the ones only they know.
+   in the code or docs. Ask the user for the ones only they know. When a rule is about a route or a call (who may refund,
+   a charge runs once), also write it as structure: "flow": {"reaches": "payments-api" or "table:orders" or a function
+   name, or "entry": "POST /api/orders/*", "must": ["check", "check:<name>", "once", "no-input"]}.
 4. If a group is being replaced (old code new work must not extend), add "deprecated": {"why": "...", "use": "new-group-id or path"}.
    Read lists and \`readfirst find\` then send people and agents to the replacement.
 5. Add "vocabulary": this repository's own words, so tools that read code with no model know them. Only what you saw

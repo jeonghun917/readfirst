@@ -338,6 +338,10 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   `inputs` the names that may carry outside input to its calls (`req.body`, `amount`).
   `read` lists the flows that start in or reach the file being changed under "Outside input reaches this code"; `fix`
   drops those whose files are gone. Older readfirst versions reject maps that have it.
+- **rules[].flow** (optional): a rule written as structure, so tools can check it on `flows` with no model:
+  `{ "entry"?: "POST /api/orders/*", "reaches"?: "payments-api" | "table:orders" | "<function>", "must": ["check" |
+  "check:<name>" | "once" | "no-input"] }`. `check` asks for some check of who may do it, `check:<name>` for that one,
+  `once` for a unique key, upsert or idempotency key on the way, `no-input` for no outside input at the call.
 - **vocabulary** (optional): the repository's own words, for tools that read the code with no model, as
   `{ "checks": [{ "name", "evidence", "why"? }], "sinks": [{ "call", "label", "evidence", "why"? }], "notChecks": [{ "name",
   "why", "evidence"? }], "public": [{ "entry", "why" }] }`. `checks` are functions that decide who may do something,

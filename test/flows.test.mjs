@@ -91,3 +91,13 @@ test('a reach may name the inputs that reach it; read shows them', () => {
   const md = toMarkdown(readList({ map: { ...base(), flows: [f] }, files, imports: [], targets: ['src/billing/charge.js'] }));
   assert.match(md, /db-write, money, with input `req\.body`, `amount`\)/u);
 });
+
+test('a rule may carry flow: which flows it is about and what they must have on the way', () => {
+  const rule = (flow) => ({ ...base(), rules: [{ id: 'refund-admin', rule: 'only admins refund', why: 'money', files: ['src/**'], flow }] });
+  assert.deepEqual(mapProblems(rule({ reaches: 'payments-api', must: ['check:requireRole', 'once'] }), files), []);
+  assert.deepEqual(mapProblems(rule({ entry: 'POST /orders/*', must: ['check', 'no-input'] }), files), []);
+  assert.match(mapProblems(rule({ must: ['check'] }), files).join('\n'), /entry or reaches/u);
+  assert.match(mapProblems(rule({ reaches: 'x', must: ['always'] }), files).join('\n'), /one of check/u);
+  assert.match(mapProblems(rule({ reaches: 'x', must: [] }), files).join('\n'), /at least one/u);
+  assert.match(mapProblems(rule({ reaches: 'x', must: ['check'], other: 1 }), files).join('\n'), /other/u);
+});
