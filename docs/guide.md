@@ -16,7 +16,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.18.0 read <file>` (and `jeonghun917/readfirst@v0.18.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.17.1 read <file>` (and `jeonghun917/readfirst@v0.17.1` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -296,7 +296,7 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   `{ "entry": "POST /orders/:id", "file", "line", "checks": ["requireRole"], "reaches": [{ "file", "symbol", "line",
   "labels": ["db-write"] }] }`. `checks` names what decides who may do it on the way, and is empty when none was found.
   `read` lists the flows that start in or reach the file being changed under "Outside input reaches this code"; `fix`
-  drops those whose files are gone. Needs readfirst 0.18.0 or newer to pass `check`.
+  drops those whose files are gone. Older readfirst versions reject maps that have it.
 - **deprecated** (optional, on a group): code being replaced, as `{ "why": "...", "use"?: "billing" }` where `use` is the
   group or path to use instead. Read lists open with "Being replaced", the hook tells the agent not to add to it,
   `find` lists its matches last with what to use instead, and `audit` counts the files outside it that still import it.
