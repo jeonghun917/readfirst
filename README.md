@@ -2,6 +2,30 @@
 
 **What to read and check before you — or your AI agent — change a file.**
 
+### Fixed upstream after readfirst found them
+
+In Wagtail, a superuser who submitted something for moderation was emailed about their own submission
+(`wagtail/admin/mail.py`). readfirst's `queryset` pattern flagged the line; no model is involved in the scan.
+
+Before:
+
+```python
+if triggering_user:
+    recipients.exclude(pk=triggering_user.pk)
+```
+
+After:
+
+```python
+if triggering_user:
+    recipients = recipients.exclude(pk=triggering_user.pk)
+```
+
+Merged as [wagtail/wagtail#14790](https://github.com/wagtail/wagtail/pull/14790) on 2026-11-04. Also fixed upstream:
+Saleor ([#19984](https://github.com/saleor/saleor/pull/19984)) and n8n
+([#43033](https://github.com/n8n-io/n8n/pull/43033)), with the lines, the patterns and the dates on
+[readfirst-cloud.vercel.app/fixed](https://readfirst-cloud.vercel.app/fixed).
+
 Coding agents can follow imports. What they don't know is what your team knows: "amounts here are in cents",
 "this table is read by the mobile app, keep old columns", "run the payment e2e after touching this". readfirst keeps that
 knowledge in one file next to the code and hands it out, file by file, at the moment someone is about to change something.
