@@ -292,6 +292,11 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
 - **hotspots** (optional, usually written by a tool): functions where risky code meets a rule, as
   `{ "file", "symbol", "line", "labels": ["db-write", "money"], "rules"?: [...], "note"? }`. `read` lists the ones in the
   file being changed under "Hot spots in this code"; `fix` drops those whose file is gone.
+- **flows** (optional, written by a tool): where outside input enters and what it reaches, as
+  `{ "entry": "POST /orders/:id", "file", "line", "checks": ["requireRole"], "reaches": [{ "file", "symbol", "line",
+  "labels": ["db-write"] }] }`. `checks` names what decides who may do it on the way, and is empty when none was found.
+  `read` lists the flows that start in or reach the file being changed under "Outside input reaches this code"; `fix`
+  drops those whose files are gone. Older readfirst versions reject maps that have it.
 - **deprecated** (optional, on a group): code being replaced, as `{ "why": "...", "use"?: "billing" }` where `use` is the
   group or path to use instead. Read lists open with "Being replaced", the hook tells the agent not to add to it,
   `find` lists its matches last with what to use instead, and `audit` counts the files outside it that still import it.

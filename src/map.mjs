@@ -73,6 +73,42 @@ function hotspotProblems(map, files, p) {
   });
 }
 
+// Flows (optional): where outside input enters (a route, a webhook) and what it reaches, worked out from the code with
+// no model. Each names the entry (`entry` text such as "POST /orders/:id", its file and line), the checks found on the
+// way (`checks`: names of the functions or decorators that decide who may do it; empty when none was found) and the
+// functions it reaches that do something that matters (`reaches`: file, symbol, line, labels such as db-write).
+// Written by tools, read by `read`.
+export const MAX_FLOWS = 500;
+function flowProblems(map, files, p) {
+  if (!Array.isArray(map.flows)) { p.push('flows: a list'); return; }
+  if (map.flows.length > MAX_FLOWS) p.push(`flows: at most ${MAX_FLOWS}`);
+  const tracked = new Set(files);
+  const place = (v, at) => {
+    if (typeof v.file !== 'string' || !v.file) p.push(`${at}.file: a path`);
+    else if (!tracked.has(v.file)) p.push(`${at}.file: ${v.file} is not a tracked file`);
+    if (!Number.isInteger(v.line) || v.line < 1) p.push(`${at}.line: a line number`);
+  };
+  map.flows.forEach((f, i) => {
+    const at = `flows[${i}]`;
+    if (!isRecord(f)) { p.push(`${at}: { entry, file, line, checks, reaches }`); return; }
+    only(f, ['entry', 'file', 'line', 'checks', 'reaches'], at, p);
+    if (!text(f.entry, 200)) p.push(`${at}.entry: text`);
+    place(f, at);
+    if (!Array.isArray(f.checks) || !f.checks.every((c) => text(c, 200))) p.push(`${at}.checks: a list of names (empty when none was found)`);
+    if (!Array.isArray(f.reaches) || !f.reaches.length) { p.push(`${at}.reaches: at least one { file, symbol, line, labels }`); return; }
+    f.reaches.forEach((r, k) => {
+      const rat = `${at}.reaches[${k}]`;
+      if (!isRecord(r)) { p.push(`${rat}: { file, symbol, line, labels }`); return; }
+      only(r, ['file', 'symbol', 'line', 'labels'], rat, p);
+      place(r, rat);
+      if (!text(r.symbol, 200)) p.push(`${rat}.symbol: text`);
+      const labels = strings(r.labels, `${rat}.labels`, p, 64);
+      if (!labels.length) p.push(`${rat}.labels: at least one label`);
+      for (const l of labels) if (!ID.test(l)) p.push(`${rat}.labels: ${l}: lowercase letters, digits and "-"`);
+    });
+  });
+}
+
 // Files that change together (optional): when a change touches a file matching `when`, it must also change one matching
 // `also`, or `verify` fails ("package.json" with "server.json", a model with its migration). `also` may name files that
 // do not exist yet (a new migration), so only `when` has to match a tracked file.
@@ -112,7 +148,7 @@ function dependentsProblems(map, files, p) {
 export function mapProblems(map, files, { placement = true } = {}) {
   const p = [];
   if (!isRecord(map)) return ['map: a JSON object'];
-  only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots', 'requires', 'dependents'], 'map', p);
+  only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots', 'flows', 'requires', 'dependents'], 'map', p);
   if (map.format !== MAP_FORMAT) p.push(`format: "${MAP_FORMAT}"`);
   if (!Array.isArray(map.groups) || !map.groups.length) return [...p, 'groups: at least one group'];
   const ids = new Set();
@@ -170,6 +206,7 @@ export function mapProblems(map, files, { placement = true } = {}) {
   }
   if (map.ignore !== undefined) strings(map.ignore, 'ignore', p);
   if (map.hotspots !== undefined) hotspotProblems(map, files, p);
+  if (map.flows !== undefined) flowProblems(map, files, p);
   if (map.requires !== undefined) requiresProblems(map, files, p);
   if (map.dependents !== undefined) dependentsProblems(map, files, p);
   if (p.length || !placement) return p;
@@ -314,6 +351,13 @@ export function fixMap(map, files) {
     for (const h of gone) changes.push(`hotspots: dropped ${h?.symbol} in ${h?.file} (file gone)`);
     out.hotspots = out.hotspots.filter((h) => tracked.has(h?.file));
     if (!out.hotspots.length) delete out.hotspots;
+  }
+  if (Array.isArray(out.flows)) {
+    const tracked = new Set(files);
+    const live = (f) => tracked.has(f?.file) && Array.isArray(f?.reaches) && f.reaches.some((r) => tracked.has(r?.file));
+    for (const f of out.flows.filter((x) => !live(x))) changes.push(`flows: dropped ${f?.entry} in ${f?.file} (file gone)`);
+    out.flows = out.flows.filter(live).map((f) => ({ ...f, reaches: f.reaches.filter((r) => tracked.has(r?.file)) }));
+    if (!out.flows.length) delete out.flows;
   }
 
   const ignored = matcher(out.ignore ?? []);
