@@ -19,6 +19,14 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm test
+  signatures:
+    # No AI signatures in the PR title, description or commits (CLAUDE.md): the merge is blocked when one is there.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: node .claude/hooks/no-ai-signature.mjs ci
   readfirst:
     runs-on: ubuntu-latest
     steps:
