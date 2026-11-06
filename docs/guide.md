@@ -4,16 +4,15 @@ Everything the [README](../README.md) leaves out: setup for each agent, the PR A
 
 ## Start
 
-Any language; needs Node 20+ for `npx`. `audit`, `read` and `diff` work without a map.
+Any language; needs Node 20+ for `npx`.
 
 ```sh
-npx readfirst audit          # no setup: the files that broke most in the last 12 months, from git history
 npx readfirst read <file>    # no map needed: where the file broke before, from git history (a map adds rules, risks, checks)
 npx readfirst init --agent --ci   # first map from your folders, checks from your scripts, the line for CLAUDE.md / AGENTS.md,
                                   # and the GitHub Action that comments on PRs and keeps the map in step
 npx readfirst prompt         # a brief for your coding agent to fill in titles, checks, risks and rules
 npx readfirst check          # every tracked file is in exactly one group (or ignored); rules point at real files
-npx readfirst audit          # with a map too: what went stale, what no test reaches
+npx readfirst audit          # the whole repository against the map, once: what went stale, what no test reaches
 npx readfirst find payment retry   # before writing something new: what in the code may already do it
 ```
 
