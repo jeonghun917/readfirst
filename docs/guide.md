@@ -11,13 +11,14 @@ npx readfirst read <file>    # no map needed: where the file broke before, from 
 npx readfirst init --agent --ci   # first map from your folders, checks from your scripts, the line for CLAUDE.md / AGENTS.md,
                                   # and the GitHub Action that comments on PRs and keeps the map in step
 npx readfirst prompt         # a brief for your coding agent to fill in titles, checks, risks and rules
-npx readfirst check          # every tracked file is in exactly one group (or ignored); rules point at real files
+npx readfirst check          # every tracked file is in exactly one group (or ignored); rules point at real files;
+                             # the map uses no field the readfirst your CI pins would reject
 npx readfirst audit          # the whole repository against the map, once: what went stale, what no test reaches
 npx readfirst find payment retry   # before writing something new: what in the code may already do it
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.22.2 read <file>` (and `jeonghun917/readfirst@v0.22.2` for
+exactly the version you reviewed, pin it: `npx readfirst@0.22.3 read <file>` (and `jeonghun917/readfirst@v0.22.3` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -121,6 +122,10 @@ session. If one fails, Claude Code cannot finish yet and gets the failure to fix
 it cannot fix never traps the session. It runs only check commands that the map on your main branch already lists: a
 command someone's branch adds or changes is named, not run, until it is merged (`npx readfirst verify` runs it when you
 choose to).
+
+A session started in a folder above your repositories works too: each edited file belongs to the repository that holds
+it, and the Stop hook runs each repository's checks. Put the hook in that folder's `.claude/settings.json` with the
+command `npx readfirst hook` (and `npx readfirst hook --stop` for the Stop hook).
 
 ### See the map
 

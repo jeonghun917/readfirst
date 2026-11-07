@@ -110,3 +110,26 @@ test('hook: the agent hears what changes together; the Stop hook blocks once whe
   writeFileSync(join(root, 'migrations/0002.py'), '');
   assert.equal(stop(), null, 'no checks and nothing left out: no output');
 });
+
+// A session started in a folder above the repositories (2026-11-07: ours ran in /home/user above readfirst and
+// readfirst-cloud, and the hook, which looked for a repository at the session's folder, said nothing).
+test('hook: a session above several repositories gets each file\'s own repository, and Stop checks each', () => {
+  const a = repo(FILES);
+  const b = repo(FILES);
+  a.git('checkout', '-q', '-b', 'work');
+  b.git('checkout', '-q', '-b', 'work');
+  const above = mkdtempSync(join(tmpdir(), 'readfirst-above-'));
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-done-above-'));
+  const edit = (root, file) => runHook(JSON.stringify({ session_id: 'up', cwd: above, tool_name: 'Edit', tool_input: { file_path: join(root, file) } }), { stateDir });
+  assert.match(JSON.parse(edit(a.root, 'app/models.py')).hookSpecificOutput.additionalContext, /also change migrations/u);
+  assert.match(JSON.parse(edit(b.root, 'app/models.py')).hookSpecificOutput.additionalContext, /also change migrations/u);
+  writeFileSync(join(a.root, 'app/models.py'), 'X = 2\n');
+  writeFileSync(join(b.root, 'app/models.py'), 'X = 3\n');
+  writeFileSync(join(b.root, 'migrations/0002.py'), '');
+  const stop = JSON.parse(runStopHook(JSON.stringify({ session_id: 'up', cwd: above, stop_hook_active: false }), { stateDir, timeout: 30 }));
+  assert.equal(stop.decision, 'block');
+  const name = (root) => root.split('/').pop();
+  assert.match(stop.reason, new RegExp(`readfirst in ${name(a.root)}: app/models\\.py changed`, 'u'), 'the repository that left the migration out');
+  assert.ok(!stop.reason.includes(name(b.root)), 'the other one did its part');
+  assert.equal(runHook(JSON.stringify({ session_id: 'up', cwd: above, tool_name: 'Edit', tool_input: { file_path: join(above, 'notes.md') } }), { stateDir }), null, 'a file in no repository: nothing');
+});

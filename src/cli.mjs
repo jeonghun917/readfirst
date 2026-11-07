@@ -23,11 +23,12 @@
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { importEdges } from './imports.mjs';
 import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
+import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { find, findText } from './find.mjs';
 import { CURSOR_DIR, cursorPlan } from './export.mjs';
@@ -258,8 +259,11 @@ export function brief(list) {
   return lines;
 }
 
-// Which files the PreToolUse hook has seen in a session: the Stop hook verifies those.
+// Which files the PreToolUse hook has seen in a session, by absolute path: the Stop hook verifies those. A session can
+// start in a folder above several repositories, so each file belongs to the repository that holds it, not to the
+// session's folder. Older state files hold paths relative to the session's repository; they still read.
 const seenFile = (stateDir, session) => join(stateDir, `readfirst-hook-${String(session ?? 'none').replace(/[^\w-]/gu, '')}.json`);
+const repoOf = (dir) => { try { return git(dir, 'rev-parse', '--show-toplevel').trim() || null; } catch { return null; } };
 
 // Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file the map covers,
 // prints the read list as additionalContext, once per file per session. Never blocks the edit: any problem means no output.
@@ -269,13 +273,19 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
     const file = event.tool_input?.file_path;
     if (!file || !/^(?:Edit|Write|MultiEdit)$/u.test(event.tool_name ?? '')) return null;
     const cwd = event.cwd ?? process.cwd();
-    const root = git(cwd, 'rev-parse', '--show-toplevel').trim();
-    const path = (isAbsolute(file) ? relative(root, file) : file).replace(/\\/gu, '/');
+    const abs = isAbsolute(file) ? file : resolve(cwd, file);
+    // The repository of the file: its nearest existing folder (a new file's folder may not exist yet).
+    let dir = dirname(abs);
+    while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+    const root = repoOf(dir);
+    if (!root) return null;
+    const path = relative(root, abs).replace(/\\/gu, '/');
     if (path.startsWith('..') || path === MAP_PATH) return null;
     const seenAt = seenFile(stateDir, event.session_id);
     let seen = {};
     try { seen = JSON.parse(readFileSync(seenAt, 'utf8')); } catch { seen = {}; }
-    if (seen[path] && now - seen[path] < 6 * 3600_000) return null;
+    const key = join(root, path);
+    if (seen[key] && now - seen[key] < 6 * 3600_000) return null;
     const files = repoFiles(root);
     // Without a map the hook still says where the file broke before.
     const map = existsSync(join(root, MAP_PATH)) ? readMapFile(root) : null;
@@ -283,7 +293,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
     const all = files.includes(path) ? files : [...files, path].sort();
     const list = readList({ map, files: all, imports: map ? importEdges(files, readText(root)) : [], targets: [path], limit: 10, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke: brokeBefore(root, [path], new Set(all)) });
     const lines = brief(list);
-    seen[path] = now;
+    seen[key] = now;
     try { writeFileSync(seenAt, JSON.stringify(seen)); } catch { /* best effort */ }
     if (!lines.length) return null;
     const shown = lines.slice(0, 12);
@@ -316,15 +326,40 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   let event;
   try { event = JSON.parse(input); } catch { return null; }
   if (event.stop_hook_active) return null;
+  let seen = {};
+  try { seen = JSON.parse(readFileSync(seenFile(stateDir, event.session_id), 'utf8')); } catch { return null; }
+  // Edited files by repository: absolute paths by the repository that holds them, older relative ones by the session's.
+  const byRoot = new Map();
+  const here = repoOf(event.cwd ?? process.cwd());
+  for (const key of Object.keys(seen)) {
+    const root = isAbsolute(key) ? repoOf(existsSync(dirname(key)) ? dirname(key) : here ?? '/') : here;
+    if (!root) continue;
+    const path = isAbsolute(key) ? relative(root, key).replace(/\\/gu, '/') : key;
+    if (path.startsWith('..')) continue;
+    if (!byRoot.has(root)) byRoot.set(root, []);
+    byRoot.get(root).push(path);
+  }
+  const passed = [];
+  const blocks = [];
+  for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
+    const r = stopFor(root, edited, timeout, byRoot.size > 1);
+    if (r?.pass) passed.push(r.pass);
+    if (r?.block) blocks.push(r.block);
+  }
+  if (blocks.length) return JSON.stringify({ decision: 'block', reason: blocks.join('\n\n') });
+  if (passed.length) return JSON.stringify({ systemMessage: passed.join('\n') });
+  return null;
+}
+
+// The Stop hook for one repository: its map's checks for the files edited there that are still changed.
+function stopFor(root, edited, timeout, named) {
   try {
-    const root = git(event.cwd ?? process.cwd(), 'rev-parse', '--show-toplevel').trim();
     if (!existsSync(join(root, MAP_PATH))) return null;
-    let seen = {};
-    try { seen = JSON.parse(readFileSync(seenFile(stateDir, event.session_id), 'utf8')); } catch { return null; }
+    const at = named ? ` in ${basename(root)}` : '';
     const dirty = new Set(git(root, 'status', '--porcelain', '-z', '--untracked-files=all').split('\0').filter(Boolean).map((l) => l.slice(3)));
     let changed = [];
     try { changed = changedFiles(root).files; } catch { /* no base branch: the working tree is enough */ }
-    const targets = Object.keys(seen).filter((f) => dirty.has(f) || changed.includes(f)).sort();
+    const targets = edited.filter((f) => dirty.has(f) || changed.includes(f)).sort();
     if (!targets.length) return null;
     const files = repoFiles(root);
     const map = readMapFile(root);
@@ -339,13 +374,12 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     const result = verifyChecks(root, list.checks.filter((c) => trusted.has(c.run)), { timeout });
     const failed = result.filter((c) => c.status !== 'pass');
     const notRun = skipped.length ? ` Not run, because the base branch's map does not list them yet: ${skipped.map((r) => `\`${r}\``).join(', ')}; run \`npx readfirst verify\` to run them on purpose.` : '';
-    if (!failed.length && !missing.length) return JSON.stringify({ systemMessage: `readfirst verify: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}` });
-    const reason = [
-      ...(failed.length ? [`readfirst verify: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}`] : []),
-      ...missing.map((t) => `readfirst: ${t.for.join(', ')} changed, but none of ${t.also.join(', ')} did. The map says they change together: ${t.why}. Change it too, or say why it does not apply, before you finish.`),
+    if (!failed.length && !missing.length) return { pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}` };
+    return { block: [
+      ...(failed.length ? [`readfirst verify${at}: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}`] : []),
+      ...missing.map((t) => `readfirst${at}: ${t.for.join(', ')} changed, but none of ${t.also.join(', ')} did. The map says they change together: ${t.why}. Change it too, or say why it does not apply, before you finish.`),
       ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}`),
-    ].join('\n');
-    return JSON.stringify({ decision: 'block', reason });
+    ].join('\n') };
   } catch {
     return null;
   }
@@ -482,7 +516,11 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     // Placing new files next to their neighbours and dropping patterns for deleted files is what `fix` does; check
     // settles those the same way and passes. --strict fails on them too.
     const map = readMapFile(root);
-    const { problems, settled } = args.strict ? { problems: mapProblems(map, files), settled: [] } : settleMap(map, files);
+    const settledMap = args.strict ? { problems: mapProblems(map, files), settled: [] } : settleMap(map, files);
+    const { settled } = settledMap;
+    // The map must also pass the readfirst the repository's CI runs, which may be older than this one.
+    const read = readText(root);
+    const problems = [...settledMap.problems, ...pinProblems(map, pinnedReadfirst(new Map(pinFiles(files).map((f) => [f, read(f)]))))];
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems, settled }, null, 2)}\n`);
     else {
       if (problems.length) io.out(`${MAP_PATH} has ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n`);
