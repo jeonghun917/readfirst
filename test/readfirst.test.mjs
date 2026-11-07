@@ -331,6 +331,18 @@ test('hook: the read list goes to Claude Code as context once per file per sessi
   assert.equal(runHook(ev({ tool_input: { file_path: '/elsewhere/x.ts' }, session_id: 's4' }), { stateDir }), null, 'outside the repository');
   assert.equal(runHook('not json', { stateDir }), null);
 
+  // A Bash command that writes a file gets the same notes (agents edit with sed -i and redirects as often as with Edit).
+  const bash = (command, session) => runHook(ev({ tool_name: 'Bash', tool_input: { command }, session_id: session }), { stateDir });
+  assert.match(JSON.parse(bash(`sed -i 's/a/b/' src/billing/charge.ts`, 'b1')).hookSpecificOutput.additionalContext, /Risk: amounts are in cents/u);
+  assert.match(JSON.parse(bash(`cd ${root} && echo x >> src/billing/charge.ts`, 'b2')).hookSpecificOutput.additionalContext, /Rule no-double-charge/u);
+  assert.equal(bash('grep -n charge src/billing/charge.ts > /tmp/out.txt', 'b3'), null, 'reading into a scratch file is not a write to the repository');
+  // --gate: the first call that touches an unread file is refused with the notes; the same call then goes through.
+  const gated = (session) => runHook(ev({ session_id: session }), { stateDir, gate: true });
+  const denied = JSON.parse(gated('g1')).hookSpecificOutput;
+  assert.equal(denied.permissionDecision, 'deny');
+  assert.match(denied.permissionDecisionReason, /Risk: amounts are in cents/u);
+  assert.equal(gated('g1'), null, 'the second try goes through');
+
   // install keeps what is there and adds the hook once
   mkdirSync(join(root, '.claude'), { recursive: true });
   writeFileSync(join(root, '.claude/settings.json'), JSON.stringify({ permissions: { allow: ['Bash(ls)'] } }));
@@ -338,7 +350,7 @@ test('hook: the read list goes to Claude Code as context once per file per sessi
   assert.equal(installHook(root), false);
   const settings = JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf8'));
   assert.deepEqual(settings.permissions, { allow: ['Bash(ls)'] });
-  assert.deepEqual(settings.hooks.PreToolUse, [{ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }]);
+  assert.deepEqual(settings.hooks.PreToolUse, [{ matcher: 'Edit|Write|MultiEdit|Bash', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }]);
 
   // through main: stdin in, JSON out, exit 0
   let printed = '';

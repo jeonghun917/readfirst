@@ -73,6 +73,9 @@
         },
         {
           "text": "runHook and runStopHook find the repository from each edited file, not from the session's folder: a session can start in a folder above several repositories, and the hook state keeps absolute paths (older state files with relative paths still read against the session's repository). Looking the root up from event.cwd again would make the hook silent in that setup - src/cli.mjs:266"
+        },
+        {
+          "text": "the PreToolUse hook reads Bash commands too: src/bash-writes.mjs names the files a command writes (redirects, sed -i / perl -i, tee, cp/mv destinations, git checkout of paths, code that writes run by python/node/sh from -c, -e or a here-document) and only those; a command that merely reads or runs tests must give none, or every Bash call would carry notes. The matcher in installHook and plugins/readfirst/hooks/hooks.json includes Bash; with --gate the first call on an unseen file is denied with the notes and the retry passes, because the notes mark the file as seen - src/bash-writes.mjs:16"
         }
       ]
     },
@@ -156,7 +159,8 @@
         "src/scan.mjs",
         "src/shapes.mjs",
         "src/history.mjs",
-        "src/pins.mjs"
+        "src/pins.mjs",
+        "src/bash-writes.mjs"
       ],
       "checks": [
         {

@@ -38,12 +38,29 @@ if (mode === 'setup') {
   process.exit(0);
 }
 
+// The GitHub tools add their footer when they create a pull request, and the author removes it right after; the run
+// for "opened" saw the footer from the event and failed on every pull request, a red check everyone learned to ignore
+// (2026-11-07). So for "opened" it waits a little and reads the title and description as they are now; the rule is the
+// same, and a footer still there still fails.
+const SETTLE_MS = 30_000;
+async function currentPullRequest(event, pr) {
+  const token = process.env.GITHUB_TOKEN;
+  const repo = event.repository?.full_name;
+  if (!token || !repo) return pr;
+  if (event.action === 'opened') await new Promise((r) => setTimeout(r, SETTLE_MS));
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/pulls/${pr.number}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json' } });
+    return res.ok ? await res.json() : pr;
+  } catch { return pr; }
+}
+
 if (mode === 'ci') {
   const event = process.env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')) : {};
   const found = [];
   const pr = event.pull_request;
   if (pr) {
-    if (SIGNATURE.test(`${pr.title ?? ''}\n${pr.body ?? ''}`)) found.push('the pull request title or description');
+    const now = await currentPullRequest(event, pr);
+    if (SIGNATURE.test(`${now.title ?? ''}\n${now.body ?? ''}`)) found.push('the pull request title or description');
     try {
       const log = execFileSync('git', ['log', '--format=%H%x00%B%x01', `${pr.base.sha}..${pr.head.sha}`], { encoding: 'utf8' });
       for (const entry of log.split('\x01')) { const [sha, body] = entry.trim().split('\x00'); if (sha && SIGNATURE.test(body ?? '')) found.push(`commit ${sha.slice(0, 7)}`); }
