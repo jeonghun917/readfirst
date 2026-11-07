@@ -187,12 +187,94 @@ function vocabularyProblems(map, files, p) {
   }
 }
 
+// What things in the code are (optional, since 0.22.0): the repository's own models, so a tool that reads code with no
+// model knows them. One row picks something (`match`: a function or call name, a decorator with the class decorator
+// around it, a base class, or a file pattern) and says what it is (`is`): where outside input enters (entry), what
+// decides who may go on (check), what does something that matters (sink, with `kind` such as db-write), or something
+// that looks like one of these and is not (neutral). `kind` narrows it (entry: route; check: auth); new kinds are new
+// values, not new fields. An entry may name the check every such entry gets (`check`) and a regular expression for the
+// declarations that opt out (`unless`). What must hold is a rule, not a model: an entry open on purpose is a rule with
+// flow.must ["public"]. Built-in facts (Django, NestJS, a 401 answer) are not written here; the tool knows them.
+export const MODEL_ROLES = ['entry', 'check', 'sink', 'neutral'];
+const MATCH_KEYS = ['call', 'decorator', 'within', 'extends', 'file'];
+export const MAX_MODELS = 400;
+// What a model row matches, for messages and read lists.
+export const modelName = (m) => (isRecord(m?.match) ? m.match.call ?? m.match.decorator ?? m.match.extends ?? m.match.file ?? null : null);
+function modelProblems(map, files, p) {
+  if (!Array.isArray(map.models)) { p.push('models: a list'); return; }
+  if (map.models.length > MAX_MODELS) p.push(`models: at most ${MAX_MODELS}`);
+  const tracked = new Set(files);
+  const nameOk = (n) => typeof n === 'string' && VOCAB_NAME.test(n) && !/^\**$/u.test(n);
+  map.models.forEach((m, i) => {
+    const at = `models[${i}]`;
+    if (!isRecord(m)) { p.push(`${at}: { match, is, kind?, evidence, why? }`); return; }
+    only(m, ['match', 'is', 'kind', 'check', 'unless', 'evidence', 'why'], at, p);
+    if (!isRecord(m.match)) p.push(`${at}.match: { call } or { decorator, within? } or { extends } or { file }`);
+    else {
+      only(m.match, MATCH_KEYS, `${at}.match`, p);
+      const picked = ['call', 'decorator', 'extends', 'file'].filter((k) => m.match[k] !== undefined);
+      if (picked.length !== 1) p.push(`${at}.match: exactly one of call, decorator, extends, file`);
+      else if (picked[0] === 'file' ? !text(m.match.file, 300) || !files.some(matcher([m.match.file])) : !nameOk(m.match[picked[0]])) p.push(`${at}.match.${picked[0]}: ${picked[0] === 'file' ? 'a pattern that matches a tracked file' : 'a name, "*" allowed'}`);
+      if (m.match.within !== undefined && (m.match.decorator === undefined || !nameOk(m.match.within))) p.push(`${at}.match.within: the class decorator around it (only with decorator)`);
+    }
+    if (!MODEL_ROLES.includes(m.is)) p.push(`${at}.is: one of ${MODEL_ROLES.join(', ')}`);
+    if (m.kind !== undefined ? typeof m.kind !== 'string' || !ID.test(m.kind) : m.is === 'sink') p.push(`${at}.kind: lowercase letters, digits and "-"${m.is === 'sink' ? ' (db-write, money, ...), required for a sink' : ''}`);
+    if (m.check !== undefined && (m.is !== 'entry' || !text(m.check, 100))) p.push(`${at}.check: the check every entry matched gets (only with is "entry")`);
+    if (m.unless !== undefined) {
+      let ok = m.check !== undefined && text(m.unless, 200);
+      if (ok) { try { new RegExp(m.unless, 'u'); } catch { ok = false; } }
+      if (!ok) p.push(`${at}.unless: a regular expression for the declarations that skip "check" (only with check)`);
+    }
+    if (m.is === 'neutral' ? !text(m.why, 300) : m.why !== undefined && !text(m.why, 300)) p.push(`${at}.why: text`);
+    if (m.evidence === undefined) { if (m.is !== 'neutral') p.push(`${at}.evidence: "file:line" where the code shows it`); }
+    else {
+      const e = typeof m.evidence === 'string' ? m.evidence.match(/^(.+):(\d+)$/u) : null;
+      if (!e || Number(e[2]) < 1) p.push(`${at}.evidence: "file:line"`);
+      else if (!tracked.has(e[1])) p.push(`${at}.evidence: ${e[1]} is not a tracked file`);
+    }
+  });
+}
+
+// The vocabulary (readfirst 0.18.0 to 0.21.0) as models and rules: checks, sinks, notChecks and entries become models;
+// public entries become rules with flow.must ["public"]; checksIf, notSinks, once and sources are dropped (no tool reads
+// them). `readfirst fix` writes this; read and the hosted tools read both forms.
+// The map with its vocabulary rewritten as models and rules (what `readfirst fix` does since 0.22.0).
+export function migrateMap(map) {
+  if (!isRecord(map) || map.vocabulary === undefined) return { map, changes: [] };
+  const out = structuredClone(map);
+  const { models, rules, dropped } = vocabularyToModels(out.vocabulary);
+  const have = new Set((out.rules ?? []).map((x) => x?.id));
+  const added = rules.filter((x) => !have.has(x.id));
+  if (models.length) out.models = [...(Array.isArray(out.models) ? out.models : []), ...models];
+  if (added.length) out.rules = [...(out.rules ?? []), ...added];
+  delete out.vocabulary;
+  const changes = [`vocabulary: rewritten as ${models.length} model${models.length === 1 ? '' : 's'} and ${added.length} rule${added.length === 1 ? '' : 's'} (public entries)`];
+  if (dropped.length) changes.push(`vocabulary: dropped ${dropped.join(', ')} (no tool reads them)`);
+  return { map: out, changes };
+}
+
+export function vocabularyToModels(vocabulary) {
+  const v = isRecord(vocabulary) ? vocabulary : {};
+  const list = (k) => (Array.isArray(v[k]) ? v[k].filter(isRecord) : []);
+  const keep = (x) => ({ ...(x.evidence !== undefined ? { evidence: x.evidence } : {}), ...(x.why !== undefined ? { why: x.why } : {}) });
+  const models = [
+    ...list('entries').map((x) => ({ match: x.decorator !== undefined ? { decorator: x.decorator, ...(x.within !== undefined ? { within: x.within } : {}) } : { call: x.call }, is: 'entry', kind: 'route', ...(x.check !== undefined ? { check: x.check } : {}), ...(x.unless !== undefined ? { unless: x.unless } : {}), ...keep(x) })),
+    ...list('checks').map((x) => ({ match: { call: x.name }, is: 'check', kind: 'auth', ...keep(x) })),
+    ...list('sinks').map((x) => ({ match: { call: x.call }, is: 'sink', kind: x.label, ...keep(x) })),
+    ...list('notChecks').map((x) => ({ match: { call: x.name }, is: 'neutral', ...keep(x) })),
+  ];
+  const slug = (t) => t.toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '').slice(0, 60) || 'entry';
+  const rules = list('public').filter((x) => typeof x.entry === 'string').map((x) => ({ id: `public-${slug(x.entry)}`, rule: `${x.entry} is open to anyone on purpose`, ...(x.why !== undefined ? { why: x.why } : {}), files: ['**'], flow: { entry: x.entry, must: ['public'] } }));
+  const dropped = ['checksIf', 'notSinks', 'once', 'sources'].filter((k) => list(k).length);
+  return { models, rules, dropped };
+}
+
 // A rule written as structure (optional `flow` on a rule), so a tool can check it on the map's flows with no model:
 // which flows it is about (`entry`: an entry such as "POST /api/orders/*" or a path "/api/pay*"; `reaches`: a label such
 // as payments-api, `table:<name>`, or a function name; `*` allowed) and what each must have on the way (`must`):
 // `check` (some check of who may do it), `check:<name>` (that one), `once` (a unique key, upsert or idempotency key, so
 // running twice is safe), `no-input` (no outside input reaches the call).
-const FLOW_MUST = /^(?:check(?::[\w$.*-]{1,100})?|once|no-input)$/u;
+const FLOW_MUST = /^(?:check(?::[\w$.*-]{1,100})?|once|no-input|public)$/u;
 function ruleFlowProblems(flow, at, p) {
   if (!isRecord(flow)) { p.push(`${at}: { entry?, reaches?, must }`); return; }
   only(flow, ['entry', 'reaches', 'must'], at, p);
@@ -201,7 +283,7 @@ function ruleFlowProblems(flow, at, p) {
   if (flow.reaches !== undefined && !text(flow.reaches, 200)) p.push(`${at}.reaches: a label, table:<name> or a function name`);
   const must = strings(flow.must, `${at}.must`, p, 120);
   if (!must.length) p.push(`${at}.must: at least one of check, check:<name>, once, no-input`);
-  for (const m of must) if (!FLOW_MUST.test(m)) p.push(`${at}.must: ${m}: one of check, check:<name>, once, no-input`);
+  for (const m of must) if (!FLOW_MUST.test(m)) p.push(`${at}.must: ${m}: one of check, check:<name>, once, no-input, public`);
 }
 
 // Files that change together (optional): when a change touches a file matching `when`, it must also change one matching
@@ -243,7 +325,7 @@ function dependentsProblems(map, files, p) {
 export function mapProblems(map, files, { placement = true } = {}) {
   const p = [];
   if (!isRecord(map)) return ['map: a JSON object'];
-  only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots', 'flows', 'vocabulary', 'requires', 'dependents'], 'map', p);
+  only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots', 'flows', 'models', 'vocabulary', 'requires', 'dependents'], 'map', p);
   if (map.format !== MAP_FORMAT) p.push(`format: "${MAP_FORMAT}"`);
   if (!Array.isArray(map.groups) || !map.groups.length) return [...p, 'groups: at least one group'];
   const ids = new Set();
@@ -304,6 +386,7 @@ export function mapProblems(map, files, { placement = true } = {}) {
   if (map.hotspots !== undefined) hotspotProblems(map, files, p);
   if (map.flows !== undefined) flowProblems(map, files, p);
   if (map.vocabulary !== undefined) vocabularyProblems(map, files, p);
+  if (map.models !== undefined) modelProblems(map, files, p);
   if (map.requires !== undefined) requiresProblems(map, files, p);
   if (map.dependents !== undefined) dependentsProblems(map, files, p);
   if (p.length || !placement) return p;
@@ -455,6 +538,13 @@ export function fixMap(map, files) {
     for (const f of out.flows.filter((x) => !live(x))) changes.push(`flows: dropped ${f?.entry} in ${f?.file} (file gone)`);
     out.flows = out.flows.filter(live).map((f) => ({ ...f, reaches: f.reaches.filter((r) => tracked.has(r?.file)) }));
     if (!out.flows.length) delete out.flows;
+  }
+  if (Array.isArray(out.models)) {
+    const tracked = new Set(files);
+    const gone = out.models.filter((m) => (m?.evidence !== undefined && !tracked.has(evidenceFile(m.evidence))) || (isRecord(m?.match) && typeof m.match.file === 'string' && !live(m.match.file)));
+    for (const m of gone) changes.push(`models: dropped ${modelName(m)} (${m.evidence !== undefined && !tracked.has(evidenceFile(m.evidence)) ? `${evidenceFile(m.evidence)} gone` : 'matches no file'})`);
+    out.models = out.models.filter((m) => !gone.includes(m));
+    if (!out.models.length) delete out.models;
   }
   if (isRecord(out.vocabulary)) {
     const tracked = new Set(files);

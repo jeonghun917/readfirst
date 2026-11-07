@@ -23,20 +23,20 @@ Do this:
    name, or "entry": "POST /api/orders/*", "must": ["check", "check:<name>", "once", "no-input"]}.
 4. If a group is being replaced (old code new work must not extend), add "deprecated": {"why": "...", "use": "new-group-id or path"}.
    Read lists and \`readfirst find\` then send people and agents to the replacement.
-5. Add "vocabulary": this repository's own words, so tools that read code with no model know them. Only what you saw
-   in the code, each with "evidence": "file:line":
-   - "checks": functions that decide who may do something, {"name": "requireTester", "evidence": "...", "why": "..."}.
-   - "sinks": calls that write data, move money or call out, {"call": "*WithCtx", "label": "db-write", "evidence": "..."}.
-   - "notChecks": names that look like checks but refuse no one (a database session dependency), {"name", "why"}.
-   - "public": entries open to anyone on purpose, {"entry": "GET /api/explore/*", "why": "..."}.
-   - "entries": how this repository declares routes when it is not a framework's usual way, {"decorator": "Post",
-     "within": "RestController", "evidence": "..."} or {"call": "api.register", "evidence": "..."}. When every route
-     declared that way needs a signed-in user unless it opts out, add "check": "signed in" and "unless": "skipAuth:\\\\s*true".
-   - "checksIf": a check that counts only under a condition, {"name": "PermissionDenied", "when": "permissions\\\\s*=\\\\s*\\\\(\\\\s*[^)\\\\s]",
-     "evidence": "...", "why": "..."} (\`when\` is a regular expression the route's own code must match).
-   - "notSinks": calls that look like writes but are not, {"call": "cache.set", "why": "..."}.
-   - "once": what keeps a job or webhook from running twice here, {"name": "claimJob", "evidence": "..."}.
-   - "sources": functions whose return value is outside input, {"call": "getBody", "evidence": "..."}.
+5. Add "models": what things in this repository's own code are, so tools that read code with no model know them. Only
+   what you saw in the code, each with "evidence": "file:line". Leave out what a framework already says (Django
+   login_required, NestJS guards, a 401 answer). One row: {"match": {...}, "is": "entry|check|sink|neutral", "kind"}.
+   - "check": a function that decides who may do something and refuses the others, {"match": {"call": "requireTester"},
+     "is": "check", "kind": "auth", "evidence": "...", "why": "..."}.
+   - "sink": a call that writes data, moves money or calls out under the repository's own name, {"match": {"call":
+     "*WithCtx"}, "is": "sink", "kind": "db-write", "evidence": "..."}.
+   - "neutral": a name that looks like a check or sink but is neither (a database session dependency), {"match":
+     {"call": "get_db"}, "is": "neutral", "why": "..."}.
+   - "entry": routes the repository declares its own way, {"match": {"decorator": "Post", "within": "RestController"},
+     "is": "entry", "kind": "route", "evidence": "..."}; when every such route needs a signed-in user unless it opts
+     out, add "check": "signed in" and "unless": "skipAuth:\\\\s*true".
+   An entry open to anyone on purpose is a rule, not a model: {"id": "public-health", "rule": "GET /health is open to
+   anyone", "why": "...", "files": ["..."], "flow": {"entry": "GET /health", "must": ["public"]}}.
 6. Run \`npx readfirst check\` until it says the map is good (\`npx readfirst fix\` places new files and drops dead
    patterns for you), then show the user the diff of ${MAP_PATH}.
 

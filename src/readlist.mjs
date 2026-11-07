@@ -1,6 +1,6 @@
 // The read list for files someone is about to change: the rules that cover them, the risks written for their group,
 // the checks to run (the group's commands, the rules' commands, and the tests that import them), and who uses them.
-import { evidenceFile, fixMap, groupOf, isOwnFile, matcher, vocabularyName } from './map.mjs';
+import { evidenceFile, fixMap, groupOf, isOwnFile, matcher, modelName, vocabularyName } from './map.mjs';
 
 export const READ_LIST_FORMAT = 'readfirst/read-list@1';
 // Test files by folder or name, across the languages imports.mjs reads: JS/TS, Python, Go, Rust (tests/), Elixir,
@@ -121,6 +121,8 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
     for (const d of map.dependents ?? []) if (matcher(d.files)(target)) note('dependents', `${d.repo}\0${d.files.join('\0')}`, { repo: d.repo, paths: d.paths ?? [], why: d.why }, target);
     for (const f of map.flows ?? []) if (f.file === target || f.reaches.some((r) => r.file === target)) note('flows', `${f.file}\0${f.line}\0${f.entry}`, { entry: f.entry, file: f.file, line: f.line, checks: f.checks, reaches: f.reaches }, target);
     // The repository's own words whose evidence is in this file: what readfirst treats as a check or a sink here.
+    // The repository's models (0.22.0) whose evidence is in this file, shown in the same section.
+    for (const m of Array.isArray(map.models) ? map.models : []) if (evidenceFile(m?.evidence) === target) note('vocabulary', `${m.is}\0${modelName(m)}`, { kind: m.is, name: modelName(m), ...(m.kind ? { label: m.kind } : {}), ...(m.match?.within ? { within: m.match.within } : {}), ...(m.check ? { check: m.check } : {}), ...(m.unless ? { unless: m.unless } : {}), evidence: m.evidence, why: m.why ?? null }, target);
     for (const [kind, list] of Object.entries(map.vocabulary ?? {})) for (const x of list ?? []) if (evidenceFile(x.evidence) === target) note('vocabulary', `${kind}\0${vocabularyName(x)}`, { kind, name: vocabularyName(x), ...(x.label ? { label: x.label } : {}), ...(x.when ? { when: x.when } : {}), ...(x.within ? { within: x.within } : {}), ...(x.check ? { check: x.check } : {}), ...(x.unless ? { unless: x.unless } : {}), evidence: x.evidence, why: x.why ?? null }, target);
     for (const h of map.hotspots ?? []) if (h.file === target) note('hotspots', `${h.file}\0${h.symbol}\0${h.line}`, { file: h.file, symbol: h.symbol, line: h.line, labels: h.labels, rules: h.rules ?? [], note: h.note ?? null }, target);
     for (const rule of map.rules ?? []) {
@@ -198,7 +200,7 @@ export function toMarkdown(list, { checklist = false, heading, broke = true } = 
   if (broke) lines.push(...brokeSection(list.targets));
   section('Hot spots in this code', list.hotspots ?? [], (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`);
   section('Outside input reaches this code', list.flows ?? [], (f) => `- **${f.entry}** (\`${f.file}:${f.line}\`) reaches ${f.reaches.map((r) => `\`${r.symbol}\` (\`${r.file}:${r.line}\`: ${r.labels.join(', ')}${r.tables?.length ? ` on ${r.tables.map((t) => `\`${t}\``).join(', ')}` : ''}${r.inputs?.length ? `, with input ${r.inputs.map((t) => `\`${t.replace(/`/gu, "'")}\``).join(', ')}` : ''})`).join(', ')}; ${f.checks.length ? `checked by ${f.checks.map((c) => `\`${c}\``).join(', ')}` : 'no check of who may do it found on the way'}${forWhom(f)}`);
-  const said = { checks: 'decides who may do something', sinks: 'does something that matters', notChecks: 'is not a check', entries: 'declares a route', checksIf: 'decides who may do something only where the code matches', notSinks: 'does not write or call out', once: 'keeps a job or webhook from running twice', sources: 'returns outside input' };
+  const said = { entry: 'is where outside input enters', check: 'decides who may do something', sink: 'does something that matters', neutral: 'looks like one but is none of these', checks: 'decides who may do something', sinks: 'does something that matters', notChecks: 'is not a check', entries: 'declares a route', checksIf: 'decides who may do something only where the code matches', notSinks: 'does not write or call out', once: 'keeps a job or webhook from running twice', sources: 'returns outside input' };
   section('This repository\'s words', list.vocabulary ?? [], (v) => `- \`${v.name}\` (\`${v.evidence}\`) ${said[v.kind] ?? v.kind}${v.when ? ` \`${v.when.replace(/`/gu, "'")}\`` : ''}${v.within ? ` inside \`@${v.within}\`` : ''}${v.check ? `, checked by \`${v.check.replace(/`/gu, "'")}\`${v.unless ? ` unless \`${v.unless.replace(/`/gu, "'")}\`` : ''}` : ''}${v.label ? ` (${v.label})` : ''}${v.why ? `: ${v.why}` : ''}${forWhom(v)}`);
   section('Change these too', list.together ?? [], (t) => `- ${t.also.map((a) => `\`${a}\``).join(' or ')}${t.changed ? ' (changed)' : ''} — ${t.why}${forWhom(t)}`);
   section('Other repositories depend on this', list.dependents ?? [], (d) => `- **${d.repo}**${d.paths.length ? ` (${d.paths.map((x) => `\`${x}\``).join(', ')})` : ''} — ${d.why}${forWhom(d)}`);
