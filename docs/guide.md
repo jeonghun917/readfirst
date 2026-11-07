@@ -17,7 +17,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.22.0 read <file>` (and `jeonghun917/readfirst@v0.22.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.22.2 read <file>` (and `jeonghun917/readfirst@v0.22.2` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -42,9 +42,12 @@ npx readfirst fix                # after moving code: place new files, drop patt
 
 `read`, `diff`, the MCP tools and the Claude Code hook add a **Broke before** section for each file, from `git log` alone:
 no map, no network, nothing written. A commit counts as a scar when its subject says something broke: a revert or
-rollback (weight 3), a hotfix, regression or "broke", "crash", "outage" (2), or a fix (1). Dependency bumps, formatting,
-typos, docs, tests and new features do not count. A file shows the section when its scars weigh 2 or more, with the
-count, the latest one and the strongest three:
+rollback (weight 3), a hotfix (2), a fix (1), or a regression, "broke", "crash" or "outage" (2 with a fix, 1 alone). A verb
+counts only where it starts part of the subject, as what the commit does ("fix tooltips", "Roll back the release",
+"toggle fix"), not where it is mentioned ("fixed upstream", "the fix PR"); issue numbers around the subject are ignored.
+Dependency bumps, formatting, typos, docs, tests, styling, translations and new features do not count, nor does a commit
+that touched more than 25 files. A file shows the section when its scars weigh 2 or more, with the count, the latest
+one and the strongest three:
 
 ```
 - `src/billing/charge.ts`: broke before: 4 fixes, last 2026-10-28 a1b2c3d "fix: webhook bind before queue"
