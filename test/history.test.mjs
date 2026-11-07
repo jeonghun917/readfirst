@@ -35,7 +35,7 @@ test('scar: what the commit does, not words it mentions', () => {
     'HANDOFF: 0.20.0 state on top, the handover marked history, Broke before items ticked', 'Clear events queue on rollback',
     'Enforce a fixed key length for v2 tokens', 'Fix flaky test', 'fix failed attribution tests', 'Fix CSS.', 'Fixed types.',
     'fix(i18n): add missing labels', 'Greek translations fixes', 'Add rollback button', 'Catch errors and revert to default',
-    'fix double line breaks in the footer']) {
+    'fix double line breaks in the footer', 'init: per-package checks, and --ci writes the Action with auto-fix (#50)']) {
     assert.notEqual(scar(m)?.kind, 'rollback', m);
     if (!/line breaks/u.test(m)) assert.equal(scar(m), null, m);
   }

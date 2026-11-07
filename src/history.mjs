@@ -37,7 +37,7 @@ const ONLY_TESTS = /^(?:bug[ -]?)?fix(?:es|ed|ing)?\s+(?:the\s+|a\s+|some\s+|fai
 const NOT_A_FAILURE = /\bregress\w*\s+(?:tests?|suites?|checks?|coverage)\b|\b(?:line|page|word|column)[ -]breaks?\b|\bbreaking changes?\b|\bcrash(?:[ -]reporting|[ -]reports?|lytics)\b|\bincident(?:[ -]response|s? page|s? management)\b/iu;
 const FIX_ELSEWHERE = /\bbug[ -]?fix(?:es)?\b|(?<!\b(?:the|a|an|our|this|that|its|their)\s+)\b(?:fix|resolve|solve|squash|patch|address|repair)(?:es|s|d|ed)?\s+(?:\S+\s+){0,3}(?:bugs?|errors?|crash(?:es)?|issues?|problems?)\b|\b(?:try|tries|trying|attempt(?:s|ing)?) to fix\b/iu;
 // Terse subjects put the fix last: "toggle fix", "sharePage hotfix", "switch fixed", "Small fix to realtime count".
-const FIX_LAST = /\b(hot[ -]?)?fix(?:es)?(?:\s+(?:for|to|in|on|of)\s+.+)?$|(?<!\b(?:until|once|when|if|not|be|been|being|is|are|was|were|gets?|got)\s+)\bfixed$/iu;
+const FIX_LAST = /(?<!-)\b(hot[ -]?)?fix(?:es)?(?:\s+(?:for|to|in|on|of)\s+.+)?$|(?<!\b(?:until|once|when|if|not|be|been|being|is|are|was|were|gets?|got)\s+)\bfixed$/iu;
 // ...but not when what was fixed is styling, types, syntax, wording or translations.
 const COSMETIC = /\b(?:css|styles?|styling|syntax|language|translations?|locales?|i18n|l10n|types?|typescript|typings|typos?|lint|format(?:ting)?|code style|docs?|wording|copy)\s+(?:and\s+\w+\s+)?(?:fix(?:es|ed)?)\b|^fix(?:es|ed)?\s+(?:the\s+)?(?:css|styles?|syntax|types?|typos?)\b/iu;
 
@@ -62,7 +62,9 @@ export function scar(message) {
   // In a list ("rename X, fix tooltips, update Y") a fix counts when it has an object, not "fix as one flow".
   const listed = parts.flatMap((c) => c.split(/,\s+/u).slice(1)).some((c) => /^(?:fix(?:es|ed)?)\s+(?!(?:as|or|and|to|in|on|for|of|with|is|are|the product)\b)\S/iu.test(c) && !ONLY_TESTS.test(c) && !COSMETIC.test(c));
   // A label before a colon that ends in "fixes" ("Small fixes: ...", "Self-scan fix: ...") says the commit fixes.
-  const labelled = /^[^:]{0,40}\b(?:bug[ -]?|hot[ -]?)?fix(?:es)?:\s/iu.test(bare);
+  // Singular "fix:" after a name is often a command or feature ("readfirst fix: place new files"), so a label needs
+  // "fixes" or a bug/hot prefix.
+  const labelled = /^[^:]{0,40}\b(?:(?:bug[ -]?|hot[ -]?)fix(?:es)?|fixes):\s/iu.test(bare);
   let fix = labelled || listed || FIX_ELSEWHERE.test(bare) || /\bfix(?:es|ed)?\s+#\d+/iu.test(first);
   for (const c of parts) {
     if (ONLY_TESTS.test(c) || COSMETIC.test(c)) continue;
