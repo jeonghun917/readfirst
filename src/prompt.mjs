@@ -29,6 +29,13 @@ Do this:
    - "sinks": calls that write data, move money or call out, {"call": "*WithCtx", "label": "db-write", "evidence": "..."}.
    - "notChecks": names that look like checks but refuse no one (a database session dependency), {"name", "why"}.
    - "public": entries open to anyone on purpose, {"entry": "GET /api/explore/*", "why": "..."}.
+   - "entries": how this repository declares routes when it is not a framework's usual way, {"decorator": "Post",
+     "within": "RestController", "evidence": "..."} or {"call": "api.register", "evidence": "..."}.
+   - "checksIf": a check that counts only under a condition, {"name": "PermissionDenied", "when": "permissions\\\\s*=\\\\s*\\\\(\\\\s*[^)\\\\s]",
+     "evidence": "...", "why": "..."} (\`when\` is a regular expression the route's own code must match).
+   - "notSinks": calls that look like writes but are not, {"call": "cache.set", "why": "..."}.
+   - "once": what keeps a job or webhook from running twice here, {"name": "claimJob", "evidence": "..."}.
+   - "sources": functions whose return value is outside input, {"call": "getBody", "evidence": "..."}.
 6. Run \`npx readfirst check\` until it says the map is good (\`npx readfirst fix\` places new files and drops dead
    patterns for you), then show the user the diff of ${MAP_PATH}.
 

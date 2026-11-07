@@ -84,6 +84,34 @@ test('vocabulary: the repository\'s own checks, sinks, non-checks and public ent
   assert.match(md, /## This repository's words\n\n- `requireRole` \(`src\/routes\/orders\.js:7`\) decides who may do something: answers 403/u);
 });
 
+test('vocabulary since 0.21.0: entries, checksIf, notSinks, once and sources; read shows them, fix drops gone files', () => {
+  const vocabulary = {
+    entries: [{ decorator: 'Post', within: 'RestController', evidence: 'src/routes/orders.js:3' }, { call: 'api.register', evidence: 'src/web/page.js:2', why: 'the app registers its pages here' }],
+    checksIf: [{ name: 'PermissionDenied', when: 'permissions\\s*=\\s*\\(\\S', evidence: 'src/routes/orders.js:9', why: 'raised only when the mutation lists a permission' }],
+    notSinks: [{ call: 'cache.set', why: 'an in-memory cache' }],
+    once: [{ name: 'claimJob', evidence: 'src/billing/charge.js:12' }],
+    sources: [{ call: 'getBody', evidence: 'src/routes/orders.js:20' }],
+  };
+  assert.deepEqual(mapProblems({ ...base(), vocabulary }, files), []);
+  const p = (v) => mapProblems({ ...base(), vocabulary: v }, files).join('\n');
+  assert.match(p({ entries: [{ decorator: 'Post', call: 'x', evidence: 'src/web/page.js:1' }] }), /one of "decorator"/u);
+  assert.match(p({ entries: [{ call: 'x', within: 'Ctl', evidence: 'src/web/page.js:1' }] }), /within: the class decorator/u);
+  assert.match(p({ entries: [{ decorator: 'Post' }] }), /evidence: "file:line"/u);
+  assert.match(p({ checksIf: [{ name: 'X', when: '(', evidence: 'src/web/page.js:1', why: 'w' }] }), /when: a regular expression/u);
+  assert.match(p({ checksIf: [{ name: 'X', when: 'a', evidence: 'src/web/page.js:1' }] }), /why: text/u);
+  assert.match(p({ notSinks: [{ call: 'cache.set' }] }), /why: text/u);
+  assert.match(p({ notSinks: [{ call: 'cache.set', label: 'DB', why: 'w' }] }), /lowercase/u);
+  assert.match(p({ once: [{ name: 'claimJob' }] }), /evidence/u);
+  assert.match(p({ sources: [{ name: 'getBody', evidence: 'src/web/page.js:1' }] }), /call: a function or call name/u);
+  const { map, changes } = fixMap({ ...base(), vocabulary }, files.filter((f) => f !== 'src/billing/charge.js'));
+  assert.equal(map.vocabulary.once, undefined);
+  assert.ok(changes.some((c) => /vocabulary\.once: dropped claimJob/u.test(c)));
+  const md = toMarkdown(readList({ map: { ...base(), vocabulary }, files, imports: [], targets: ['src/routes/orders.js'] }));
+  assert.match(md, /- `Post` \(`src\/routes\/orders\.js:3`\) declares a route inside `@RestController`/u);
+  assert.match(md, /- `PermissionDenied` \(`src\/routes\/orders\.js:9`\) decides who may do something only where the code matches `permissions/u);
+  assert.match(md, /- `getBody` \(`src\/routes\/orders\.js:20`\) returns outside input/u);
+});
+
 test('a reach may name the inputs that reach it; read shows them', () => {
   const f = { ...flow(), reaches: [{ ...flow().reaches[0], inputs: ['req.body', 'amount'] }] };
   assert.deepEqual(mapProblems({ ...base(), flows: [f] }, files), []);
