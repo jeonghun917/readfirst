@@ -2,8 +2,8 @@
 
 ## Supported versions
 
-Only the latest release gets fixes. Today that is 0.8.x, on npm as `readfirst` and as the GitHub Action
-`jeonghun917/readfirst@v0`.
+Only the latest release gets fixes: the newest version on npm as `readfirst`, and the GitHub Action
+`jeonghun917/readfirst@v0`, which always points at it.
 
 ## Reporting a vulnerability
 

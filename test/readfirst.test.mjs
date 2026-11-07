@@ -495,6 +495,19 @@ test('server.json (MCP Registry) names the same package, version and mcpName as 
   assert.ok(server.description.length <= 100);
 });
 
+// An outside review (2026-11-07) found SECURITY.md still saying 0.8.x at 0.22.3. A doc names either this release or no
+// version; the guide's pins are this release.
+test('the docs name no version but this release', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  for (const doc of ['README.md', 'SECURITY.md', 'docs/guide.md']) {
+    const text = readFileSync(new URL(`../${doc}`, import.meta.url), 'utf8');
+    for (const m of text.matchAll(/readfirst@v?(\d+\.\d+\.\d+)|(?:release|version|Today that is)\D{0,12}(\d+\.\d+\.(?:\d+|x))\b/giu)) {
+      const v = m[1] ?? m[2];
+      assert.ok(v === pkg.version, `${doc} names ${v}, package.json is ${pkg.version}: ${m[0]}`);
+    }
+  }
+});
+
 test('mcp: starts and lists its tools outside a git repository; a tool call there says where to start it', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'readfirst-nogit-'));
   const { spawn } = await import('node:child_process');
