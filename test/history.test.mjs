@@ -8,7 +8,7 @@ import { commentBody, runAction } from '../src/action.mjs';
 import { audit, auditText } from '../src/audit.mjs';
 import { mcpHandler } from '../src/mcp.mjs';
 import { main, runHook, writeWorkflow, WORKFLOW_PATH } from '../src/cli.mjs';
-import { baseRevision, brokeBefore, brokeMost, NOISE, NOT_CODE, NOT_TRAP, parseScarLog, scar, SIGNALS, spreadScars, summarizeScars, TEST } from '../src/history.mjs';
+import { baseRevision, brokeBefore, brokeMost, MAX_FILES_PER_COMMIT, NOISE, NOT_CODE, NOT_TRAP, parseScarLog, parseStatLog, scar, SIGNALS, spreadScars, summarizeScars, TEST } from '../src/history.mjs';
 import { readList, toMarkdown } from '../src/readlist.mjs';
 
 test('scar: the subject says something broke, noise does not count', () => {
@@ -24,6 +24,45 @@ test('scar: the subject says something broke, noise does not count', () => {
   for (const m of ['0.16.0: readfirst scan, the published bug shapes', 'v2.1.0 fix login', '0.17.0: Broke before, where the code broke']) assert.equal(scar(m), null, m);
   assert.equal(scar('fix: login loop after the 2.1.0 upgrade').kind, 'fix', 'a version later in the subject is not a release commit');
   assert.ok(SIGNALS.length && NOISE instanceof RegExp && NOT_CODE.test('package-lock.json') && TEST.test('src/a.test.ts'));
+});
+
+// Subjects measured on readfirst-cloud, umami, saleor and netbox (2026-11-07): a verb counts where it starts a clause,
+// as what the commit does; a fix of tests, styling or translations is not a trap; issue numbers are not words.
+test('scar: what the commit does, not words it mentions', () => {
+  for (const m of ['kairos: private until fixed, not never published', 'Ledger: n8n RabbitMQ bind fixed upstream (#96)',
+    'A $49 test and dead-code audit: the fixed patterns on one repository', 'HANDOFF: find, prove, fix as one product flow; CLI renames',
+    'Map quality: bug-coverage eval, evidence checked on the server', 'Disclosures: open the fix PR with the issue',
+    'HANDOFF: 0.20.0 state on top, the handover marked history, Broke before items ticked', 'Clear events queue on rollback',
+    'Enforce a fixed key length for v2 tokens', 'Fix flaky test', 'fix failed attribution tests', 'Fix CSS.', 'Fixed types.',
+    'fix(i18n): add missing labels', 'Greek translations fixes', 'Add rollback button', 'Catch errors and revert to default',
+    'fix double line breaks in the footer']) {
+    assert.notEqual(scar(m)?.kind, 'rollback', m);
+    if (!/line breaks/u.test(m)) assert.equal(scar(m), null, m);
+  }
+  const is = (m, kind, weight) => { const s = scar(m); assert.deepEqual(s && [s.kind, s.weight], [kind, weight], m); };
+  is('Fix what our own review found (#77): cross-account dependents', 'fix', 1);
+  is('Self-scan fixes: stream the tarball with a byte cap', 'fix', 1);
+  is('17306 fix vlan group utilization', 'fix', 1);
+  is('#20378 fix delete of DataSource', 'fix', 1);
+  is('misleading Domain description fixed (#13854)', 'fix', 1);
+  is('Rename SideMenu to NavMenu, fix tooltips, and update react-zen', 'fix', 1);
+  is('show page toggle fix', 'fix', 1);
+  is('sharePage hotfix', 'hotfix', 2);
+  is('alias event_name to resolve funnel bug', 'fix', 1);
+  is('Update robots.txt fixes #3996', 'fix', 1);
+  is('Fixes #10181: Restore MultiPartParser (regression from #10031)', 'regression', 2);
+  is('Fixing Broken Link For Custom Links Documentation', 'broke', 2);
+  is('Checkout totals regressed after the tax change', 'regression', 1);
+  is('Roll back the 0.17.0 wiring', 'rollback', 3);
+});
+
+test('read leaves out a commit that touched more than MAX_FILES_PER_COMMIT files', () => {
+  const log = `\x01aaa\x001700000000\x00Roll back the release\n\n ${MAX_FILES_PER_COMMIT + 1} files changed, 9 insertions(+)\n\x01bbb\x001600000000\x00fix: totals were in dollars\n\n 2 files changed, 1 insertion(+)\n\x01ccc\x001500000000\x00hotfix: login loop\n\n 1 file changed\n`;
+  const commits = parseStatLog(log);
+  assert.deepEqual(commits.map((c) => c.touched), [MAX_FILES_PER_COMMIT + 1, 2, 1]);
+  const s = summarizeScars('src/pay.js', commits);
+  assert.equal(s.count, 2, 'the sweeping rollback is not one of them');
+  assert.ok(!s.top.some((t) => t.sha === 'aaa'));
 });
 
 test('spreadScars: a commit\'s weight is spread over its code files, tests count half, big commits are skipped', () => {
