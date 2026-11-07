@@ -5,7 +5,7 @@
 Bugs it found that are now fixed upstream: [Saleor](https://github.com/saleor/saleor/pull/19984),
 [Wagtail](https://github.com/wagtail/wagtail/pull/14790), [n8n](https://github.com/n8n-io/n8n/pull/43033),
 [django-allauth](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb). 120 real findings across 44
-open-source repositories, reported to 17 projects. [What it caught](#what-it-caught).
+open-source repositories, reported to 17 projects.
 
 Coding agents can follow imports. What they don't know is what your team knows: "amounts here are in cents",
 "this table is read by the mobile app, keep old columns", "run the payment e2e after touching this". readfirst keeps that
