@@ -121,11 +121,23 @@ function flowProblems(map, files, p) {
 // code, reviewed in the PR like the rest of the map. Older readfirst versions reject maps that have it.
 export const MAX_VOCABULARY = 200;
 const VOCAB_NAME = /^[A-Za-z_$*][\w$.*]{0,99}$/u;
-const VOCAB_KINDS = { checks: ['name', 'evidence', 'why'], sinks: ['call', 'label', 'evidence', 'why'], notChecks: ['name', 'why', 'evidence'], public: ['entry', 'why'] };
+// Since 0.21.0 also: how the repository declares its own routes (`entries`: a decorator such as "Post" inside a class
+// decorated "RestController", or a call such as "api.register"), checks that hold only under a condition (`checksIf`:
+// "PermissionDenied" counts only where the code matches `when`, a regular expression), calls that look like writes but
+// are not (`notSinks`), what keeps a job or webhook from running twice (`once`), and functions whose return value is
+// outside input (`sources`).
+const VOCAB_KINDS = {
+  checks: ['name', 'evidence', 'why'], sinks: ['call', 'label', 'evidence', 'why'], notChecks: ['name', 'why', 'evidence'], public: ['entry', 'why'],
+  entries: ['decorator', 'call', 'within', 'evidence', 'why'], checksIf: ['name', 'when', 'evidence', 'why'], notSinks: ['call', 'label', 'why', 'evidence'],
+  once: ['name', 'evidence', 'why'], sources: ['call', 'evidence', 'why'],
+};
+const NAME_KEY = { sinks: 'call', notSinks: 'call', sources: 'call' };
+// What a vocabulary entry is called, for messages and read lists.
+export const vocabularyName = (x) => x?.name ?? x?.call ?? x?.decorator ?? x?.entry ?? null;
 export const evidenceFile = (e) => (typeof e === 'string' ? e.replace(/:\d+$/u, '') : null);
 function vocabularyProblems(map, files, p) {
   const v = map.vocabulary;
-  if (!isRecord(v)) { p.push('vocabulary: { checks, sinks, notChecks, public }'); return; }
+  if (!isRecord(v)) { p.push(`vocabulary: { ${Object.keys(VOCAB_KINDS).join(', ')} }`); return; }
   only(v, Object.keys(VOCAB_KINDS), 'vocabulary', p);
   const tracked = new Set(files);
   const evidence = (e, at, required) => {
@@ -143,15 +155,25 @@ function vocabularyProblems(map, files, p) {
       const at = `vocabulary.${kind}[${i}]`;
       if (!isRecord(x)) { p.push(`${at}: { ${keys.join(', ')} }`); return; }
       only(x, keys, at, p);
+      const nameOk = (name) => typeof name === 'string' && VOCAB_NAME.test(name) && !/^\**$/u.test(name);
       if (kind === 'public') {
         if (!text(x.entry, 200)) p.push(`${at}.entry: an entry such as "GET /api/explore/*"`);
+      } else if (kind === 'entries') {
+        if ((x.decorator === undefined) === (x.call === undefined)) p.push(`${at}: one of "decorator" (a decorator that makes the function below it a route) or "call" (a call that registers one)`);
+        else if (!nameOk(x.decorator ?? x.call)) p.push(`${at}.${x.decorator !== undefined ? 'decorator' : 'call'}: a decorator or call name, "*" allowed`);
+        if (x.within !== undefined && (x.decorator === undefined || !nameOk(x.within))) p.push(`${at}.within: the class decorator whose path prefixes the routes (only with "decorator")`);
       } else {
-        const name = kind === 'sinks' ? x.call : x.name;
-        if (typeof name !== 'string' || !VOCAB_NAME.test(name) || /^\**$/u.test(name)) p.push(`${at}.${kind === 'sinks' ? 'call' : 'name'}: a function or call name, "*" allowed`);
+        const key = NAME_KEY[kind] ?? 'name';
+        if (!nameOk(x[key])) p.push(`${at}.${key}: a function or call name, "*" allowed`);
       }
-      if (kind === 'sinks' && (typeof x.label !== 'string' || !ID.test(x.label))) p.push(`${at}.label: lowercase letters, digits and "-" (db-write, money, ...)`);
-      if (x.why !== undefined || kind === 'notChecks' || kind === 'public') if (!text(x.why, 300)) p.push(`${at}.why: text`);
-      evidence(x.evidence, at, kind === 'checks' || kind === 'sinks');
+      if ((kind === 'sinks' || (kind === 'notSinks' && x.label !== undefined)) && (typeof x.label !== 'string' || !ID.test(x.label))) p.push(`${at}.label: lowercase letters, digits and "-" (db-write, money, ...)`);
+      if (kind === 'checksIf') {
+        let ok = text(x.when, 200);
+        if (ok) { try { new RegExp(x.when, 'u'); } catch { ok = false; } }
+        if (!ok) p.push(`${at}.when: a regular expression the entry's code must match for the check to count`);
+      }
+      if (x.why !== undefined || ['notChecks', 'public', 'checksIf', 'notSinks'].includes(kind)) if (!text(x.why, 300)) p.push(`${at}.why: text`);
+      evidence(x.evidence, at, ['checks', 'sinks', 'entries', 'checksIf', 'once', 'sources'].includes(kind));
     });
   }
 }
@@ -430,7 +452,7 @@ export function fixMap(map, files) {
     for (const kind of Object.keys(VOCAB_KINDS)) {
       if (!Array.isArray(out.vocabulary[kind])) continue;
       const gone = out.vocabulary[kind].filter((x) => x?.evidence !== undefined && !tracked.has(evidenceFile(x.evidence)));
-      for (const x of gone) changes.push(`vocabulary.${kind}: dropped ${x?.name ?? x?.call} (${evidenceFile(x.evidence)} gone)`);
+      for (const x of gone) changes.push(`vocabulary.${kind}: dropped ${vocabularyName(x)} (${evidenceFile(x.evidence)} gone)`);
       out.vocabulary[kind] = out.vocabulary[kind].filter((x) => !gone.includes(x));
       if (!out.vocabulary[kind].length) delete out.vocabulary[kind];
     }

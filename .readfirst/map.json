@@ -505,9 +505,9 @@
       ],
       "repo": "jeonghun917/readfirst-cloud",
       "paths": [
-        "lib/vendor/map.mjs"
+        "package.json"
       ],
-      "why": "the hosted server validates and writes maps with a copy of this file; a new map field must reach that copy before the server writes it"
+      "why": "the hosted server imports src/map.mjs from the readfirst version pinned in its package.json; a new map field reaches the server only after a release and a bump of that pin, so the server must not write it before then"
     },
     {
       "files": [

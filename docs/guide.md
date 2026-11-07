@@ -17,7 +17,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.20.0 read <file>` (and `jeonghun917/readfirst@v0.20.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.21.0 read <file>` (and `jeonghun917/readfirst@v0.21.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -349,6 +349,13 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   refuse no one, `public` entries open to anyone on purpose. A name may hold `*`; `evidence` is `file:line`. `read` lists
   the ones whose evidence is in the file being changed; `fix` drops those whose file is gone. Older readfirst versions
   reject maps that have it.
+  Since 0.21.0 also: `entries` (`{ "decorator", "within"?, "evidence", "why"? }` or `{ "call", "evidence", "why"? }`): how
+  the repository declares routes its own way, a decorator such as `Post` inside a class decorated `RestController`, or a
+  call such as `api.register("/x", handler)`; `checksIf` (`{ "name", "when", "evidence", "why" }`): a check that counts
+  only where the route's code matches `when`, a regular expression; `notSinks` (`{ "call", "label"?, "why",
+  "evidence"? }`): calls that look like writes but are not; `once` (`{ "name", "evidence", "why"? }`): what keeps a job or
+  webhook from running twice; `sources` (`{ "call", "evidence", "why"? }`): functions whose return value is outside
+  input. readfirst before 0.21.0 rejects maps that use them.
 - **deprecated** (optional, on a group): code being replaced, as `{ "why": "...", "use"?: "billing" }` where `use` is the
   group or path to use instead. Read lists open with "Being replaced", the hook tells the agent not to add to it,
   `find` lists its matches last with what to use instead, and `audit` counts the files outside it that still import it.
