@@ -36,22 +36,6 @@
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read, diff, view, verify and export --cursor use loadMapLenient (read and diff, and the PreToolUse hook and audit, also work with no map at all: they then show only where the code broke before, from git history, and `readList` gets a null map): they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
-          "files": [
-            "src/cli.mjs",
-            "bin/**"
-          ]
-        },
-        {
-          "text": "the pattern syntax in the agent brief must match what map.mjs accepts; if you change the pattern rules, update the brief as well",
-          "files": [
-            "src/prompt.mjs"
-          ]
-        },
-        {
-          "text": "runHook swallows every error and returns null (exit 0, no output), so a bug in it looks the same as 'nothing to say' and the edit goes ahead; only a test with real map data would catch it. It also uses repoFiles, readMapFile and mapProblems, so changes there change the hook"
-        },
-        {
           "text": "verify runs the map's check commands with the shell in the repository root; a map is repository content and its commands run with the user's rights, so verify stays an explicit command, never called from the PreToolUse hook or the Action. The one exception is the opt-in Stop hook (`hook --install --verify`), and it runs only commands the base branch's map already lists (trustedRuns): a command a branch adds or changes is named, never run, so checking out someone's branch cannot run their new command",
           "files": [
             "src/cli.mjs"
@@ -65,17 +49,36 @@
           ]
         },
         {
-          "text": "brokeBefore (src/history.mjs) runs one `git log` per code file for read, diff, the hook and the Action, and never throws: a missing git, a non-repository or a repository with no commits gives {} (nothing shown). A shallow clone with fewer than 200 commits gives { notFetched: true } for files with nothing to show, so a test that runs read in a `--depth 1` clone sees 'history not fetched'; a clone fetched to depth 200 or more counts as having the history",
+          "text": "runHook and runStopHook find the repository from each edited file, not from the session's folder: a session can start in a folder above several repositories, and the hook state keeps absolute paths (older state files with relative paths still read against the session's repository). Looking the root up from event.cwd again would make the hook silent in that setup - src/cli.mjs:266"
+        },
+        {
+          "text": "the PreToolUse hook reads Bash commands too: src/bash-writes.mjs names the files a command writes (redirects, sed -i / perl -i, tee, cp/mv destinations, git checkout of paths, code that writes run by python/node/sh from -c, -e or a here-document) and only those; a command that merely reads or runs tests must give none, or every Bash call would carry notes. The matcher in installHook and plugins/readfirst/hooks/hooks.json includes Bash; with --gate the first call on an unseen file is denied with the notes and the retry passes, because the notes mark the file as seen - src/bash-writes.mjs:16"
+        },
+        {
+          "text": "`check` reports map problems and exits 1; besides the map's own problems it also fails when the map uses a field the readfirst that CI pins would reject (pinProblems, from the pins that pinnedReadfirst finds in .github/workflows/*.yml and package.json; --strict does not turn this off). prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read, diff, view, verify and export --cursor use loadMapLenient (read and diff, and the PreToolUse hook and audit, also work with no map at all: they then show only where the code broke before, from git history, and `readList` gets a null map): they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
+          "files": [
+            "src/cli.mjs",
+            "bin/**"
+          ]
+        },
+        {
+          "text": "runHook swallows every error and returns null (exit 0, no output), so a bug in it looks the same as 'nothing to say' and the edit goes ahead; only a test with real map data would catch it. The hook also runs with no map (it then shows only where the file broke before), so a map-less path breaks silently too. It uses repoFiles, readMapFile, mapProblems and brokeBefore (always at HEAD), so changes there change the hook"
+        },
+        {
+          "text": "brokeBefore (src/history.mjs) runs one `git log` per code file for read, diff, the hook and the Action, and never throws: a missing git, a non-repository or a repository with no commits gives {} (nothing shown). It reads the history at a revision: HEAD for read and the hook, the commit where the branch left its base for diff (changedFiles returns `since`), the PR base for the Action (baseRevision), so a branch's own 'fix:' commits do not count as the file having broken before; a new caller must pass the right revision. A shallow clone with fewer than 200 commits gives { notFetched: true } for files with nothing to show, so a test that runs read in a `--depth 1` clone sees 'history not fetched'; a clone fetched to depth 200 or more counts as having the history",
           "files": [
             "src/cli.mjs",
             "src/history.mjs"
           ]
         },
         {
-          "text": "runHook and runStopHook find the repository from each edited file, not from the session's folder: a session can start in a folder above several repositories, and the hook state keeps absolute paths (older state files with relative paths still read against the session's repository). Looking the root up from event.cwd again would make the hook silent in that setup - src/cli.mjs:266"
+          "text": "the pattern syntax, the model row shapes (`match`, `is`, `kind`, `check`, `unless`, `evidence`, `why`; since 0.22.0 the brief asks for models, not vocabulary), the older vocabulary entry shapes that map.mjs still accepts (checks, sinks, notChecks, public, entries, checksIf, notSinks, once, sources) and the rule `flow` shape (`entry` or `reaches`, and `must`: check, check:<name>, once, no-input, public) in the agent brief must match what map.mjs accepts; if you change the pattern rules, modelProblems (MODEL_ROLES), vocabularyProblems (VOCAB_KINDS) or ruleFlowProblems (FLOW_MUST), update the brief (and docs/guide.md) as well",
+          "files": [
+            "src/prompt.mjs"
+          ]
         },
         {
-          "text": "the PreToolUse hook reads Bash commands too: src/bash-writes.mjs names the files a command writes (redirects, sed -i / perl -i, tee, cp/mv destinations, git checkout of paths, code that writes run by python/node/sh from -c, -e or a here-document) and only those; a command that merely reads or runs tests must give none, or every Bash call would carry notes. The matcher in installHook and plugins/readfirst/hooks/hooks.json includes Bash; with --gate the first call on an unseen file is denied with the notes and the retry passes, because the notes mark the file as seen - src/bash-writes.mjs:16"
+          "text": "installHook skips the PreToolUse entry when any existing one already runs `readfirst hook` (has()), so settings written by an older version keep the old `Edit|Write|MultiEdit` matcher and the hook never sees Bash; rerunning `hook --install` does not change it, the matcher has to be edited by hand. It also installs the plain command, never `hook --gate`"
         }
       ]
     },
@@ -245,10 +248,28 @@
           ]
         },
         {
-          "text": "the scar rules in src/history.mjs (SIGNALS, NOISE, NOT_CODE, TEST, scar, spreadScars) are a copy of the hosted version's lib/history.mjs, kept in one module so the hosted side can import them from the package; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
+          "text": "the scar rules in src/history.mjs (SIGNALS, NOISE, NOT_CODE, TEST, scar, spreadScars, and the clause rules CLAUSES, ONLY_TESTS, NOT_A_FAILURE, FIX_ELSEWHERE, FIX_LAST, COSMETIC) are a copy of the hosted version's lib/history.mjs, kept in one module so the hosted side can import them from the package; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar. A verb (revert, roll back, hotfix, fix) counts only where it starts a clause of the subject, and a failure word weighs 2 with a fix and 1 alone, so loosening SIGNALS alone does not bring back words that are only mentioned. The threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing. summarizeScars (used by `read`, `diff`, the Action and the MCP tools) skips a commit that touched more than MAX_FILES_PER_COMMIT files, using the file count brokeBefore gets from `git log --full-diff --shortstat` (parseStatLog); changing that log format breaks the count, and a commit with no count (touched null) is kept. NOT_TRAP only trims the audit ranking",
           "files": [
             "src/history.mjs"
           ]
+        },
+        {
+          "text": "a new kind of item in the read list (like hotspots, flows or vocabulary) has to be added in four places in readlist.mjs: emptyList, the `out` object and the `seen` map in readList, and the 'Nothing in the map is tied to these files' condition at the end of toMarkdown. Missing emptyList breaks the shape of `diff --json`; missing the last condition prints 'Nothing in the map is tied' next to a list that has items. A map field that names files (hotspots, flows, models, vocabulary) also needs a fixMap step that drops what points at gone files."
+        },
+        {
+          "text": "audit's 'code nothing else uses' (unusedCode) counts a name as used when any other file contains the word anywhere, comments and strings included, skips files no other file imports, and leaves out the names in CONVENTION and decorated Python defs. A name a framework calls by convention that is not in CONVENTION is listed as unused, and a name built at run time is not seen; the list is a place to look, not a verdict."
+        },
+        {
+          "text": "audit() with a null map (no .readfirst/map.json) returns early with only { format, commit, files, noMap: true, brokeMost }, so code reading the audit JSON (including the MCP audit_repo tool) must handle the missing stale, untested and other fields when noMap is set; brokeMost rows carry `covered` (a map risk or rule) only when there is a map"
+        },
+        {
+          "text": "a new model role (`is` value) has to be added in several places: MODEL_ROLES and modelProblems in map.mjs (the evidence/kind/why requirements per role), modelName (used by fixMap and the read list), the `said` table in toMarkdown (readlist.mjs, keyed by role name), vocabularyToModels if an old vocabulary kind maps to it, the agent brief in prompt.mjs and docs/guide.md. New kinds of entry, check or sink are `kind` values, not new roles or fields. Without a `said` entry the read list prints the raw role name. The older vocabulary kinds (VOCAB_KINDS, NAME_KEY, vocabularyName) are still accepted so no map breaks, but new things go into models. Older readfirst versions reject maps that use models."
+        },
+        {
+          "text": "a new optional field on a model row (like `kind`, `check` and `unless`) has to be added in the allowed-key list of modelProblems in map.mjs (and checked there; a regular expression such as `unless` must be compiled), in the object that readList passes to note('vocabulary', ...) for models and in the `vocabulary` line of toMarkdown (readlist.mjs), and in the agent brief and docs/guide.md. A field missing from the note() object passes the map check but never reaches `read`, `diff --json` or the Action. The same holds for the older vocabulary entries (VOCAB_KINDS, vocabularyProblems, `label`, `when`, `within`, `check`, `unless`), which readList still reads in its own note() line."
+        },
+        {
+          "text": "pins.mjs FIELD_SINCE lists the first release whose `check` accepts each map field; a new map field (or model role) must get a row there with the release that adds it, or `check` passes locally while CI pinned to an older readfirst rejects the map. Pins are read only from .github/workflows/*.yml (Action tag, `npx readfirst@X.Y.Z`) and package.json, and the oldest wins; a pin kept anywhere else is not seen, and a major tag or no pin counts as the newest"
         }
       ]
     },
@@ -340,7 +361,7 @@
           ]
         },
         {
-          "text": "server.json lists readfirst in the official MCP Registry (mcp-registry.yml, after a release is published and npm shows the version); its version and packages[0].version must equal package.json's version (and package-lock.json's two version fields: run `npm install --package-lock-only` after bumping), and its name must equal package.json's mcpName, or the release or the listing fails (bump all three together). docs/guide.md also pins the release version twice (`npx readfirst@X.Y.Z` and the Action's `@vX.Y.Z`); update both on every version bump or the guide tells people to pin an old release",
+          "text": "server.json lists readfirst in the official MCP Registry (mcp-registry.yml, after a release is published and npm shows the version); its version and packages[0].version must equal package.json's version (and package-lock.json's two version fields: run `npm install --package-lock-only` after bumping), and its name must equal package.json's mcpName, or the release or the listing fails (bump all three together). docs/guide.md also pins the release version twice (`npx readfirst@X.Y.Z` and the Action's `@vX.Y.Z`); update both on every version bump or the guide tells people to pin an old release, and the test 'the docs name no version but this release' fails. That test reads README.md, SECURITY.md and docs/guide.md and rejects any `readfirst@X.Y.Z`, `@vX.Y.Z` or \"version/release X.Y.Z\" that is not package.json's version, so those docs must name this release or no number (SECURITY.md names none)",
           "files": [
             "server.json",
             "package.json",
@@ -365,6 +386,16 @@
             ".claude/hooks/no-ai-signature.mjs",
             ".githooks/**"
           ]
+        },
+        {
+          "text": ".claude/hooks/no-ai-signature.mjs blocks AI signatures (Co-Authored-By: Claude, Claude-Session, Generated with Claude Code, a claude.ai session link) in commits (.githooks/commit-msg, which only runs once the SessionStart hook has set core.hooksPath), in Claude Code Bash and mcp__github__ calls that publish (git commit/tag, gh pr/issue/release/api), and in the `signatures` workflow (.github/workflows/signatures.yml: PR title, description and commits, and pushes to main); the owner forbids them (CLAUDE.md). The GitHub tools add a footer when they create a PR or comment, after the PreToolUse hook has run, so only the workflow sees it. For a newly opened PR the script waits 30 s and reads the title and description from the API as they are then (it needs GITHUB_TOKEN and `pull-requests: read` in the workflow; without them it uses the event's text), so a footer removed right after creating the PR passes, and one still there fails the check. A tool that adds signatures by default must be turned off where possible, not worked around",
+          "files": [
+            ".claude/hooks/no-ai-signature.mjs",
+            ".githooks/**"
+          ]
+        },
+        {
+          "text": "a release is published from the git tag, so package.json (and package-lock.json, server.json) must already hold the new version on the commit that gets tagged: v0.22.1 was tagged on a merge where package.json still said 0.22.0, the release failed and nothing was published; tags are not moved, so bump to the next version instead"
         }
       ]
     },
@@ -471,8 +502,8 @@
     },
     {
       "id": "action-any-checkout-depth",
-      "rule": "the Action takes the PR's changed files from the GitHub API, not from git history",
-      "why": "actions/checkout defaults to a shallow clone, so any checkout depth must work",
+      "rule": "the Action takes the PR's changed files from the GitHub API, not from git history; only the 'Files in this PR that broke before' section reads the checkout's git log, and it must say 'history not fetched' instead of failing when the checkout is shallow",
+      "why": "actions/checkout defaults to a shallow clone, so any checkout depth must work; only the broke-before section degrades",
       "files": [
         "src/action.mjs"
       ]
@@ -554,9 +585,21 @@
   "ignore": [],
   "hotspots": [
     {
+      "file": "src/action.mjs",
+      "symbol": "runAction",
+      "line": 59,
+      "labels": [
+        "secrets"
+      ],
+      "rules": [
+        "fork-pr-does-not-fail"
+      ],
+      "note": "Reads secrets or the environment"
+    },
+    {
       "file": "src/cli.mjs",
       "symbol": "git",
-      "line": 88,
+      "line": 98,
       "labels": [
         "exec"
       ],
@@ -569,7 +612,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "addLineTo",
-      "line": 126,
+      "line": 142,
       "labels": [
         "fs-write"
       ],
@@ -581,7 +624,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "verifyChecks",
-      "line": 175,
+      "line": 192,
       "labels": [
         "secrets",
         "exec"
@@ -595,7 +638,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "runHook",
-      "line": 221,
+      "line": 275,
       "labels": [
         "fs-write"
       ],
@@ -607,7 +650,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "writeWorkflow",
-      "line": 306,
+      "line": 408,
       "labels": [
         "fs-write"
       ],
@@ -615,6 +658,18 @@
         "only-init-and-fix-write"
       ],
       "note": "Writes files"
+    },
+    {
+      "file": "src/history.mjs",
+      "symbol": "git",
+      "line": 131,
+      "labels": [
+        "exec"
+      ],
+      "rules": [
+        "no-network-in-cli"
+      ],
+      "note": "Runs commands"
     }
   ]
 }
