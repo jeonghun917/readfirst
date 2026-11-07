@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.22.3 read <file>` (and `jeonghun917/readfirst@v0.22.3` for
+exactly the version you reviewed, pin it: `npx readfirst@0.23.0 read <file>` (and `jeonghun917/readfirst@v0.23.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -108,8 +108,13 @@ locally like everything else here: no MCP server, no network.
 npx readfirst hook --install
 ```
 
-adds a hook to `.claude/settings.json`. Before each Edit or Write, Claude Code gets the rules, risks and checks for that
-file as context, once per file per session. Nothing to remember, and the edit is never blocked.
+adds a hook to `.claude/settings.json`. Before each Edit or Write, and before a Bash command that writes files (a
+redirect, `sed -i`, `tee`, `cp` or `mv` into the repository, a script that writes), Claude Code gets the rules, risks and
+checks for those files as context, once per file per session. Nothing to remember, and the edit is never blocked.
+
+Want it read for sure, not just offered? Change the command to `npx --yes readfirst hook --gate`: the first call that
+touches a file whose notes Claude Code has not seen is refused with the notes as the reason, and the same call goes
+through when it is made again.
 
 Want the checks enforced, not just suggested?
 

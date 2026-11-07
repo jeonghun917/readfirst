@@ -28,6 +28,7 @@ import { importEdges } from './imports.mjs';
 import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
+import { bashWrites } from './bash-writes.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { find, findText } from './find.mjs';
@@ -85,6 +86,7 @@ function parse(argv) {
     else if (a === '--verify') args.verify = true;
     else if (a === '--ci') args.ci = true;
     else if (a === '--stop') args.stop = true;
+    else if (a === '--gate') args.gate = true;
     else if (a === '-h' || a === '--help') args.help = true;
     else if (a.startsWith('--')) { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); args[a.slice(2)] = v; }
     else args._.push(a);
@@ -265,43 +267,58 @@ export function brief(list) {
 const seenFile = (stateDir, session) => join(stateDir, `readfirst-hook-${String(session ?? 'none').replace(/[^\w-]/gu, '')}.json`);
 const repoOf = (dir) => { try { return git(dir, 'rev-parse', '--show-toplevel').trim() || null; } catch { return null; } };
 
-// Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file the map covers,
-// prints the read list as additionalContext, once per file per session. Never blocks the edit: any problem means no output.
-export function runHook(input, { now = Date.now(), stateDir = tmpdir() } = {}) {
+// Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file, or a Bash
+// command that writes files (src/bash-writes.mjs), prints the read list of each file as additionalContext, once per file
+// per session. Never blocks by default; with --gate (`hook --gate`) the first call that touches a file it has not shown
+// is refused with the read list as the reason, and the same call goes through when made again, as welsmere's map gate
+// does. Any problem means no output.
+export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = false } = {}) {
   try {
     const event = JSON.parse(input);
-    const file = event.tool_input?.file_path;
-    if (!file || !/^(?:Edit|Write|MultiEdit)$/u.test(event.tool_name ?? '')) return null;
     const cwd = event.cwd ?? process.cwd();
-    const abs = isAbsolute(file) ? file : resolve(cwd, file);
-    // The repository of the file: its nearest existing folder (a new file's folder may not exist yet).
-    let dir = dirname(abs);
-    while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
-    const root = repoOf(dir);
-    if (!root) return null;
-    const path = relative(root, abs).replace(/\\/gu, '/');
-    if (path.startsWith('..') || path === MAP_PATH) return null;
+    const tool = event.tool_name ?? '';
+    const file = event.tool_input?.file_path;
+    const targets = /^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
+      : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : [];
+    if (!targets.length) return null;
     const seenAt = seenFile(stateDir, event.session_id);
     let seen = {};
     try { seen = JSON.parse(readFileSync(seenAt, 'utf8')); } catch { seen = {}; }
-    const key = join(root, path);
-    if (seen[key] && now - seen[key] < 6 * 3600_000) return null;
-    const files = repoFiles(root);
-    // Without a map the hook still says where the file broke before.
-    const map = existsSync(join(root, MAP_PATH)) ? readMapFile(root) : null;
-    if (map && mapProblems(map, files, { placement: false }).length) return null;
-    const all = files.includes(path) ? files : [...files, path].sort();
-    const list = readList({ map, files: all, imports: map ? importEdges(files, readText(root)) : [], targets: [path], limit: 10, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke: brokeBefore(root, [path], new Set(all)) });
-    const lines = brief(list);
-    seen[key] = now;
+    const notes = targets.slice(0, 10).map((abs) => notesFor(abs, seen, now)).filter(Boolean);
     try { writeFileSync(seenAt, JSON.stringify(seen)); } catch { /* best effort */ }
-    if (!lines.length) return null;
-    const shown = lines.slice(0, 12);
-    if (lines.length > shown.length) shown.push(`${lines.length - shown.length} more in \`npx readfirst read ${path}\``);
-    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `readfirst notes for ${path}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${shown.join('\n- ')}` } });
+    if (!notes.length) return null;
+    const text = notes.join('\n\n');
+    if (gate) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch {
     return null;
   }
+}
+
+// The read list of one file as a few lines, or null (no repository, the map itself, shown in the last six hours, or
+// nothing to say). Marks the file as seen.
+function notesFor(abs, seen, now) {
+  // The repository of the file: its nearest existing folder (a new file's folder may not exist yet).
+  let dir = dirname(abs);
+  while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+  const root = repoOf(dir);
+  if (!root) return null;
+  const path = relative(root, abs).replace(/\\/gu, '/');
+  if (path.startsWith('..') || path === MAP_PATH || path.startsWith('.git/')) return null;
+  const key = join(root, path);
+  if (seen[key] && now - seen[key] < 6 * 3600_000) return null;
+  const files = repoFiles(root);
+  // Without a map the hook still says where the file broke before.
+  const map = existsSync(join(root, MAP_PATH)) ? readMapFile(root) : null;
+  if (map && mapProblems(map, files, { placement: false }).length) return null;
+  const all = files.includes(path) ? files : [...files, path].sort();
+  const list = readList({ map, files: all, imports: map ? importEdges(files, readText(root)) : [], targets: [path], limit: 10, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke: brokeBefore(root, [path], new Set(all)) });
+  const lines = brief(list);
+  seen[key] = now;
+  if (!lines.length) return null;
+  const shown = lines.slice(0, 12);
+  if (lines.length > shown.length) shown.push(`${lines.length - shown.length} more in \`npx readfirst read ${path}\``);
+  return `readfirst notes for ${path}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${shown.join('\n- ')}`;
 }
 
 // The check commands of the map as the base branch has it. The Stop hook runs a command without anyone asking, so it
@@ -428,7 +445,7 @@ export function installHook(root, { verify = false } = {}) {
   const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
   const has = (list) => list.some((m) => (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '')));
   let added = false;
-  if (!has(pre)) { pre.push({ matcher: 'Edit|Write|MultiEdit', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }); added = true; }
+  if (!has(pre)) { pre.push({ matcher: 'Edit|Write|MultiEdit|Bash', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }); added = true; }
   if (verify) {
     const stop = (settings.hooks.Stop ??= []);
     if (!has(stop)) { stop.push({ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }); added = true; }
@@ -444,7 +461,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   const [cmd, ...rest] = args._;
   if (args.help || !cmd) { io.out(`${HELP}\n`); return cmd || args.help ? 0 : 2; }
   if (cmd === 'hook' && !args.install) {
-    const out = args.stop ? runStopHook(stdin()) : runHook(stdin());
+    const out = args.stop ? runStopHook(stdin()) : runHook(stdin(), { gate: args.gate });
     if (out) io.out(`${out}\n`);
     return 0;
   }
