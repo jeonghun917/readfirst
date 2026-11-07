@@ -2,6 +2,11 @@
 
 **What to read and check before you — or your AI agent — change a file.**
 
+Bugs it found that are now fixed upstream: [Saleor](https://github.com/saleor/saleor/pull/19984),
+[Wagtail](https://github.com/wagtail/wagtail/pull/14790), [n8n](https://github.com/n8n-io/n8n/pull/43033),
+[django-allauth](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb). 120 real findings across 44
+open-source repositories, reported to 17 projects. [What it caught](#what-it-caught).
+
 Coding agents can follow imports. What they don't know is what your team knows: "amounts here are in cents",
 "this table is read by the mobile app, keep old columns", "run the payment e2e after touching this". readfirst keeps that
 knowledge in one file next to the code and hands it out, file by file, at the moment someone is about to change something.
@@ -20,26 +25,28 @@ npx readfirst audit  # no map needed: the files that broke most in the last 12 m
 On the free side, readfirst shows where your code broke before, from git history, on the first run, no map needed.
 
 The hosted version scans for fixed bug shapes taken from real bugs: a result computed and thrown away, a range check
-with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories and checked by hand:
+with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories, 616 hits, each one
+judged and recorded (real, caveat, false positive, dead code):
 
-- **62 bugs in app code**, 28 of them low-severity secret comparisons
+- **84 bugs in app code**, 21 of them low-severity secret comparisons
 - **36 tests that can never fail**, every one the same shape: `expect(promise).resolves...` with no `await` or
   `return`, so the test ends before the assertion runs
 - the false positives are kept on record too; the counts come after tuning on the same repositories, so read them as
   "what is there", not as precision
 
-Fixed by the maintainers:
+Fixed upstream:
 
 - **saleor**: an "only recalculate what changed" option recalculated every discounted price
   ([saleor/saleor#19984](https://github.com/saleor/saleor/pull/19984)).
 - **wagtail**: a superuser who submits a page for moderation got the moderation email about their own submission
   ([wagtail/wagtail#14790](https://github.com/wagtail/wagtail/pull/14790)).
-- **mealie**: a safety filter on households never applied
-  ([mealie-recipes/mealie#8964](https://github.com/mealie-recipes/mealie/issues/8964)).
 - **n8n**: the RabbitMQ node handed back its channel before the queue bindings were made, and a failed bind escaped
-  as an unhandled rejection ([n8n-io/n8n#43017](https://github.com/n8n-io/n8n/issues/43017)).
+  as an unhandled rejection; the n8n team fixed it after our issue
+  ([n8n-io/n8n#43033](https://github.com/n8n-io/n8n/pull/43033)).
 - **django-allauth**: a provider callback returned a 500 instead of a clean failure on a non-ASCII value; fixed the
-  day it was reported.
+  day it was reported ([f1e06cc](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb)).
+- **mealie**: a household safety filter that never applied ([mealie#8964](https://github.com/mealie-recipes/mealie/issues/8964))
+  is gone on main since a maintainer's scope fix ([mealie#8965](https://github.com/mealie-recipes/mealie/pull/8965)).
 
 Still with their maintainers: a Tandoor filter that never applied
 ([TandoorRecipes/recipes#4917](https://github.com/TandoorRecipes/recipes/pull/4917)), and findings sent privately to
