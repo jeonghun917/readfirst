@@ -70,6 +70,9 @@
             "src/cli.mjs",
             "src/history.mjs"
           ]
+        },
+        {
+          "text": "runHook and runStopHook find the repository from each edited file, not from the session's folder: a session can start in a folder above several repositories, and the hook state keeps absolute paths (older state files with relative paths still read against the session's repository). Looking the root up from event.cwd again would make the hook silent in that setup - src/cli.mjs:266"
         }
       ]
     },
@@ -152,7 +155,8 @@
         "src/lex.mjs",
         "src/scan.mjs",
         "src/shapes.mjs",
-        "src/history.mjs"
+        "src/history.mjs",
+        "src/pins.mjs"
       ],
       "checks": [
         {
