@@ -26,7 +26,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative } from 'node:path';
 import { importEdges } from './imports.mjs';
 import { scan, scanTextReport } from './scan.mjs';
-import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, matcher, settleMap } from './map.mjs';
+import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { find, findText } from './find.mjs';
@@ -502,7 +502,11 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     return 0;
   }
   if (cmd === 'fix') {
-    const { map, changes, problems } = fixMap(readMapFile(root), files);
+    // A map with the old vocabulary is rewritten as models and rules first (0.22.0).
+    const migrated = migrateMap(readMapFile(root));
+    const fixed = fixMap(migrated.map, files);
+    const { map, problems } = fixed;
+    const changes = [...migrated.changes, ...fixed.changes];
     if (changes.length) writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`);
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, changes, problems }, null, 2)}\n`);
     else {

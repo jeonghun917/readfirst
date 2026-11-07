@@ -17,7 +17,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.21.0 read <file>` (and `jeonghun917/readfirst@v0.21.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.22.0 read <file>` (and `jeonghun917/readfirst@v0.22.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -340,23 +340,21 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   drops those whose files are gone. Older readfirst versions reject maps that have it.
 - **rules[].flow** (optional): a rule written as structure, so tools can check it on `flows` with no model:
   `{ "entry"?: "POST /api/orders/*", "reaches"?: "payments-api" | "table:orders" | "<function>", "must": ["check" |
-  "check:<name>" | "once" | "no-input"] }`. `check` asks for some check of who may do it, `check:<name>` for that one,
-  `once` for a unique key, upsert or idempotency key on the way, `no-input` for no outside input at the call.
-- **vocabulary** (optional): the repository's own words, for tools that read the code with no model, as
-  `{ "checks": [{ "name", "evidence", "why"? }], "sinks": [{ "call", "label", "evidence", "why"? }], "notChecks": [{ "name",
-  "why", "evidence"? }], "public": [{ "entry", "why" }] }`. `checks` are functions that decide who may do something,
-  `sinks` calls that do something that matters (label such as `db-write`), `notChecks` names that look like checks but
-  refuse no one, `public` entries open to anyone on purpose. A name may hold `*`; `evidence` is `file:line`. `read` lists
-  the ones whose evidence is in the file being changed; `fix` drops those whose file is gone. Older readfirst versions
-  reject maps that have it.
-  Since 0.21.0 also: `entries` (`{ "decorator", "within"?, "evidence", "why"? }` or `{ "call", "evidence", "why"? }`): how
-  the repository declares routes its own way, a decorator such as `Post` inside a class decorated `RestController`, or a
-  call such as `api.register("/x", handler)`, with `"check"` and `"unless"` (a regular expression) when every route declared
-  that way gets a check unless its declaration opts out; `checksIf` (`{ "name", "when", "evidence", "why" }`): a check that counts
-  only where the route's code matches `when`, a regular expression; `notSinks` (`{ "call", "label"?, "why",
-  "evidence"? }`): calls that look like writes but are not; `once` (`{ "name", "evidence", "why"? }`): what keeps a job or
-  webhook from running twice; `sources` (`{ "call", "evidence", "why"? }`): functions whose return value is outside
-  input. readfirst before 0.21.0 rejects maps that use them.
+  "check:<name>" | "once" | "no-input" | "public"] }`. `check` asks for some check of who may do it, `check:<name>` for
+  that one, `once` for a unique key, upsert or idempotency key on the way, `no-input` for no outside input at the call,
+  and `public` says the entries it selects are open to anyone on purpose (since 0.22.0).
+- **models** (optional, since 0.22.0): what things in the repository's own code are, for tools that read the code with
+  no model. Each row is `{ "match": { "call" | "decorator" (+ "within") | "extends" | "file" }, "is": "entry" | "check" |
+  "sink" | "neutral", "kind"?, "check"?, "unless"?, "evidence", "why"? }`: `entry` is where outside input enters (`kind`
+  `route`; `check` and `unless` for the check every such entry gets unless its declaration matches `unless`), `check`
+  decides who may go on (`kind` `auth`), `sink` does something that matters (`kind` such as `db-write`, required), and
+  `neutral` looks like one of these and is not (`why` required, `evidence` optional). A name may hold `*`; `evidence`
+  is `file:line`. What a framework already says (Django `login_required`, NestJS guards, a 401 answer) is not written
+  here. What must hold is a rule, not a model: an entry open on purpose is a rule with `flow.must` `["public"]`. `read`
+  lists the models whose evidence is in the file being changed; `fix` drops those whose file is gone.
+- **vocabulary** (readfirst 0.18.0 to 0.21.0, still accepted): the earlier form of models. `readfirst fix` rewrites it
+  as `models`, and its `public` entries as rules with `flow.must` `["public"]`; `checksIf`, `notSinks`, `once` and
+  `sources` are dropped, since no tool reads them.
 - **deprecated** (optional, on a group): code being replaced, as `{ "why": "...", "use"?: "billing" }` where `use` is the
   group or path to use instead. Read lists open with "Being replaced", the hook tells the agent not to add to it,
   `find` lists its matches last with what to use instead, and `audit` counts the files outside it that still import it.

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fixMap, MAP_FORMAT, mapProblems } from '../src/map.mjs';
+import { fixMap, MAP_FORMAT, mapProblems, migrateMap } from '../src/map.mjs';
 import { readList, toMarkdown } from '../src/readlist.mjs';
 
 const files = ['src/routes/orders.js', 'src/billing/charge.js', 'src/web/page.js'];
@@ -112,6 +112,50 @@ test('vocabulary since 0.21.0: entries, checksIf, notSinks, once and sources; re
   assert.match(md, /- `Post` \(`src\/routes\/orders\.js:3`\) declares a route inside `@RestController`, checked by `signed in` unless `skipAuth/u);
   assert.match(md, /- `PermissionDenied` \(`src\/routes\/orders\.js:9`\) decides who may do something only where the code matches `permissions/u);
   assert.match(md, /- `getBody` \(`src\/routes\/orders\.js:20`\) returns outside input/u);
+});
+
+test('models (0.22.0): match, is, kind; read shows them; fix drops gone files; the vocabulary is rewritten as models and rules', () => {
+  const models = [
+    { match: { decorator: 'Post', within: 'RestController' }, is: 'entry', kind: 'route', check: 'signed in', unless: 'skipAuth:\\s*true', evidence: 'src/routes/orders.js:3' },
+    { match: { call: 'requireRole' }, is: 'check', kind: 'auth', evidence: 'src/routes/orders.js:7', why: 'answers 403 unless the role matches' },
+    { match: { call: '*WithCtx' }, is: 'sink', kind: 'db-write', evidence: 'src/billing/charge.js:40' },
+    { match: { extends: 'BaseUserController' }, is: 'check', kind: 'auth', evidence: 'src/routes/orders.js:2' },
+    { match: { call: 'get_db' }, is: 'neutral', why: 'opens a session; refuses no one' },
+  ];
+  assert.deepEqual(mapProblems({ ...base(), models }, files), []);
+  const p = (m) => mapProblems({ ...base(), models: m }, files).join('\n');
+  assert.match(p([{ match: { call: 'a', decorator: 'b' }, is: 'check', evidence: 'src/web/page.js:1' }]), /exactly one of call, decorator, extends, file/u);
+  assert.match(p([{ match: { call: 'a' }, is: 'guard', evidence: 'src/web/page.js:1' }]), /is: one of entry, check, sink, neutral/u);
+  assert.match(p([{ match: { call: 'a' }, is: 'sink', evidence: 'src/web/page.js:1' }]), /required for a sink/u);
+  assert.match(p([{ match: { call: 'a' }, is: 'check', check: 'x', evidence: 'src/web/page.js:1' }]), /only with is "entry"/u);
+  assert.match(p([{ match: { call: 'a' }, is: 'neutral' }]), /why: text/u);
+  assert.match(p([{ match: { call: 'a' }, is: 'check' }]), /evidence: "file:line"/u);
+  assert.match(p([{ match: { file: 'nowhere/**' }, is: 'entry', evidence: 'src/web/page.js:1' }]), /a pattern that matches a tracked file/u);
+  assert.match(p([{ match: { call: 'a', within: 'B' }, is: 'check', evidence: 'src/web/page.js:1' }]), /within: the class decorator/u);
+  const { map, changes } = fixMap({ ...base(), models }, files.filter((f) => f !== 'src/billing/charge.js'));
+  assert.equal(map.models.length, 4);
+  assert.ok(changes.some((c) => /models: dropped \*WithCtx \(src\/billing\/charge\.js gone\)/u.test(c)));
+  const md = toMarkdown(readList({ map: { ...base(), models }, files, imports: [], targets: ['src/routes/orders.js'] }));
+  assert.match(md, /- `requireRole` \(`src\/routes\/orders\.js:7`\) decides who may do something \(auth\): answers 403/u);
+  assert.match(md, /- `Post` \(`src\/routes\/orders\.js:3`\) is where outside input enters inside `@RestController`, checked by `signed in` unless `skipAuth/u);
+  const flowPublic = { ...base(), rules: [{ id: 'public-health', rule: 'GET /health is open', files: ['src/**'], flow: { entry: 'GET /health', must: ['public'] } }] };
+  assert.deepEqual(mapProblems(flowPublic, files), []);
+
+  const vocabulary = {
+    checks: [{ name: 'requireRole', evidence: 'src/routes/orders.js:7', why: 'w' }],
+    sinks: [{ call: '*WithCtx', label: 'db-write', evidence: 'src/billing/charge.js:40' }],
+    notChecks: [{ name: 'get_db', why: 'session' }],
+    public: [{ entry: 'GET /explore/*', why: 'the public explore page' }],
+    entries: [{ decorator: 'Post', within: 'RestController', evidence: 'src/routes/orders.js:3' }],
+    once: [{ name: 'claimJob', evidence: 'src/billing/charge.js:12' }],
+  };
+  const m = migrateMap({ ...base(), vocabulary });
+  assert.equal(m.map.vocabulary, undefined);
+  assert.deepEqual(m.map.models.map((x) => [x.is, x.kind ?? null, Object.values(x.match)[0]]), [['entry', 'route', 'Post'], ['check', 'auth', 'requireRole'], ['sink', 'db-write', '*WithCtx'], ['neutral', null, 'get_db']]);
+  assert.deepEqual(m.map.rules.at(-1), { id: 'public-get-explore', rule: 'GET /explore/* is open to anyone on purpose', why: 'the public explore page', files: ['**'], flow: { entry: 'GET /explore/*', must: ['public'] } });
+  assert.ok(m.changes.some((c) => /dropped once/u.test(c)));
+  assert.deepEqual(mapProblems(m.map, files), [], 'the rewritten map passes check');
+  assert.deepEqual(migrateMap(base()).changes, [], 'a map with no vocabulary is left alone');
 });
 
 test('a reach may name the inputs that reach it; read shows them', () => {
