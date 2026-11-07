@@ -122,13 +122,14 @@ function flowProblems(map, files, p) {
 export const MAX_VOCABULARY = 200;
 const VOCAB_NAME = /^[A-Za-z_$*][\w$.*]{0,99}$/u;
 // Since 0.21.0 also: how the repository declares its own routes (`entries`: a decorator such as "Post" inside a class
-// decorated "RestController", or a call such as "api.register"), checks that hold only under a condition (`checksIf`:
+// decorated "RestController", or a call such as "api.register"; `check` and `unless` for the check each such route gets
+// unless its declaration opts out), checks that hold only under a condition (`checksIf`:
 // "PermissionDenied" counts only where the code matches `when`, a regular expression), calls that look like writes but
 // are not (`notSinks`), what keeps a job or webhook from running twice (`once`), and functions whose return value is
 // outside input (`sources`).
 const VOCAB_KINDS = {
   checks: ['name', 'evidence', 'why'], sinks: ['call', 'label', 'evidence', 'why'], notChecks: ['name', 'why', 'evidence'], public: ['entry', 'why'],
-  entries: ['decorator', 'call', 'within', 'evidence', 'why'], checksIf: ['name', 'when', 'evidence', 'why'], notSinks: ['call', 'label', 'why', 'evidence'],
+  entries: ['decorator', 'call', 'within', 'check', 'unless', 'evidence', 'why'], checksIf: ['name', 'when', 'evidence', 'why'], notSinks: ['call', 'label', 'why', 'evidence'],
   once: ['name', 'evidence', 'why'], sources: ['call', 'evidence', 'why'],
 };
 const NAME_KEY = { sinks: 'call', notSinks: 'call', sources: 'call' };
@@ -162,6 +163,14 @@ function vocabularyProblems(map, files, p) {
         if ((x.decorator === undefined) === (x.call === undefined)) p.push(`${at}: one of "decorator" (a decorator that makes the function below it a route) or "call" (a call that registers one)`);
         else if (!nameOk(x.decorator ?? x.call)) p.push(`${at}.${x.decorator !== undefined ? 'decorator' : 'call'}: a decorator or call name, "*" allowed`);
         if (x.within !== undefined && (x.decorator === undefined || !nameOk(x.within))) p.push(`${at}.within: the class decorator whose path prefixes the routes (only with "decorator")`);
+        // `check`: what the framework the repository built decides for every route declared this way (its routes need a
+        // signed-in user), and `unless`: a regular expression for the declarations that opt out (`skipAuth: true`).
+        if (x.check !== undefined && !text(x.check, 100)) p.push(`${at}.check: the name of the check every route declared this way gets`);
+        if (x.unless !== undefined) {
+          let ok = x.check !== undefined && text(x.unless, 200);
+          if (ok) { try { new RegExp(x.unless, 'u'); } catch { ok = false; } }
+          if (!ok) p.push(`${at}.unless: a regular expression for the declarations that skip "check" (only with "check")`);
+        }
       } else {
         const key = NAME_KEY[kind] ?? 'name';
         if (!nameOk(x[key])) p.push(`${at}.${key}: a function or call name, "*" allowed`);

@@ -351,7 +351,8 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
   reject maps that have it.
   Since 0.21.0 also: `entries` (`{ "decorator", "within"?, "evidence", "why"? }` or `{ "call", "evidence", "why"? }`): how
   the repository declares routes its own way, a decorator such as `Post` inside a class decorated `RestController`, or a
-  call such as `api.register("/x", handler)`; `checksIf` (`{ "name", "when", "evidence", "why" }`): a check that counts
+  call such as `api.register("/x", handler)`, with `"check"` and `"unless"` (a regular expression) when every route declared
+  that way gets a check unless its declaration opts out; `checksIf` (`{ "name", "when", "evidence", "why" }`): a check that counts
   only where the route's code matches `when`, a regular expression; `notSinks` (`{ "call", "label"?, "why",
   "evidence"? }`): calls that look like writes but are not; `once` (`{ "name", "evidence", "why"? }`): what keeps a job or
   webhook from running twice; `sources` (`{ "call", "evidence", "why"? }`): functions whose return value is outside

@@ -30,7 +30,8 @@ Do this:
    - "notChecks": names that look like checks but refuse no one (a database session dependency), {"name", "why"}.
    - "public": entries open to anyone on purpose, {"entry": "GET /api/explore/*", "why": "..."}.
    - "entries": how this repository declares routes when it is not a framework's usual way, {"decorator": "Post",
-     "within": "RestController", "evidence": "..."} or {"call": "api.register", "evidence": "..."}.
+     "within": "RestController", "evidence": "..."} or {"call": "api.register", "evidence": "..."}. When every route
+     declared that way needs a signed-in user unless it opts out, add "check": "signed in" and "unless": "skipAuth:\\\\s*true".
    - "checksIf": a check that counts only under a condition, {"name": "PermissionDenied", "when": "permissions\\\\s*=\\\\s*\\\\(\\\\s*[^)\\\\s]",
      "evidence": "...", "why": "..."} (\`when\` is a regular expression the route's own code must match).
    - "notSinks": calls that look like writes but are not, {"call": "cache.set", "why": "..."}.
