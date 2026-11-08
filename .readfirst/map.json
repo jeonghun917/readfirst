@@ -151,6 +151,12 @@
             "src/action.mjs",
             "src/readlist.mjs"
           ]
+        },
+        {
+          "text": "action.yml runs `node` itself (composite): a self-hosted runner without Node gets a clear ::error:: from the `command -v node` guard instead of 'command not found'; the Action does not set up Node, because actions/setup-node would change the Node of the user's later steps",
+          "files": [
+            "action.yml"
+          ]
         }
       ]
     },
@@ -263,6 +269,13 @@
           "text": "the scar rules in src/history.mjs (SIGNALS, NOISE, NOT_CODE, TEST, scar, spreadScars) are a copy of the hosted version's lib/history.mjs, kept in one module so the hosted side can import them from the package; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
           "files": [
             "src/history.mjs"
+          ]
+        },
+        {
+          "text": "flows have no count limit since 0.25.0 (OLD_MAX_FLOWS 500 before): the map stores every path, and a reader caps only its own work. A map with more than 500 flows fails a CLI before 0.25.0, so pins.mjs FIELD_SINCE warns in `check` when the pinned readfirst is older, and the server must not write more than 500 for such a pin",
+          "files": [
+            "src/map.mjs",
+            "src/pins.mjs"
           ]
         }
       ]

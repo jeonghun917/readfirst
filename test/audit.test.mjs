@@ -55,6 +55,24 @@ test('audit lists a rule whose files changed in many commits since its line was 
   assert.equal(uncommitted.stale.length, 0, 'lines not committed yet are not stale');
 });
 
+// Connections: what an item's files import is counted beside it, but never flags it alone (measured 2026-11-08: hub
+// modules flagged 11 rules here that their own files did not).
+test('audit says how often what a stale item relies on changed, and never flags an item for that alone', () => {
+  const map = MAP();
+  const text = JSON.stringify(map, null, 2);
+  const blame = text.split('\n').map(() => ({ hash: 'm'.repeat(40), time: 100 }));
+  const files = ['.readfirst/map.json', 'src/money.js', 'src/net.js', 'tests/money.test.js'];
+  const read = (p) => (p === '.readfirst/map.json' ? text : '');
+  const imports = [{ from: 'src/money.js', to: 'src/net.js', line: 1 }];
+  const own = Array.from({ length: STALE_COMMITS }, (_, i) => ({ hash: `c${i}`, time: 200 + i, files: ['src/money.js'] }));
+  const dep = Array.from({ length: 3 }, (_, i) => ({ hash: `d${i}`, time: 300 + i, files: ['src/net.js'] }));
+  const a = audit({ map, files, imports, read, blame, history: [...own, ...dep] });
+  assert.deepEqual(a.stale.find((s) => s.id === 'cents').relied, { commits: 3, files: 1 });
+  assert.match(auditText(a), /and 3 changed 1 file they import/u);
+  const onlyDeps = Array.from({ length: STALE_COMMITS * 2 }, (_, i) => ({ hash: `d${i}`, time: 300 + i, files: ['src/net.js'] }));
+  assert.ok(!audit({ map, files, imports, read, blame, history: onlyDeps }).stale.some((s) => s.id === 'cents'), 'its own file did not change: not flagged');
+});
+
 test('audit finds hot spots that moved or are gone, placeholder titles and rules with no check', () => {
   const map = MAP({ hotspots: [
     { file: 'src/money.js', symbol: 'charge', line: 1, labels: ['money'] },

@@ -175,3 +175,14 @@ test('a rule may carry flow: which flows it is about and what they must have on 
   assert.match(mapProblems(rule({ reaches: 'x', must: [] }), files).join('\n'), /at least one/u);
   assert.match(mapProblems(rule({ reaches: 'x', must: ['check'], other: 1 }), files).join('\n'), /other/u);
 });
+
+// 0.25.0: the map stores every path (owner: store everything, cap only the work of one run). An older pinned CLI is
+// told about, not silently broken.
+test('flows have no count limit; a pinned readfirst before 0.25.0 is warned about more than 500', async () => {
+  const { pinProblems } = await import('../src/pins.mjs');
+  const many = { ...base(), flows: Array.from({ length: 900 }, (_, i) => ({ ...flow(), line: i + 1 })) };
+  assert.deepEqual(mapProblems(many, files), [], '900 flows pass');
+  assert.match(pinProblems(many, { version: '0.24.0', at: 'ci.yml' }).join('\n'), /more than 500 flows needs readfirst 0\.25\.0/u);
+  assert.deepEqual(pinProblems(many, { version: '0.25.0', at: 'ci.yml' }), []);
+  assert.deepEqual(pinProblems({ ...base(), flows: [flow()] }, { version: '0.24.0', at: 'ci.yml' }), [], '500 or fewer: nothing to say');
+});
