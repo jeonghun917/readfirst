@@ -22,7 +22,7 @@
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { importEdges } from './imports.mjs';
@@ -267,7 +267,29 @@ export function brief(list) {
 // Which files the PreToolUse hook has seen in a session, by absolute path: the Stop hook verifies those. A session can
 // start in a folder above several repositories, so each file belongs to the repository that holds it, not to the
 // session's folder. Older state files hold paths relative to the session's repository; they still read.
-const seenFile = (stateDir, session) => join(stateDir, `readfirst-hook-${String(session ?? 'none').replace(/[^\w-]/gu, '')}.json`);
+// Hooks of one session run at the same time (an agent's parallel edits), so the state is append-only: each call adds one
+// line per file it marked ([key, time] as JSON) in a single write, and nobody rewrites what another call wrote. The
+// whole-object .json file older versions wrote (last writer wins) is still read, never written.
+const seenFile = (stateDir, session, ext = 'lines') => join(stateDir, `readfirst-hook-${String(session ?? 'none').replace(/[^\w-]/gu, '')}.${ext}`);
+// The files marked in a session (key -> time), or null when it has no state at all.
+function readSeen(stateDir, session) {
+  let seen = null;
+  try { const old = JSON.parse(readFileSync(seenFile(stateDir, session, 'json'), 'utf8')); if (old && typeof old === 'object' && !Array.isArray(old)) seen = { ...old }; } catch { /* none */ }
+  let text = null;
+  try { text = readFileSync(seenFile(stateDir, session), 'utf8'); } catch { return seen; }
+  seen ??= {};
+  for (const line of text.split('\n')) {
+    try {
+      const [key, at] = JSON.parse(line);
+      if (typeof key === 'string' && typeof at === 'number') seen[key] = Math.max(seen[key] ?? 0, at);
+    } catch { /* a line cut short */ }
+  }
+  return seen;
+}
+function addSeen(stateDir, session, before, seen) {
+  const lines = Object.entries(seen).filter(([k, at]) => before[k] !== at).map((e) => `${JSON.stringify(e)}\n`);
+  if (lines.length) appendFileSync(seenFile(stateDir, session), lines.join(''));
+}
 const repoOf = (dir) => { try { return git(dir, 'rev-parse', '--show-toplevel').trim() || null; } catch { return null; } };
 // The path with its folder resolved through symlinks, as git's top level is: the nearest existing folder is resolved and
 // the rest (a new file, new folders) kept. Without it a file reached through a linked folder is outside its repository.
@@ -292,12 +314,11 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const targets = (/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
       : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : []).map(physical);
     if (!targets.length) return null;
-    const seenAt = seenFile(stateDir, event.session_id);
-    let seen = {};
-    try { seen = JSON.parse(readFileSync(seenAt, 'utf8')); } catch { seen = {}; }
+    const seen = readSeen(stateDir, event.session_id) ?? {};
+    const before = { ...seen };
     const notes = targets.slice(0, 10).map((abs) => notesFor(abs, seen, now)).filter(Boolean);
     const waiting = pendingNotes(targets, seen, now);
-    try { writeFileSync(seenAt, JSON.stringify(seen)); } catch { /* best effort */ }
+    try { addSeen(stateDir, event.session_id, before, seen); } catch { /* best effort */ }
     if (!notes.length && !waiting.length) return null;
     // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes.
     const text = [...notes, ...waiting].join('\n\n');
@@ -374,8 +395,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   let event;
   try { event = JSON.parse(input); } catch { return null; }
   if (event.stop_hook_active) return null;
-  let seen = {};
-  try { seen = JSON.parse(readFileSync(seenFile(stateDir, event.session_id), 'utf8')); } catch { return null; }
+  const seen = readSeen(stateDir, event.session_id);
+  if (!seen) return null;
   // Edited files by repository: absolute paths by the repository that holds them, older relative ones by the session's.
   const byRoot = new Map();
   const here = repoOf(event.cwd ?? process.cwd());
