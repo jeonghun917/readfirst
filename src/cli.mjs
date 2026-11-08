@@ -22,7 +22,7 @@
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { importEdges } from './imports.mjs';
@@ -269,6 +269,14 @@ export function brief(list) {
 // session's folder. Older state files hold paths relative to the session's repository; they still read.
 const seenFile = (stateDir, session) => join(stateDir, `readfirst-hook-${String(session ?? 'none').replace(/[^\w-]/gu, '')}.json`);
 const repoOf = (dir) => { try { return git(dir, 'rev-parse', '--show-toplevel').trim() || null; } catch { return null; } };
+// The path with its folder resolved through symlinks, as git's top level is: the nearest existing folder is resolved and
+// the rest (a new file, new folders) kept. Without it a file reached through a linked folder is outside its repository.
+function physical(abs) {
+  let dir = dirname(abs);
+  const rest = [basename(abs)];
+  while (!existsSync(dir) && dirname(dir) !== dir) { rest.unshift(basename(dir)); dir = dirname(dir); }
+  try { return join(realpathSync(dir), ...rest); } catch { return abs; }
+}
 
 // Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file, or a Bash
 // command that writes files (src/bash-writes.mjs), prints the read list of each file as additionalContext, once per file
@@ -281,8 +289,8 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const cwd = event.cwd ?? process.cwd();
     const tool = event.tool_name ?? '';
     const file = event.tool_input?.file_path;
-    const targets = /^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
-      : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : [];
+    const targets = (/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
+      : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : []).map(physical);
     if (!targets.length) return null;
     const seenAt = seenFile(stateDir, event.session_id);
     let seen = {};
@@ -319,7 +327,8 @@ function pendingNotes(targets, seen, now) {
 
 // The read list of one file as a few lines, or null (no repository, the map itself, shown in the last six hours, or
 // nothing to say). Marks the file as seen.
-function notesFor(abs, seen, now) {
+function notesFor(given, seen, now) {
+  const abs = physical(given);
   // The repository of the file: its nearest existing folder (a new file's folder may not exist yet).
   let dir = dirname(abs);
   while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
@@ -370,7 +379,9 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   // Edited files by repository: absolute paths by the repository that holds them, older relative ones by the session's.
   const byRoot = new Map();
   const here = repoOf(event.cwd ?? process.cwd());
-  for (const key of Object.keys(seen)) {
+  for (const recorded of Object.keys(seen)) {
+    // Keys recorded before paths were resolved through symlinks are resolved here.
+    const key = isAbsolute(recorded) ? physical(recorded) : recorded;
     const root = isAbsolute(key) ? repoOf(existsSync(dirname(key)) ? dirname(key) : here ?? '/') : here;
     if (!root) continue;
     const path = isAbsolute(key) ? relative(root, key).replace(/\\/gu, '/') : key;
