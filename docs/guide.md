@@ -411,7 +411,7 @@ Everything above is free and stays free. The GitHub App adds the parts that take
 - **First map:** install [readfirst-app](https://github.com/apps/readfirst-app/installations/new) on a repository and
   comment `/readfirst fill` on any issue. 5–20 minutes later a pull request arrives with the map, each risk and rule
   citing the file and line it came from. Free once per account, for repositories up to 200 files.
-- **Pro, $19/month:** fills for up to 3 private repositories that also read the known traps of their libraries; after
+- **Pro, $39/month:** fills for up to 3 private repositories that also read the known traps of their libraries; after
   each merge, a small PR when the map needs it; on every pull request, a comment on the lines that look like they break
   a rule in your map. When that map PR waits a week or ten merges, `npx readfirst pending` and the Claude Code hook
   say so (from your clone's refs, no network), and the app reminds you on the PR once a week.
