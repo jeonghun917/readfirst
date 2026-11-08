@@ -4,8 +4,8 @@
 
 Bugs it found that are now fixed upstream: [Saleor](https://github.com/saleor/saleor/pull/19984),
 [Wagtail](https://github.com/wagtail/wagtail/pull/14790), [n8n](https://github.com/n8n-io/n8n/pull/43033),
-[django-allauth](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb). 120 real findings across 44
-open-source repositories, reported to 17 projects.
+[django-allauth](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb). 136 real findings across 68
+open-source repositories, reported to 21 projects.
 
 Coding agents can follow imports. What they don't know is what your team knows: "amounts here are in cents",
 "this table is read by the mobile app, keep old columns", "run the payment e2e after touching this". readfirst keeps that
@@ -25,15 +25,15 @@ npx readfirst audit  # no map needed: the files that broke most in the last 12 m
 On the free side, readfirst shows where your code broke before, from git history, on the first run, no map needed.
 
 The hosted version scans for fixed bug shapes taken from real bugs: a result computed and thrown away, a range check
-with no type check, a secret compared with `!==`, and more. Run over 44 open-source repositories, 616 hits, each one
-judged and recorded (real, caveat, false positive, dead code):
+with no type check, a secret compared with `!==`, and more. Run over 68 open-source repositories, 897 hits, 849 of
+them judged and recorded (real, caveat, false positive, dead code):
 
-- **84 bugs in app code**, 21 of them low-severity secret comparisons
+- **100 bugs in app code**, 21 of them low-severity secret comparisons
 - **36 tests that pass even when their check fails**, every one the same shape: `expect(promise).resolves...` with
   no `await` or `return`, so under Jest the test ends before the assertion runs (Vitest and bun test catch it, so
   their files are left out)
-- the false positives are kept on record too; the counts come after tuning on the same repositories, so read them as
-  "what is there", not as precision
+- the 312 false positives are kept on record too, each one settled by a condition every repository gets; the counts
+  come after tuning on the same repositories, so read them as "what is there", not as precision
 
 Fixed upstream:
 
@@ -50,8 +50,14 @@ Fixed upstream:
   is gone on main since a maintainer's scope fix ([mealie#8965](https://github.com/mealie-recipes/mealie/pull/8965)).
 
 Still with their maintainers: a Tandoor filter that never applied
-([TandoorRecipes/recipes#4917](https://github.com/TandoorRecipes/recipes/pull/4917)), and findings sent privately to
-other projects, which stay unnamed until they are fixed.
+([TandoorRecipes/recipes#4917](https://github.com/TandoorRecipes/recipes/pull/4917)); a failed PayPal capture that went
+on to mark the booking paid, and webhooks nobody awaited, in Cal.diy
+([#30526](https://github.com/calcom/cal.diy/pull/30526), [#30527](https://github.com/calcom/cal.diy/pull/30527));
+Sentry tasks queued before the rows they read were committed
+([getsentry/sentry#130383](https://github.com/getsentry/sentry/pull/130383)); a 500 instead of a refusal on a non-ASCII
+secret in vas3k.club and WYGIWYH ([vas3k/vas3k.club#1533](https://github.com/vas3k/vas3k.club/pull/1533),
+[eitchtee/WYGIWYH#649](https://github.com/eitchtee/WYGIWYH/pull/649)); and findings sent privately to other projects,
+which stay unnamed until they are fixed.
 
 ## Start
 
