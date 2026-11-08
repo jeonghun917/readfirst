@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.24.0 read <file>` (and `jeonghun917/readfirst@v0.24.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.25.0 read <file>` (and `jeonghun917/readfirst@v0.25.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -282,6 +282,9 @@ lists what `npx readfirst fix` would change.
 | `limit` | `30` | most tests and users listed per section |
 
 On a PR from a fork, the token is read-only. The list then goes to the job summary instead of a comment.
+
+The Action runs Node. GitHub's runners have it; on a self-hosted runner, add `actions/setup-node` before the readfirst
+step, or the step stops with "readfirst needs Node 20 or newer on the runner".
 
 ### Keep the map in step without thinking about it
 

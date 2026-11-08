@@ -104,11 +104,23 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
     const after = history.filter((c) => c.time > written.time && c.hash !== written.hash && c.files.some(covers));
     return { commits: after.length, files: new Set(after.flatMap((c) => c.files.filter(covers))).size };
   };
+  // What an item relies on: the files its own files import (one step), outside its own files. A rule can go stale when
+  // what it relies on changes, not only when its own files do (connections, the other half).
+  const reliedOn = (covers) => {
+    const mine = new Set(files.filter(covers));
+    const out = new Set();
+    for (const e of imports ?? []) if (mine.has(e.from) && !mine.has(e.to)) out.add(e.to);
+    return (p) => out.has(p);
+  };
   const add = (row, value, covers) => {
     const w = writtenAt(value);
     if (!w) return; // not committed yet, or not found as written: nothing to compare with
     const s = since(w, covers);
-    if (s.commits >= STALE_COMMITS) stale.push({ ...row, written: { commit: w.hash.slice(0, 7), date: new Date(w.time * 1000).toISOString().slice(0, 10) }, commits: s.commits, files: s.files });
+    const r = since(w, reliedOn(covers));
+    // Measured 2026-11-08: flagging on what an item relies on alone added 11 items here and 3 in readfirst-cloud, nearly
+    // all through hub modules (action.mjs imports cli.mjs, changed 41 times), not real staleness. So it is said beside an
+    // item already flagged by its own files, never a reason on its own.
+    if (s.commits >= STALE_COMMITS) stale.push({ ...row, written: { commit: w.hash.slice(0, 7), date: new Date(w.time * 1000).toISOString().slice(0, 10) }, commits: s.commits, files: s.files, relied: { commits: r.commits, files: r.files } });
   };
   for (const r of map.rules ?? []) add({ kind: 'rule', id: r.id, text: r.rule }, r.rule, matcher(r.files));
   for (const g of map.groups) for (const r of g.risks ?? []) add({ kind: 'risk', group: g.id, text: r.text }, r.text, matcher(r.files ?? g.files));
@@ -246,7 +258,7 @@ export function auditText(a) {
   section(`Broke most (last 12 months; ${BROKE_MOST_MIN_COMMITS}+ fixes and weight ${BROKE_MOST_MIN_SCORE}+)`, brokeRows);
   section('Map problems (as `readfirst check` reports them)', a.problems.map((p) => `- ${p}`));
   section(`Rules and risks that may be out of date (${STALE_COMMITS}+ commits changed their files since they were written)`, [...a.stale.slice(0, TOP).map((s) =>
-    `- ${s.kind === 'rule' ? `rule **${s.id}**` : `risk in group ${s.group}`}: "${s.text.length > 100 ? `${s.text.slice(0, 100)}…` : s.text}" — written ${s.written.date} (${s.written.commit}); ${s.commits} commits changed ${s.files} of its files since. Still true?`), ...(a.stale.length > TOP ? [`- …and ${a.stale.length - TOP} more (\`readfirst audit --json\` lists all)`] : [])]);
+    `- ${s.kind === 'rule' ? `rule **${s.id}**` : `risk in group ${s.group}`}: "${s.text.length > 100 ? `${s.text.slice(0, 100)}…` : s.text}" — written ${s.written.date} (${s.written.commit}); ${s.commits} commits changed ${s.files} of its files since${s.relied?.commits ? `, and ${s.relied.commits} changed ${s.relied.files} file${s.relied.files === 1 ? '' : 's'} they import` : ''}. Still true?`), ...(a.stale.length > TOP ? [`- …and ${a.stale.length - TOP} more (\`readfirst audit --json\` lists all)`] : [])]);
   section('Hot spots no longer at their line', a.hotspots.map((h) => `- \`${h.symbol}\` in \`${h.file}\`: map says line ${h.line}, ${h.status === 'MOVED' ? `now line ${h.now}` : 'not found in the file'}`));
   section('Hot spots nothing checks (no test reaches their file, and no check of their own in the map)', a.unguarded.slice(0, TOP).map((h) =>
     `- \`${h.symbol}\` in \`${h.file}:${h.line}\`: ${h.labels.join(', ')}`).concat(a.unguarded.length > TOP ? [`- …and ${a.unguarded.length - TOP} more`] : []));

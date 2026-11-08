@@ -44,6 +44,7 @@ export const FIELD_SINCE = [
   ['vocabulary', '0.18.0', (m) => m.vocabulary !== undefined],
   ['rules[].flow', '0.20.0', (m) => (m.rules ?? []).some((r) => r?.flow !== undefined)],
   ['models', '0.22.0', (m) => m.models !== undefined],
+  ['more than 500 flows', '0.25.0', (m) => Array.isArray(m.flows) && m.flows.length > 500],
 ];
 
 // Fields the map uses that the pinned readfirst rejects, as problem lines for `check`.

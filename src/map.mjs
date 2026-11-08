@@ -80,10 +80,12 @@ function hotspotProblems(map, files, p) {
 // optionally `tables`: the database tables that code writes or reads, and `inputs`: the names that carry outside input
 // to that code's calls, such as req.body or amount).
 // Written by tools, read by `read`.
-export const MAX_FLOWS = 500;
+// No limit on how many (0.25.0; before, 500): the map stores every path, and what one run reads is the reader's own
+// budget (owner, 2026-11-07: store everything, cap only the work of one run). The most measured was 451 (novu).
+// OLD_MAX_FLOWS is what CLIs before 0.25.0 accept; pins.mjs warns when the pinned readfirst is older.
+export const OLD_MAX_FLOWS = 500;
 function flowProblems(map, files, p) {
   if (!Array.isArray(map.flows)) { p.push('flows: a list'); return; }
-  if (map.flows.length > MAX_FLOWS) p.push(`flows: at most ${MAX_FLOWS}`);
   const tracked = new Set(files);
   const place = (v, at) => {
     if (typeof v.file !== 'string' || !v.file) p.push(`${at}.file: a path`);

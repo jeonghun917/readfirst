@@ -26,8 +26,11 @@ inputs:
 runs:
   using: composite
   steps:
+    # A self-hosted runner may have no Node: say so instead of failing with "node: command not found".
     - shell: bash
-      run: node "$GITHUB_ACTION_PATH/src/action.mjs"
+      run: |
+        command -v node >/dev/null || { echo "::error::readfirst needs Node 20 or newer on the runner: add actions/setup-node before this step"; exit 1; }
+        node "$GITHUB_ACTION_PATH/src/action.mjs"
       env:
         INPUT_TOKEN: ${{ inputs.token }}
         INPUT_COMMENT: ${{ inputs.comment }}
