@@ -68,6 +68,7 @@ test('a PR gets one comment with the read list of its changed files, with checks
   assert.ok(body.startsWith(MARKER));
   for (const s of ['**cents**: amounts are integers in cents', '`test/charge.test.js` (through `src/pay/charge.js`)', 'Removed in this PR: `old.js`', 'at abcdef1'])
     assert.ok(body.includes(s), `comment lacks ${s}:\n${body}`);
+  assert.match(body, /<details><summary>Tests that reach this code \(1\)<\/summary>/u, 'the comment folds the long lists (readfirst#118)');
   assert.ok(readFileSync(summary, 'utf8').includes('## readfirst'));
 });
 
@@ -160,4 +161,21 @@ test('auto-fix: what fix settles is committed to the PR branch, only from this r
   const fork = fakeGitHub({ files, mapOnBranch: onBranch });
   await runAction({ env: envFor(root, event, on), fetchImpl: fork.fetchImpl, log: () => {} });
   assert.equal(fork.calls.some((c) => c.method === 'PUT'), false);
+});
+
+// readfirst#118: the PR comment was 17,051 characters, 67% of them risks that only shared a group with a changed file.
+test('the PR comment keeps risks that name a changed file open and folds the rest, dropping nothing', async () => {
+  const { toMarkdown, emptyList } = await import('../src/readlist.mjs');
+  const list = { ...emptyList(), targets: [{ path: 'src/a.js' }],
+    risks: [{ group: 'core', text: 'a.js parses dates as UTC', named: true, for: ['src/a.js'] }, { group: 'core', text: 'the view has only en and ko', named: false, for: ['src/a.js'] }],
+    tests: [{ path: 'test/a.test.js', for: ['src/a.js'] }], usedBy: [{ path: 'src/b.js', line: 3, for: ['src/a.js'] }] };
+  const md = toMarkdown(list, { checklist: true, heading: null, broke: false, fold: true });
+  assert.match(md, /## Watch out\n\n- a\.js parses dates as UTC/u);
+  assert.match(md, /<details><summary>More to watch out for in the groups of these files \(1\)<\/summary>\n\n- the view has only en and ko/u);
+  assert.match(md, /<details><summary>Tests that reach this code \(1\)<\/summary>/u);
+  assert.match(md, /<details><summary>Used by \(1\)<\/summary>/u);
+  const open = md.replace(/<details>[\s\S]*?<\/details>/gu, '');
+  assert.doesNotMatch(open, /only en and ko/u, 'the group-wide risk is folded');
+  // The command line and --json are unchanged: no fold, every risk under Watch out.
+  assert.match(toMarkdown(list), /## Watch out\n\n- a\.js parses dates as UTC[^\n]*\n- the view has only en and ko/u);
 });

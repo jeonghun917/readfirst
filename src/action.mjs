@@ -46,7 +46,7 @@ export function commentBody({ list, problems, removed, commit, fixes = [], settl
   } else if (settled.length) {
     parts.push(`<details><summary>New files placed by their neighbours (${settled.length})</summary>`, '', ...settled.slice(0, 20).map((f) => `- ${f}`), ...(settled.length > 20 ? [`- …and ${settled.length - 20} more`] : []), '', '`npx readfirst fix` writes this into the map; nothing to do for this PR.', '</details>', '');
   }
-  if (list) parts.push(toMarkdown(list, { checklist: true, heading: null, broke: false }));
+  if (list) parts.push(toMarkdown(list, { checklist: true, heading: null, broke: false, fold: true }));
   else if (!problems.length && !broke.length) parts.push('No changed files to look up.', '');
   parts.push(...brokeSection(broke, { title: 'Files in this PR that broke before', hint: FETCH_DEPTH_HINT }));
   if (removed.length) parts.push(`Removed in this PR: ${removed.map((f) => `\`${f}\``).join(', ')}`, '');

@@ -144,6 +144,13 @@
           "files": [
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "the Action's PR comment renders the read list with toMarkdown(..., { fold: true }): risks whose own files name a changed file stay open, while group-wide risks, hot spots, tests and users go under <details> with their count (readfirst#118: 17,051 characters, 67% group-wide risks). A risk is `named` only when it has `files`; a map whose risks carry no files gets every risk folded. read, diff and --json are unfolded",
+          "files": [
+            "src/action.mjs",
+            "src/readlist.mjs"
+          ]
         }
       ]
     },
