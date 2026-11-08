@@ -93,8 +93,22 @@ export function bashWrites(command, cwd = process.cwd()) {
     if (!p || p.startsWith('-') || p.startsWith('/dev/') || /^[a-z]+:\/\//u.test(p) || p.includes('$')) return;
     found.add(isAbsolute(p) ? p : resolve(base, p));
   };
+  // Where relative paths start after the `cd`s in some shell text (here-documents already taken out of it).
+  const cdIn = (text) => {
+    let b = cwd;
+    for (const s of segments(text)) { const ws = words(s); if (unquote(ws[0] ?? '').split('/').pop() === 'cd' && ws[1]) b = resolve(b, unquote(ws[1])); }
+    return b;
+  };
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
-  const shell = String(command ?? '').replace(/([^\n]*?)<<-?\s*['"]?(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\2(?=\s|$)/gu, (all, head, tag, rest, body) => {
+  // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
+  // the hook showed another repository's notes for a relative path after a cd).
+  let kept = ''; // the shell text up to this here-document, earlier bodies taken out
+  let last = 0;
+  const shell = String(command ?? '').replace(/([^\n]*?)<<-?\s*['"]?(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\2(?=\s|$)/gu, (all, head, tag, rest, body, offset, text) => {
+    kept += `${text.slice(last, offset)}${head}`;
+    last = offset + all.length;
+    base = cdIn(kept);
+    kept += ` ${rest}`;
     // Only the command the here-document feeds: in `node x.mjs; cat > f <<E` it goes to cat (2026-11-08).
     const hw = words(segments(head).at(-1)).map(unquote);
     const at = hw.findIndex((w) => RUNNER.test(w.split('/').pop()));
@@ -103,6 +117,7 @@ export function bashWrites(command, cwd = process.cwd()) {
     if (at >= 0 && CODE_WRITES.test(body)) codeTargets(body, { args, exists: here, glob }).forEach(add);
     return `${head} ${rest}`;
   });
+  base = cwd; // the segments below follow the cds again themselves
   for (const segment of segments(shell)) {
     const ws = words(segment);
     if (!ws.length) continue;

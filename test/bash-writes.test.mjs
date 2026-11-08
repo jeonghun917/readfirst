@@ -53,3 +53,11 @@ test('bashWrites: a file the script names and does not write stays out, even whe
   // A target built at run time cannot be named: the files it names that exist stand in for it.
   assert.deepEqual(bashWrites(`python3 - <<'E'\np=root + 'src/read.mjs'\nopen(p,'w').write('')\nE`, dir), [join(dir, 'src/read.mjs')]);
 });
+
+// 2026-11-08: `cd /home/user/readfirst-cloud && python3 - <<E` writing .github/workflows/ci.yml showed readfirst's notes.
+test('bashWrites: a here-document writes where the cds before it moved to', () => {
+  const w = (c) => bashWrites(c, '/r');
+  assert.deepEqual(w("cd /other && python3 - <<'E'\np='ci.yml'; open(p,'w').write('')\nE"), ['/other/ci.yml']);
+  assert.deepEqual(w("cd sub && cat > a.md <<'E'\nx\nE\ncd /b && python3 - <<'F'\nopen('c.md','w')\nF").sort(), ['/b/c.md', '/r/sub/a.md'], 'each here-document after its own cd');
+  assert.deepEqual(w("python3 - <<'E'\nimport os; os.system('cd /elsewhere')\nopen('x.md','w')\nE"), ['/r/x.md'], 'a cd inside a body is code, not a move');
+});
