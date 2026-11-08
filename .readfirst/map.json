@@ -277,6 +277,12 @@
             "src/map.mjs",
             "src/pins.mjs"
           ]
+        },
+        {
+          "text": "a target that is not tracked (deleted in the change, or new and not added) keeps status NOT_TRACKED and its 'not a tracked file' note, but readList still gives it its group's checks, risks and deprecation, and the rules, requires and dependents entries that match its path: verify, diff and the Action (which passes removed files too) rely on this so a change made only of deletions still runs its group's checks. It gets no tests, users or unseen entries. - src/readlist.mjs:102",
+          "files": [
+            "src/readlist.mjs"
+          ]
         }
       ]
     },

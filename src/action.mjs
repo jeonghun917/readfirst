@@ -86,8 +86,9 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const removed = changed.filter((f) => f.status === 'removed').map((f) => f.filename);
   const targets = changed.filter((f) => f.status !== 'removed').map((f) => f.filename);
   // A broken map still gets a comment (the problems), but no read list from it.
-  const list = targets.length && !problems.length
-    ? readList({ map, files, imports: importEdges(files, readText(root)), targets, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
+  // Removed files are looked up too: their group's checks, rules and requires entries still apply to the change.
+  const list = changed.length && !problems.length
+    ? readList({ map, files, imports: importEdges(files, readText(root)), targets: changed.map((f) => f.filename), commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
     : null;
   // From the checkout's git log at the PR's base (not the PR's own commits), whatever the map says. A checkout fetched at depth 1 has none: that is said, not hidden.
   const found = brokeBefore(root, targets, new Set(files), baseRevision(root, pr.base?.sha));
