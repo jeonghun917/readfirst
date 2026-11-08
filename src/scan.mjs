@@ -19,6 +19,7 @@ export function scanText(path, text) {
   const out = [];
   for (const c of candidates({ filename: path, patch })) {
     if (notApp && !c.pattern.tests) continue;
+    if (c.pattern.notIn && (c.pattern.notIn.path.test(path) || c.pattern.notIn.text.test(text))) continue;
     if (c.pattern.queryset && !QS_HINT.test(c.recv) && !assignedFromQueryset(c.recv.match(/^[A-Za-z_][\w.]*/u)[0], text)) continue;
     out.push({ pattern: c.pattern.id, file: path, line: c.line, why: c.pattern.why(c.method), code: lines[c.line - 1].trim() });
   }

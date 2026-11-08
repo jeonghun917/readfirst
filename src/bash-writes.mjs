@@ -8,6 +8,7 @@
 //   (codeTargets), not every path-like word in it.
 // A here-document fed to cat or tee is data; only where it goes counts. `cd dir &&` moves where relative paths start.
 import { existsSync, readdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 const CODE_WRITES = /\bopen\([^)]*,\s*['"][wax]|\.write_text\(|\.write_bytes\(|writeFileSync\(|writeFile\(|appendFileSync\(|\.writelines?\(|createWriteStream\(|File\.write|>>?\s*\$|\bdump\(/u;
@@ -63,6 +64,16 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
 
 // Words of one command segment, quotes kept together; good enough for the shapes above, not a shell parser.
 const words = (segment) => segment.match(/'[^']*'|"(?:\\.|[^"\\])*"|[^\s]+/gu) ?? [];
+// Where `cd target` moves from `from`: null when that cannot be known (a variable: `cd $D`, `cd "$(dirname x)"`), and
+// relative paths after it are then not named at all rather than named under the wrong folder (2026-11-08: `cd $D`
+// made the hook show `$D/a.test.js`).
+const moveTo = (from, target) => {
+  const t = unquote(target);
+  if (/[$`]/u.test(t)) return null;
+  if (t === '~' || t.startsWith('~/')) return join(homedir(), t.slice(1));
+  if (isAbsolute(t)) return t;
+  return from == null ? null : resolve(from, t);
+};
 
 // Quoted text blanked to spaces, same length, so positions found in it hold in the original.
 const blank = (s) => s.replace(/'[^']*'|"(?:\\.|[^"\\])*"/gu, (q) => ' '.repeat(q.length));
@@ -80,23 +91,24 @@ const segments = (shell) => {
 export function bashWrites(command, cwd = process.cwd()) {
   const found = new Set();
   let base = cwd;
-  const here = (w) => { try { return existsSync(isAbsolute(w) ? w : resolve(base, w)); } catch { return false; } };
+  const here = (w) => { try { return isAbsolute(w) ? existsSync(w) : base != null && existsSync(resolve(base, w)); } catch { return false; } };
   // A glob with one * in its last part (dir/*.yml), relative to where the command runs; anything wider is not expanded.
   const glob = (pattern) => {
     const dir = dirname(pattern);
-    if (dir.includes('*') || (pattern.split('*').length - 1) !== 1) return [];
+    if (base == null || dir.includes('*') || (pattern.split('*').length - 1) !== 1) return [];
     const [pre, post] = pattern.slice(dir === '.' ? 0 : dir.length + 1).split('*');
     try { return readdirSync(resolve(base, dir)).filter((f) => f.startsWith(pre) && f.endsWith(post)).map((f) => (dir === '.' ? f : join(dir, f))); } catch { return []; }
   };
   const add = (w) => {
     const p = unquote(String(w)).replace(/^file:\/\//u, '');
     if (!p || p.startsWith('-') || p.startsWith('/dev/') || /^[a-z]+:\/\//u.test(p) || p.includes('$')) return;
-    found.add(isAbsolute(p) ? p : resolve(base, p));
+    if (isAbsolute(p)) found.add(p);
+    else if (base != null) found.add(resolve(base, p));
   };
   // Where relative paths start after the `cd`s in some shell text (here-documents already taken out of it).
   const cdIn = (text) => {
     let b = cwd;
-    for (const s of segments(text)) { const ws = words(s); if (unquote(ws[0] ?? '').split('/').pop() === 'cd' && ws[1]) b = resolve(b, unquote(ws[1])); }
+    for (const s of segments(text)) { const ws = words(s); if (unquote(ws[0] ?? '').split('/').pop() === 'cd' && ws[1]) b = moveTo(b, ws[1]); }
     return b;
   };
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
@@ -122,7 +134,7 @@ export function bashWrites(command, cwd = process.cwd()) {
     const ws = words(segment);
     if (!ws.length) continue;
     const cmd = unquote(ws[0]).split('/').pop();
-    if (cmd === 'cd' && ws[1]) { base = resolve(base, unquote(ws[1])); continue; }
+    if (cmd === 'cd' && ws[1]) { base = moveTo(base, ws[1]); continue; }
     // Redirects anywhere in the segment, not 2> or >&, and not a > inside quotes (an arrow `=>` in node -e "..." code
     // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself.
     for (const m of blank(segment).matchAll(/(?<![0-9&=-])>>?(?!\s*&)/gu)) {
