@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
-import { bashWrites } from '../src/bash-writes.mjs';
+import { bashWrites, codeTargets } from '../src/bash-writes.mjs';
 
 test('bashWrites: where a command writes, not every file it names', () => {
   const w = (c) => bashWrites(c, '/r');
@@ -17,4 +20,36 @@ test('bashWrites: where a command writes, not every file it names', () => {
   assert.deepEqual(w('grep -n foo src/a.js 2>/dev/null | head'), []);
   assert.deepEqual(w('node --test test/a.test.mjs 2>&1 | tail -3'), []);
   assert.deepEqual(w('ls > $OUT'), [], 'a variable is not a path we can name');
+});
+
+// readfirst's own sessions, 2026-11-08: a script that wrote one file flagged every path-like word in it.
+test('bashWrites: a script counts the targets of its write calls, not the words it names', () => {
+  const w = (c) => bashWrites(c, '/r');
+  const py = (body, head = 'python3 -') => w(`${head} <<'E'\n${body}\nE`);
+  assert.deepEqual(py("p='HANDOFF.md'; s=open(p).read()\ns=s.replace('0.015', 'src/money.js /u.test')\nopen(p,'w').write(s)"), ['/r/HANDOFF.md'], 'numbers, regex and test data are not files');
+  assert.deepEqual(py("import sys\np=sys.argv[1]; s=open(p).read()\nopen(p,'w').write(s)", 'python3 - src/cli.mjs'), ['/r/src/cli.mjs'], 'sys.argv: the script argument');
+  assert.deepEqual(py("def rep(p, a, b):\n  s=open(p).read(); open(p,'w').write(s.replace(a, b))\nrep('docs/guide.md', 'x.md', 'y.md')"), ['/r/docs/guide.md'], 'a parameter, from the call');
+  assert.deepEqual(py("for p in ['src/a.mjs', 'src/b.mjs']:\n  open(p,'w').write('')"), ['/r/src/a.mjs', '/r/src/b.mjs'], 'a for-loop over literals');
+  assert.deepEqual(w(`node -e "const fs=require('fs'); const m=JSON.parse(fs.readFileSync('.readfirst/map.json','utf8')); m.groups.find((g)=>g.id==='x').risks.push({files:['lib/a.mjs']});\nfs.writeFileSync('.readfirst/map.json', JSON.stringify(m))" && git diff`), ['/r/.readfirst/map.json'], 'node -e: one segment through its ; and newline');
+  assert.deepEqual(w(`node -e "console.log([1,2].map((a)=>a>1))"`), [], 'an arrow in quoted code is not a redirect');
+  assert.deepEqual(w('echo hi >> "my notes.md"'), ['/r/my notes.md'], 'a quoted redirect target');
+  assert.deepEqual(w(`python3 -c "open('out.txt','w').write('x')"`), ['/r/out.txt']);
+  assert.deepEqual(w(`node bin/x.mjs read a.mjs; cat > t.mjs <<'E'\nfs.writeFileSync('a.json', '')\nE`), ['/r/t.mjs'], 'the here-document goes to cat, not to the node before the ;');
+});
+
+test('codeTargets: glob loops expand, unresolved writes fall back to named files that exist', () => {
+  const glob = (p) => (p === 'docs/*.md' ? ['docs/a.md', 'docs/b.md'] : []);
+  assert.deepEqual(codeTargets("import glob\nfor p in glob.glob('docs/*.md'):\n  open(p,'w').write('')", { glob }), ['docs/a.md', 'docs/b.md']);
+  const exists = (p) => p === 'src/real.mjs';
+  assert.deepEqual(codeTargets("open(f'{d}/x.mjs','w')\n# see src/real.mjs and 0.015", { exists }), ['src/real.mjs']);
+});
+
+test('bashWrites: a file the script names and does not write stays out, even when it exists', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'bw-'));
+  mkdirSync(join(dir, 'src'));
+  for (const f of ['HANDOFF.md', 'src/read.mjs']) writeFileSync(join(dir, f), '');
+  const got = bashWrites(`python3 - <<'E'\np='HANDOFF.md'; s=open(p).read() + open('src/read.mjs').read()\nopen(p,'w').write(s)\nE`, dir);
+  assert.deepEqual(got, [join(dir, 'HANDOFF.md')]);
+  // A target built at run time cannot be named: the files it names that exist stand in for it.
+  assert.deepEqual(bashWrites(`python3 - <<'E'\np=root + 'src/read.mjs'\nopen(p,'w').write('')\nE`, dir), [join(dir, 'src/read.mjs')]);
 });
