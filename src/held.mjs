@@ -6,12 +6,14 @@ import { matcher } from './map.mjs';
 export const HELD_PATH = '.readfirst/held.json';
 export const HELD_FORMAT = 'readfirst/held@1';
 
-// The record as read from the checkout, or null when there is none (or it is not ours).
+// The record as read from the checkout, or null when there is none (or it is not ours). Rule entries without a string
+// commit and date (a hand edit, a merge gone wrong) are left out: read lists and audit print both.
 export function parseHeld(text) {
   if (!text) return null;
   try {
     const v = JSON.parse(text);
-    return v && v.format === HELD_FORMAT && v.rules && typeof v.rules === 'object' ? v : null;
+    if (!(v && v.format === HELD_FORMAT && v.rules && typeof v.rules === 'object' && !Array.isArray(v.rules))) return null;
+    return { ...v, rules: Object.fromEntries(Object.entries(v.rules).filter(([, e]) => typeof e?.commit === 'string' && typeof e?.date === 'string')) };
   } catch { return null; }
 }
 
