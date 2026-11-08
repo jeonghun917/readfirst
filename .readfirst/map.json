@@ -8,7 +8,8 @@
         "bin/**",
         "src/cli.mjs",
         "src/prompt.mjs",
-        "src/mcp.mjs"
+        "src/mcp.mjs",
+        "src/pending.mjs"
       ],
       "checks": [
         {
@@ -167,8 +168,7 @@
         "src/shapes.mjs",
         "src/history.mjs",
         "src/pins.mjs",
-        "src/bash-writes.mjs",
-        "src/pending.mjs"
+        "src/bash-writes.mjs"
       ],
       "checks": [
         {
