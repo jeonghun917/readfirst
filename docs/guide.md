@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.23.0 read <file>` (and `jeonghun917/readfirst@v0.23.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.24.0 read <file>` (and `jeonghun917/readfirst@v0.24.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -193,9 +193,9 @@ under two seconds. `--json` gives `readfirst/find@1`.
 
 ### Any agent, through MCP
 
-`npx readfirst mcp` is an MCP server on stdio with five tools: `read_list` (files → what to read and check before
+`npx readfirst mcp` is an MCP server on stdio with six tools: `read_list` (files → what to read and check before
 changing them, and where they broke before), `changed_read_list` (the same for everything changed on the branch), `find_existing` (the search
-above, before writing something new), `check_map` and `audit_repo` (the audit above). It answers from the checkout as it is and writes nothing.
+above, before writing something new), `check_map`, `pending_map_edits` (map edits the hosted upkeep proposed that nobody has merged yet) and `audit_repo` (the audit above). It answers from the checkout as it is and writes nothing.
 
 ```sh
 claude mcp add readfirst -- npx --yes readfirst mcp          # Claude Code
@@ -413,7 +413,8 @@ Everything above is free and stays free. The GitHub App adds the parts that take
   citing the file and line it came from. Free once per account, for repositories up to 200 files.
 - **Pro, $19/month:** fills for up to 3 private repositories that also read the known traps of their libraries; after
   each merge, a small PR when the map needs it; on every pull request, a comment on the lines that look like they break
-  a rule in your map.
+  a rule in your map. When that map PR waits a week or ten merges, `npx readfirst pending` and the Claude Code hook
+  say so (from your clone's refs, no network), and the app reminds you on the PR once a week.
   [Get Pro](https://readfirst-cloud.vercel.app/#pricing).
 - **Map setup, $290 once:** we write the first maps for up to 3 repositories from your code, its history, your docs and
   a short email Q&A, and send them as pull requests with the Action and your agent's setup. No calls; 5 business days;

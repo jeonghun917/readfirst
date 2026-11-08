@@ -76,6 +76,13 @@
         },
         {
           "text": "the PreToolUse hook reads Bash commands too: src/bash-writes.mjs names the files a command writes (redirects, sed -i / perl -i, tee, cp/mv destinations, git checkout of paths, code that writes run by python/node/sh from -c, -e or a here-document) and only those; a command that merely reads or runs tests must give none, or every Bash call would carry notes. The matcher in installHook and plugins/readfirst/hooks/hooks.json includes Bash; with --gate the first call on an unseen file is denied with the notes and the retry passes, because the notes mark the file as seen - src/bash-writes.mjs:16"
+        },
+        {
+          "text": "src/pending.mjs reads the hosted upkeep branch (refs/remotes/*/readfirst/upkeep) from the clone's refs only, as of the last fetch (no-network-in-cli): `pending`, the MCP tool pending_map_edits and the PreToolUse hook (once per session per repository, after MIN_DAYS or MIN_MERGES) use it. The hook adds the line as context and never denies for it, even with --gate. The branch name is the hosted upkeep's: if the server renames it, this goes silent",
+          "files": [
+            "src/pending.mjs",
+            "src/cli.mjs"
+          ]
         }
       ]
     },
@@ -160,7 +167,8 @@
         "src/shapes.mjs",
         "src/history.mjs",
         "src/pins.mjs",
-        "src/bash-writes.mjs"
+        "src/bash-writes.mjs",
+        "src/pending.mjs"
       ],
       "checks": [
         {
@@ -440,7 +448,7 @@
     },
     {
       "id": "only-init-and-fix-write",
-      "rule": "only `readfirst init`, `readfirst setup`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, does what setup does, and with --ci .github/workflows/readfirst.yml (never over an existing one); setup adds the read-first line to agent notes files and readfirst's entry to the project's own agent configs (.claude/settings.json, .cursor/mcp.json, .vscode/mcp.json, .gemini/settings.json, .codex/config.toml, opencode.json), keeping what is there and never rewriting a file it cannot parse, and never writes outside the checkout (the user's home folder is printed, not written); fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; `hook --stop` writes nothing itself and runs only the base branch's check commands, like verify; check, prompt (with or without --labels), read, diff, find, audit, scan and the mcp server never change the checkout; export --cursor writes and removes only .cursor/rules/readfirst-*.mdc; verify writes nothing itself except, with --record, .readfirst/held.json (which rules held, at which commit), and only runs the commands the map lists, which may write as they would when run by hand; the Action writes nothing in the checkout, and with auto-fix only commits the map that fix would write to the PR branch through the API",
+      "rule": "only `readfirst init`, `readfirst setup`, `readfirst fix`, `readfirst hook --install` and `readfirst view` write files in the checkout: init writes the map (never over an existing one without --force) and, with --agent, does what setup does, and with --ci .github/workflows/readfirst.yml (never over an existing one); setup adds the read-first line to agent notes files and readfirst's entry to the project's own agent configs (.claude/settings.json, .cursor/mcp.json, .vscode/mcp.json, .gemini/settings.json, .codex/config.toml, opencode.json), keeping what is there and never rewriting a file it cannot parse, and never writes outside the checkout (the user's home folder is printed, not written); fix writes only the map; hook --install writes only .claude/settings.json and keeps what is already there; view writes only under .readfirst/local/ (the page) and adds one line to this clone's .git/info/exclude, never anything git tracks; the plain `hook` writes only a state file in the temp folder; `hook --stop` writes nothing itself and runs only the base branch's check commands, like verify; check, prompt (with or without --labels), read, diff, find, audit, scan, pending and the mcp server never change the checkout; export --cursor writes and removes only .cursor/rules/readfirst-*.mdc; verify writes nothing itself except, with --record, .readfirst/held.json (which rules held, at which commit), and only runs the commands the map lists, which may write as they would when run by hand; the Action writes nothing in the checkout, and with auto-fix only commits the map that fix would write to the PR branch through the API",
       "why": "agents run read and diff freely before every change, and the hook runs before every edit, so it must not touch the working tree",
       "files": [
         "src/cli.mjs"

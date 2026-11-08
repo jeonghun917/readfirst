@@ -38,6 +38,12 @@ const TOOLS = [
     args: () => ['check'],
   },
   {
+    name: 'pending_map_edits',
+    description: 'Map edits the hosted upkeep proposed that nobody has merged yet: how many merges they cover and how long they have waited on the readfirst/upkeep branch (from the clone\'s refs, as of the last fetch). Tell the user when there are any, so the map stays in step.',
+    inputSchema: { type: 'object', properties: {} },
+    args: () => ['pending'],
+  },
+  {
     name: 'audit_repo',
     description: 'The whole repository against .readfirst/map.json, as a report: rules and risks whose files changed a lot since they were written, hot spots that moved, groups never filled in, code no test reaches through imports, what readfirst could not see, and the files that broke most in the last 12 months (this part needs no map). Use it before larger work, or to decide what to add to the map.',
     inputSchema: { type: 'object', properties: {} },
