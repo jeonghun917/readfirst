@@ -18,6 +18,7 @@
 //   readfirst hook [--install]     a Claude Code PreToolUse hook: the read list for the file an Edit or Write is about to change
 //                                  (--install --verify also adds a Stop hook, `hook --stop`, that runs verify before Claude Code finishes)
 //   readfirst mcp                  an MCP server on stdio: read_list, changed_read_list and check_map as tools for any agent
+//   readfirst pending              map edits waiting on an unmerged upkeep branch (from local refs, as of the last fetch)
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -28,6 +29,7 @@ import { importEdges } from './imports.mjs';
 import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
+import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
 import { bashWrites } from './bash-writes.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
@@ -62,6 +64,7 @@ const HELP = `readfirst — what to read and check before changing a file
                                  --install --verify also runs the checks for edited files before Claude Code finishes)
   readfirst view [--out <file>]  the map as a city in one HTML page
   readfirst mcp                  MCP server on stdio for Cursor, Codex, Windsurf and other agents
+  readfirst pending              map edits waiting on an unmerged upkeep branch (local refs, as of the last fetch)
   readfirst prompt --labels <lang>  brief for your agent to write personal labels for the view (e.g. ko, en)
 
 Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; default 900), --force (init: replace the map),
@@ -285,14 +288,33 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     let seen = {};
     try { seen = JSON.parse(readFileSync(seenAt, 'utf8')); } catch { seen = {}; }
     const notes = targets.slice(0, 10).map((abs) => notesFor(abs, seen, now)).filter(Boolean);
+    const waiting = pendingNotes(targets, seen, now);
     try { writeFileSync(seenAt, JSON.stringify(seen)); } catch { /* best effort */ }
-    if (!notes.length) return null;
-    const text = notes.join('\n\n');
-    if (gate) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    if (!notes.length && !waiting.length) return null;
+    // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes.
+    const text = [...notes, ...waiting].join('\n\n');
+    if (gate && notes.length) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch {
     return null;
   }
+}
+
+// Once per session for each repository edited: map edits waiting a week or ten merges on its upkeep branch
+// (src/pending.mjs). The repository is found from the file, as in notesFor.
+function pendingNotes(targets, seen, now) {
+  const out = [];
+  for (const abs of targets.slice(0, 10)) {
+    let dir = dirname(abs);
+    while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+    const root = repoOf(dir);
+    const key = `pending:${root}`;
+    if (!root || seen[key]) continue;
+    seen[key] = now;
+    const p = pendingUpkeep(root, { now });
+    if (pendingDue(p)) out.push(`readfirst: ${pendingLine(p)}.`);
+  }
+  return out;
 }
 
 // The read list of one file as a few lines, or null (no repository, the map itself, shown in the last six hours, or
@@ -527,6 +549,12 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const langs = Object.keys(labels);
     io.out(`wrote ${relative(process.cwd(), out) || out}${langs.length ? ` with labels: ${langs.join(', ')}` : ''}. Open it in a browser (it loads three.js from a CDN).\n`);
     if (!langs.length) io.out('Tip: `readfirst prompt --labels ko` (or en) gives your agent a brief for a translation and plain notes, seen only on this machine.\n');
+    return 0;
+  }
+  if (cmd === 'pending') {
+    const p = pendingUpkeep(root);
+    if (args.json) io.out(`${JSON.stringify({ pending: p, due: pendingDue(p) }, null, 2)}\n`);
+    else io.out(p ? `${pendingLine(p)}.\n` : 'No map edits waiting on an upkeep branch (as of the last fetch).\n');
     return 0;
   }
   if (cmd === 'check') {

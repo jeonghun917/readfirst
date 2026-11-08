@@ -114,7 +114,7 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
       out.notCovered.push({ path: target, why: ignored(target) ? 'ignored by the map' : suggest ? `in no group: \`readfirst fix\` would add it to group ${suggest.group}` : 'in no group: run `readfirst check`' });
     } else {
       if (group.deprecated) note('deprecated', group.id, { group: group.id, why: group.deprecated.why, use: group.deprecated.use ?? null }, target);
-      for (const r of group.risks ?? []) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text }, target);
+      for (const r of group.risks ?? []) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text, named: Boolean(r.files) }, target);
       for (const c of group.checks ?? []) note('checks', c.run, { run: c.run, why: c.why ?? `checks for ${group.title}`, from: `group ${group.id}` }, target);
     }
     (map.requires ?? []).forEach((r, i) => { if (matcher(r.when)(target)) note('together', i, { when: r.when, also: r.also, why: r.why }, target); });
@@ -181,7 +181,10 @@ export function brokeSection(targets, { title = 'Broke before', hint = ' (this c
 
 // checklist: checks as task-list boxes (for PR comments); heading: the title line, or null for none; broke: false leaves
 // out the "Broke before" section (the Action writes its own).
-export function toMarkdown(list, { checklist = false, heading, broke = true } = {}) {
+// fold (the Action's PR comment): risks that name a changed file stay open; group-wide risks, hot spots, tests and users
+// go under <details> with their count, so a PR touching a big group is not a wall of text (readfirst#118: 17,051
+// characters, 67% of them group-wide risks). Nothing is dropped.
+export function toMarkdown(list, { checklist = false, heading, broke = true, fold = false } = {}) {
   const title = heading === undefined ? `# Read first: ${list.targets.map((t) => `\`${t.path}\``).join(', ')}` : heading;
   const lines = title === null ? [] : [title, ''];
   const many = list.targets.length > 1;
@@ -193,22 +196,30 @@ export function toMarkdown(list, { checklist = false, heading, broke = true } = 
     if (!rows.length) return;
     lines.push(`## ${title}`, '', ...rows.map(render), '');
   };
+  // The same rows, folded under a summary with their count (fold only; otherwise a plain section).
+  const folded = (title, rows, render, more = []) => {
+    if (!rows.length) return;
+    if (!fold) { lines.push(`## ${title}`, '', ...rows.map(render), ...more, ''); return; }
+    lines.push(`<details><summary>${title} (${rows.length})</summary>`, '', ...rows.map(render), ...more, '', '</details>', '');
+  };
   section('Being replaced', list.deprecated ?? [], (d) => `- group **${d.group}** is being replaced${d.use ? `: use \`${d.use}\` instead` : ''} — ${d.why}${forWhom(d)}`);
   const heldNote = (r) => (r.held ? ` _(held at ${r.held.commit.slice(0, 7)} on ${r.held.date})_` : r.held === null ? ' _(never recorded as holding)_' : '');
   section('Rules that must keep holding', list.rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${heldNote(r)}${forWhom(r)}`);
-  section('Watch out', list.risks, (r) => `- ${r.text}${forWhom(r, `group ${r.group}`)}`);
+  const risk = (r) => `- ${r.text}${forWhom(r, `group ${r.group}`)}`;
+  if (fold) {
+    section('Watch out', list.risks.filter((r) => r.named), risk);
+    folded(list.risks.some((r) => r.named) ? 'More to watch out for in the groups of these files' : 'Watch out (the groups of these files)', list.risks.filter((r) => !r.named), risk);
+  } else section('Watch out', list.risks, risk);
   if (broke) lines.push(...brokeSection(list.targets));
-  section('Hot spots in this code', list.hotspots ?? [], (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`);
+  folded('Hot spots in this code', list.hotspots ?? [], (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`);
   section('Outside input reaches this code', list.flows ?? [], (f) => `- **${f.entry}** (\`${f.file}:${f.line}\`) reaches ${f.reaches.map((r) => `\`${r.symbol}\` (\`${r.file}:${r.line}\`: ${r.labels.join(', ')}${r.tables?.length ? ` on ${r.tables.map((t) => `\`${t}\``).join(', ')}` : ''}${r.inputs?.length ? `, with input ${r.inputs.map((t) => `\`${t.replace(/`/gu, "'")}\``).join(', ')}` : ''})`).join(', ')}; ${f.checks.length ? `checked by ${f.checks.map((c) => `\`${c}\``).join(', ')}` : 'no check of who may do it found on the way'}${forWhom(f)}`);
   const said = { entry: 'is where outside input enters', check: 'decides who may do something', sink: 'does something that matters', neutral: 'looks like one but is none of these', checks: 'decides who may do something', sinks: 'does something that matters', notChecks: 'is not a check', entries: 'declares a route', checksIf: 'decides who may do something only where the code matches', notSinks: 'does not write or call out', once: 'keeps a job or webhook from running twice', sources: 'returns outside input' };
   section('This repository\'s words', list.vocabulary ?? [], (v) => `- \`${v.name}\` (\`${v.evidence}\`) ${said[v.kind] ?? v.kind}${v.when ? ` \`${v.when.replace(/`/gu, "'")}\`` : ''}${v.within ? ` inside \`@${v.within}\`` : ''}${v.check ? `, checked by \`${v.check.replace(/`/gu, "'")}\`${v.unless ? ` unless \`${v.unless.replace(/`/gu, "'")}\`` : ''}` : ''}${v.label ? ` (${v.label})` : ''}${v.why ? `: ${v.why}` : ''}${forWhom(v)}`);
   section('Change these too', list.together ?? [], (t) => `- ${t.also.map((a) => `\`${a}\``).join(' or ')}${t.changed ? ' (changed)' : ''} — ${t.why}${forWhom(t)}`);
   section('Other repositories depend on this', list.dependents ?? [], (d) => `- **${d.repo}**${d.paths.length ? ` (${d.paths.map((x) => `\`${x}\``).join(', ')})` : ''} — ${d.why}${forWhom(d)}`);
   section('Run these checks', list.checks, (c) => `- ${checklist ? '[ ] ' : ''}\`${c.run}\` — ${c.why}${forWhom(c)}`);
-  section('Tests that reach this code', list.tests, (t) => `- \`${t.path}\`${t.via ? ` (through \`${t.via}\`)` : ''}${forWhom(t)}`);
-  if (list.truncated?.tests) lines.splice(lines.length - 1, 0, `- …and ${list.truncated.tests} more`);
-  section('Used by', list.usedBy, (u) => `- \`${u.path}:${u.line}\`${forWhom(u)}`);
-  if (list.truncated?.usedBy) lines.splice(lines.length - 1, 0, `- …and ${list.truncated.usedBy} more direct users`);
+  folded('Tests that reach this code', list.tests, (t) => `- \`${t.path}\`${t.via ? ` (through \`${t.via}\`)` : ''}${forWhom(t)}`, list.truncated?.tests ? [`- …and ${list.truncated.tests} more`] : []);
+  folded('Used by', list.usedBy, (u) => `- \`${u.path}:${u.line}\`${forWhom(u)}`, list.truncated?.usedBy ? [`- …and ${list.truncated.usedBy} more direct users`] : []);
   if (list.usedByIndirectly) lines.push(`${list.usedByIndirectly} more file(s) use this code indirectly.`, '');
   section('Not covered by the map', list.notCovered, (n) => `- \`${n.path}\`: ${n.why}`);
   section('Not seen by readfirst (an empty list above may mean unknown here)', list.unseen ?? [], (n) => `- \`${n.path}\`: ${n.why}`);
