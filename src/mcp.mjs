@@ -55,7 +55,8 @@ const TOOLS = [
 export function mcpHandler({ run, version }) {
   return (msg) => {
     const reply = (result) => ({ jsonrpc: '2.0', id: msg.id, result });
-    const fail = (code, message) => ({ jsonrpc: '2.0', id: msg.id ?? null, error: { code, message } });
+    // msg may be any JSON, null included: a line of `null` must get an error, not stop the server.
+    const fail = (code, message) => ({ jsonrpc: '2.0', id: msg?.id ?? null, error: { code, message } });
     if (!msg || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') return fail(-32600, 'invalid request');
     if (msg.id === undefined) return null; // notifications (initialized, cancelled) need no answer
     if (msg.method === 'initialize') {
