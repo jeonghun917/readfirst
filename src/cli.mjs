@@ -511,14 +511,19 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   if (cmd === 'init') {
     const at = join(root, MAP_PATH);
     if (existsSync(at) && args.force !== true) throw new Error(`${MAP_PATH} already exists (pass --force to replace it)`);
-    const map = draftMap(files, readText(root));
+    // The agent notes, agent configs and the workflow are written first and the files listed again, so the map places
+    // them: written after it, they were in no group and the very next step (prompt, check) stopped there (2026-11-08).
+    const later = [];
+    if (args.agent) later.push(setupReport(setup(root, args.for)));
+    if (args.ci) later.push(writeWorkflow(root) ? `wrote ${WORKFLOW_PATH}: a PR comment with the read list, and new files placed in the map on the PR branch.\n` : `${WORKFLOW_PATH} already exists; left as it is.\n`);
+    const now = later.length ? repoFiles(root) : files;
+    const map = draftMap(now, readText(root));
     mkdirSync(join(root, '.readfirst'), { recursive: true });
     writeFileSync(at, `${JSON.stringify(map, null, 2)}\n`);
-    const repoChecks = draftChecks(files, readText(root)).map((c) => c.run);
+    const repoChecks = draftChecks(now, readText(root)).map((c) => c.run);
     const scoped = map.groups.filter((g) => g.checks.length && g.checks.some((c) => !repoChecks.includes(c.run))).length;
     io.out(`wrote ${MAP_PATH}: ${map.groups.length} group${map.groups.length === 1 ? '' : 's'}${repoChecks.length ? `, checks found: ${repoChecks.join(', ')}` : ''}${scoped ? `; ${scoped} workspace package${scoped === 1 ? '' : 's'} got ${scoped === 1 ? 'its' : 'their'} own checks` : ''}.\n`);
-    if (args.agent) io.out(setupReport(setup(root, args.for)));
-    if (args.ci) io.out(writeWorkflow(root) ? `wrote ${WORKFLOW_PATH}: a PR comment with the read list, and new files placed in the map on the PR branch.\n` : `${WORKFLOW_PATH} already exists; left as it is.\n`);
+    for (const line of later) io.out(line);
     const next = [
       'run `readfirst prompt` and give the brief to your coding agent (or fill in titles, risks and rules by hand)',
       ...(args.agent ? [] : ['`readfirst setup` wires the agents this repository uses (Claude Code, Cursor, VS Code, Gemini CLI, Codex, OpenCode) to readfirst']),
@@ -574,14 +579,24 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     }
     return problems.length ? 1 : 0;
   }
+  // setup and hook --install may add files (.claude/settings.json, AGENTS.md, .cursor/mcp.json) that an existing map
+  // does not place yet, and then `check` fails on them. They do not write the map (only-init-and-fix-write): they say
+  // how to place them (2026-11-08).
+  const placeHint = () => {
+    if (!existsSync(join(root, MAP_PATH))) return '';
+    try {
+      const missing = mapProblems(readMapFile(root), repoFiles(root)).length;
+      return missing ? 'the map does not place every file yet (`npx readfirst check` lists them): run `npx readfirst fix`, or commit and let the Action\'s auto-fix do it.\n' : '';
+    } catch { return ''; }
+  };
   if (cmd === 'setup') {
-    io.out(setupReport(setup(root, args.for)));
+    io.out(setupReport(setup(root, args.for)) + placeHint());
     return 0;
   }
   if (cmd === 'hook') {
-    io.out(installHook(root, { verify: args.verify })
+    io.out((installHook(root, { verify: args.verify })
       ? `added the readfirst hook to .claude/settings.json: Claude Code now sees the read list before each edit${args.verify ? ', and cannot finish while a check for a file it edited fails (it gets one try to fix it)' : ''}.\n`
-      : '.claude/settings.json already has the readfirst hook.\n');
+      : '.claude/settings.json already has the readfirst hook.\n') + placeHint());
     return 0;
   }
   if (cmd === 'fix') {
