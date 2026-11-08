@@ -59,9 +59,12 @@ export const PATTERNS = [
   {
     // `expect(promise).rejects.toThrow()` returns a promise, and nothing waits for it: in Jest the test is over before the
     // assertion runs, so it passes whatever the code does (and a failure later is an unhandled rejection no test owns).
-    // Vitest 1 and 2 wait for hanging assertions at the end of the test, which hides it; Vitest 3 fails the test.
+    // Vitest (1.6, 2.1 and 3.2) and bun test fail such a test as they should, so files that run on them are left out
+    // (notIn: a *.vitest.* name, or an import of vitest or bun:test); a vitest suite with globals and no import is
+    // still flagged (measured 2026-11-08).
     // Test files only matter here, so the audit and the pattern bank read them for this pattern (tests: true).
     id: 'js-expect-promise', lang: JS, tests: true,
+    notIn: { path: /\.vitest\./u, text: /\bfrom\s*['"](?:vitest|bun:test)['"]|\brequire\(\s*['"](?:vitest|bun:test)['"]\s*\)/u },
     find: (stmt) => {
       const head = stmt.match(/^expect(?:\.soft)?\(/u);
       if (!head) return null;
@@ -328,6 +331,12 @@ export async function discardedResults(files, fileText = async () => null, { mut
           const text = await fileText(f.filename);
           if (!text || !assignedFromQueryset(name, text)) continue;
         }
+      }
+      // A test runner that fails the shape itself (js-expect-promise under vitest or bun test): the file says which.
+      if (c.pattern.notIn) {
+        if (c.pattern.notIn.path.test(f.filename)) continue;
+        const shown = newLines(f.patch).filter((r) => !r.hunk).map((r) => r.text).join('\n');
+        if (c.pattern.notIn.text.test(shown) || c.pattern.notIn.text.test((await fileText(f.filename)) ?? '')) continue;
       }
       if (c.pattern.afterFile) {
         const text = await fileText(f.filename);

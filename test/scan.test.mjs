@@ -49,3 +49,12 @@ test('scan: runs without a map and writes nothing', () => {
   assert.equal(r.findings[0].pattern, 'js-expect-promise');
   assert.equal(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), '', 'nothing written');
 });
+
+// 2026-11-08: vitest (1.6, 2.1, 3.2) and bun test fail an un-awaited resolves/rejects as they should; jest marks it passed.
+test('scan: no expect(...).rejects finding in files that run on vitest or bun test', () => {
+  const body = "test('x', () => {\n  expect(save(user)).rejects.toThrow();\n});\n";
+  assert.equal(scanText('src/a.vitest.test.ts', body).length, 0);
+  assert.equal(scanText('src/b.test.ts', `import { test, expect } from 'vitest';\n${body}`).length, 0);
+  assert.equal(scanText('src/c.test.ts', `import { test, expect } from 'bun:test';\n${body}`).length, 0);
+  assert.equal(scanText('src/d.test.ts', body).length, 1, 'jest (globals) still counts');
+});

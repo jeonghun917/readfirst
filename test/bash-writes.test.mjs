@@ -61,3 +61,12 @@ test('bashWrites: a here-document writes where the cds before it moved to', () =
   assert.deepEqual(w("cd sub && cat > a.md <<'E'\nx\nE\ncd /b && python3 - <<'F'\nopen('c.md','w')\nF").sort(), ['/b/c.md', '/r/sub/a.md'], 'each here-document after its own cd');
   assert.deepEqual(w("python3 - <<'E'\nimport os; os.system('cd /elsewhere')\nopen('x.md','w')\nE"), ['/r/x.md'], 'a cd inside a body is code, not a move');
 });
+
+// 2026-11-08: `D=/tmp/x && cd $D && cat > a.test.js <<E` showed `$D/a.test.js` under the session's folder.
+test('bashWrites: after a cd to a variable, relative paths are not named; absolute ones still are', () => {
+  const w = (c) => bashWrites(c, '/r');
+  assert.deepEqual(w("cd $D && cat > a.test.js <<'E'\nx\nE"), []);
+  assert.deepEqual(w('cd "$(dirname x)" && echo hi > b.md && echo hi > /abs/c.md'), ['/abs/c.md']);
+  assert.deepEqual(w('cd $D && cd /known && echo x > d.md'), ['/known/d.md'], 'an absolute cd after it is known again');
+  assert.deepEqual(w("cd ~/proj && echo x > e.md")[0].endsWith('/proj/e.md'), true);
+});

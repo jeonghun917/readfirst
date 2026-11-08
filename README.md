@@ -29,8 +29,9 @@ with no type check, a secret compared with `!==`, and more. Run over 44 open-sou
 judged and recorded (real, caveat, false positive, dead code):
 
 - **84 bugs in app code**, 21 of them low-severity secret comparisons
-- **36 tests that can never fail**, every one the same shape: `expect(promise).resolves...` with no `await` or
-  `return`, so the test ends before the assertion runs
+- **36 tests that pass even when their check fails**, every one the same shape: `expect(promise).resolves...` with
+  no `await` or `return`, so under Jest the test ends before the assertion runs (Vitest and bun test catch it, so
+  their files are left out)
 - the false positives are kept on record too; the counts come after tuning on the same repositories, so read them as
   "what is there", not as precision
 
