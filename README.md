@@ -4,7 +4,8 @@
 
 Bugs it found that are now fixed upstream: [Saleor](https://github.com/saleor/saleor/pull/19984),
 [Wagtail](https://github.com/wagtail/wagtail/pull/14790), [n8n](https://github.com/n8n-io/n8n/pull/43033),
-[django-allauth](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb). 136 real findings across 68
+[django-allauth](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb),
+[WYGIWYH](https://github.com/eitchtee/WYGIWYH/pull/649). 136 real findings across 68
 open-source repositories, reported to 21 projects.
 
 Coding agents can follow imports. What they don't know is what your team knows: "amounts here are in cents",
@@ -46,6 +47,9 @@ Fixed upstream:
   ([n8n-io/n8n#43033](https://github.com/n8n-io/n8n/pull/43033)).
 - **django-allauth**: a provider callback returned a 500 instead of a clean failure on a non-ASCII value; fixed the
   day it was reported ([f1e06cc](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb)).
+- **WYGIWYH**: the client registration endpoint answered a 500 instead of a refusal when the initial access token held
+  a non-ASCII character; merged with its regression test
+  ([eitchtee/WYGIWYH#649](https://github.com/eitchtee/WYGIWYH/pull/649)).
 - **mealie**: a household safety filter that never applied ([mealie#8964](https://github.com/mealie-recipes/mealie/issues/8964))
   is gone on main since a maintainer's scope fix ([mealie#8965](https://github.com/mealie-recipes/mealie/pull/8965)).
 
@@ -55,8 +59,7 @@ on to mark the booking paid, and webhooks nobody awaited, in Cal.diy
 ([#30526](https://github.com/calcom/cal.diy/pull/30526), [#30527](https://github.com/calcom/cal.diy/pull/30527));
 Sentry tasks queued before the rows they read were committed
 ([getsentry/sentry#130383](https://github.com/getsentry/sentry/pull/130383)); a 500 instead of a refusal on a non-ASCII
-secret in vas3k.club and WYGIWYH ([vas3k/vas3k.club#1533](https://github.com/vas3k/vas3k.club/pull/1533),
-[eitchtee/WYGIWYH#649](https://github.com/eitchtee/WYGIWYH/pull/649)); and findings sent privately to other projects,
+secret in vas3k.club ([vas3k/vas3k.club#1533](https://github.com/vas3k/vas3k.club/pull/1533), approved); and findings sent privately to other projects,
 which stay unnamed until they are fixed.
 
 ## Start

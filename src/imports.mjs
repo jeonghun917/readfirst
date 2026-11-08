@@ -10,7 +10,7 @@ const JS = /\.(?:m?js|cjs|tsx?|jsx|mts|cts|vue|svelte)$/u;
 const PY = /\.py$/u;
 // The names before `from` are runs of name characters separated by whitespace: a class that also took whitespace
 // overlapped `\s+` and backtracked (cubic) on a long whitespace run after the keyword (self-review, readfirst#89).
-const JS_IMPORT = /\b(?:import|export)\s+(?:type\s+)?(?:[\w*{}$,]+(?:\s+[\w*{}$,]+)*\s+from\s*)?['"]([^'"\n]+)['"]|\bimport\(\s*['"]([^'"\n]+)['"]\s*\)|\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/gu;
+const JS_IMPORT = /\b(?:import|export)\s+(?:type\s+)?(?:[\w*{}$,]+(?:\s+[\w*{}$,]+)*\s+from\s*)?['"]([^'"\n]+)['"]|\bimport\(\s*['"]([^'"\n]+)['"]\s*[),]|\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/gu;
 // `from a import (b,\n c)` may span lines inside its parentheses.
 const PY_IMPORT = /^[ \t]*(?:from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+(\([^)]*\)|[\w*, \t]+)|import[ \t]+([\w., \t]+))/gmu;
 const JS_EXT = ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.mts', '.vue', '.svelte', '/index.js', '/index.ts', '/index.tsx', '/index.mjs'];
@@ -132,9 +132,10 @@ export function importEdges(files, read) {
           add(from, bare(from, spec), lineAt(body, m.index));
           continue;
         }
-        const base = posix.normalize(posix.join(posix.dirname(from), spec));
+        // A folder named with a trailing slash ('../', './') is the folder: 'src/' + '/index.js' would be 'src//index.js'.
+        const base = posix.normalize(posix.join(posix.dirname(from), spec)).replace(/\/+$/u, '');
         // TypeScript sources import "./x.js" for the file "./x.ts".
-        const candidates = [...JS_EXT.map((e) => base + e), base.replace(/\.(m|c)?js$/u, '.$1ts'), base.replace(/\.js$/u, '.tsx')];
+        const candidates = [...JS_EXT.map((e) => base + e), base.replace(/\.(m|c)?js$/u, '.$1ts'), base.replace(/\.js$/u, '.tsx')].map((c) => c.replace(/^\.\//u, ''));
         add(from, candidates.find((c) => tracked.has(c)), lineAt(body, m.index));
       }
     } else if (PY.test(from)) {

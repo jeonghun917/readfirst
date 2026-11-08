@@ -63,6 +63,62 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
 }
 
 // Words of one command segment, quotes kept together; good enough for the shapes above, not a shell parser.
+// A command's words without its redirects: `< x`, `2>/dev/null`, `>&2` and the word after a bare operator. The
+// targets of > and >> are taken from the segment itself; the rest are not files this command's arguments name.
+const REDIRECT = /^(?:\d+|&)?(?:<<<|<>|>>|>\||<|>)/u;
+function withoutRedirects(ws) {
+  const out = [];
+  for (let i = 0; i < ws.length; i++) {
+    const m = ws[i].match(REDIRECT);
+    if (!m) out.push(ws[i]);
+    else if (ws[i].length === m[0].length) i++;
+  }
+  return out;
+}
+
+// How each command reads its options. next: letters whose value is the rest of the cluster or the next word; attached:
+// letters whose value is the rest of the cluster only; digits: letters whose value is the digits after them (perl -l,
+// -0: `-lne` is -l, -n, -e); inPlace: -i (with any suffix after it) and --in-place edit in
+// place; long: long options with a value (--name=v or --name v) by the letter they stand for.
+const OPTIONS = {
+  sed: { next: 'efl', inPlace: true, long: { expression: 'e', file: 'f', 'line-length': 'l' } },
+  perl: { next: 'eE', attached: 'MmIxCdD', digits: 'l0', inPlace: true, long: {} },
+  tee: { next: '', long: {} },
+  truncate: { next: 'sr', long: { size: 's', reference: 'r' } },
+  cp: { next: 'tS', long: { 'target-directory': 't', suffix: 'S' } },
+  mv: { next: 'tS', long: { 'target-directory': 't', suffix: 'S' } },
+  install: { next: 'tSmog', long: { 'target-directory': 't', suffix: 'S', mode: 'm', owner: 'o', group: 'g' } },
+  rsync: { next: 'eTf', long: { rsh: 'e', 'temp-dir': 'T', filter: 'f', exclude: 'x', include: 'x' } },
+};
+// { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given }
+function options(args, spec) {
+  const files = [];
+  const values = {};
+  const put = (k, v) => { (values[k] ??= []).push(v ?? ''); };
+  let inPlace = false;
+  let ended = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (ended || a === '-' || !a.startsWith('-')) { if (a !== '') files.push(a); continue; } // '': BSD sed's `-i ''`
+    if (a === '--') { ended = true; continue; }
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      const name = a.slice(2, eq < 0 ? undefined : eq);
+      if (spec.inPlace && name === 'in-place') inPlace = true;
+      else if (spec.long[name]) put(spec.long[name], eq < 0 ? args[++i] : a.slice(eq + 1));
+      continue;
+    }
+    for (let j = 1; j < a.length; j++) {
+      const c = a[j];
+      if (spec.inPlace && c === 'i') { inPlace = true; break; } // the rest is the backup suffix
+      if (spec.next.includes(c)) { put(c, a.slice(j + 1) || args[++i]); break; }
+      if (spec.attached?.includes(c)) { put(c, a.slice(j + 1)); break; }
+      if (spec.digits?.includes(c)) { const d = a.slice(j + 1).match(/^[0-7]*/u)[0]; put(c, d); j += d.length; }
+    }
+  }
+  return { files, values, inPlace, script: Boolean(values.e || values.E || values.f) };
+}
+
 const words = (segment) => segment.match(/'[^']*'|"(?:\\.|[^"\\])*"|[^\s]+/gu) ?? [];
 // Where `cd target` moves from `from`: null when that cannot be known (a variable: `cd $D`, `cd "$(dirname x)"`), and
 // relative paths after it are then not named at all rather than named under the wrong folder (2026-11-08: `cd $D`
@@ -141,11 +197,15 @@ export function bashWrites(command, cwd = process.cwd()) {
       const t = segment.slice(m.index + m[0].length).match(/^\s*('[^']+'|"[^"]+"|[^\s;&|]+)/u);
       if (t) add(t[1]);
     }
-    const args = ws.slice(1).map(unquote);
+    const args = withoutRedirects(ws.slice(1)).map(unquote);
     const files = args.filter((w) => !w.startsWith('-'));
-    if ((cmd === 'sed' || cmd === 'perl') && args.some((w) => /^-[a-zA-Z]*i|^--in-place/u.test(w))) files.slice(cmd === 'sed' ? 1 : 1).forEach(add);
-    else if (cmd === 'tee' || cmd === 'truncate' || cmd === 'patch') files.forEach(add);
-    else if (['cp', 'mv', 'install', 'rsync'].includes(cmd) && files.length >= 2) add(files.at(-1));
+    const o = OPTIONS[cmd] ? options(args, OPTIONS[cmd]) : null;
+    // sed and perl write only in place; the script is the first file argument unless -e/-f gave it.
+    if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
+    else if (cmd === 'tee' || cmd === 'truncate') o.files.forEach(add);
+    else if (cmd === 'patch') files.forEach(add);
+    else if (['cp', 'mv', 'install'].includes(cmd) && o.values.t) add(o.values.t.at(-1));
+    else if (['cp', 'mv', 'install', 'rsync'].includes(cmd) && o.files.length >= 2) add(o.files.at(-1));
     else if (cmd === 'git' && /^(?:checkout|restore)$/u.test(args[0] ?? '')) args.slice(args.indexOf('--') + 1 || 1).filter((w) => !w.startsWith('-') && w.includes('.')).forEach(add);
     else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e') && CODE_WRITES.test(segment)) {
       const i = args.findIndex((w) => w === '-c' || w === '-e');

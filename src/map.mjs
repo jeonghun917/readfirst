@@ -438,18 +438,20 @@ export function draftMap(files, read = () => null) {
   for (const f of files) {
     if (OWN.has(f)) continue;
     const { key, pattern } = keyOf(f);
-    const slot = byFolder.get(key) ?? { pattern, files: [] };
+    // One key can come from several folders (test/, e2e/ and spec/ are all 'tests'): each keeps its pattern.
+    const slot = byFolder.get(key) ?? { pattern, patterns: [], files: [] };
+    if (pattern && !slot.patterns.includes(pattern)) slot.patterns.push(pattern);
     slot.files.push(f);
     byFolder.set(key, slot);
   }
   for (const [key, slot] of byFolder) {
     const media = Boolean(slot.pattern) && slot.files.every((f) => MEDIA.test(f));
     const id = key.toLowerCase().replace(/[^a-z0-9-]+/gu, '-').replace(/^-+|-+$/gu, '').slice(0, 64) || 'group';
-    const patterns = slot.pattern ? [slot.pattern] : slot.files;
+    const patterns = slot.pattern ? slot.patterns : slot.files;
     const prev = groups.get(id);
     const title = media
       ? `TODO: what loads the media files in ${slot.pattern} (binary, not read)`
-      : `TODO: what ${slot.pattern ?? 'the top-level files'} ${slot.pattern ? 'is' : 'are'} for`;
+      : `TODO: what ${slot.pattern ? slot.patterns.join(', ') : 'the top-level files'} ${slot.patterns.length === 1 ? 'is' : 'are'} for`;
     groups.set(id, { id, title, files: prev ? [...prev.files, ...patterns] : patterns, checks: media ? [] : projectChecks, risks: [] });
   }
   // A nested pattern ("src/a/**") and the parent's loose files ("src/x.js") must not overlap; loose files under a nested root

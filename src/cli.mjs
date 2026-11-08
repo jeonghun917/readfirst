@@ -22,7 +22,7 @@
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { importEdges } from './imports.mjs';
@@ -267,8 +267,38 @@ export function brief(list) {
 // Which files the PreToolUse hook has seen in a session, by absolute path: the Stop hook verifies those. A session can
 // start in a folder above several repositories, so each file belongs to the repository that holds it, not to the
 // session's folder. Older state files hold paths relative to the session's repository; they still read.
-const seenFile = (stateDir, session) => join(stateDir, `readfirst-hook-${String(session ?? 'none').replace(/[^\w-]/gu, '')}.json`);
+// Hooks of one session run at the same time (an agent's parallel edits), so the state is append-only: each call adds one
+// line per file it marked ([key, time] as JSON) in a single write, and nobody rewrites what another call wrote. The
+// whole-object .json file older versions wrote (last writer wins) is still read, never written.
+const seenFile = (stateDir, session, ext = 'lines') => join(stateDir, `readfirst-hook-${String(session ?? 'none').replace(/[^\w-]/gu, '')}.${ext}`);
+// The files marked in a session (key -> time), or null when it has no state at all.
+function readSeen(stateDir, session) {
+  let seen = null;
+  try { const old = JSON.parse(readFileSync(seenFile(stateDir, session, 'json'), 'utf8')); if (old && typeof old === 'object' && !Array.isArray(old)) seen = { ...old }; } catch { /* none */ }
+  let text = null;
+  try { text = readFileSync(seenFile(stateDir, session), 'utf8'); } catch { return seen; }
+  seen ??= {};
+  for (const line of text.split('\n')) {
+    try {
+      const [key, at] = JSON.parse(line);
+      if (typeof key === 'string' && typeof at === 'number') seen[key] = Math.max(seen[key] ?? 0, at);
+    } catch { /* a line cut short */ }
+  }
+  return seen;
+}
+function addSeen(stateDir, session, before, seen) {
+  const lines = Object.entries(seen).filter(([k, at]) => before[k] !== at).map((e) => `${JSON.stringify(e)}\n`);
+  if (lines.length) appendFileSync(seenFile(stateDir, session), lines.join(''));
+}
 const repoOf = (dir) => { try { return git(dir, 'rev-parse', '--show-toplevel').trim() || null; } catch { return null; } };
+// The path with its folder resolved through symlinks, as git's top level is: the nearest existing folder is resolved and
+// the rest (a new file, new folders) kept. Without it a file reached through a linked folder is outside its repository.
+function physical(abs) {
+  let dir = dirname(abs);
+  const rest = [basename(abs)];
+  while (!existsSync(dir) && dirname(dir) !== dir) { rest.unshift(basename(dir)); dir = dirname(dir); }
+  try { return join(realpathSync(dir), ...rest); } catch { return abs; }
+}
 
 // Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file, or a Bash
 // command that writes files (src/bash-writes.mjs), prints the read list of each file as additionalContext, once per file
@@ -281,15 +311,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const cwd = event.cwd ?? process.cwd();
     const tool = event.tool_name ?? '';
     const file = event.tool_input?.file_path;
-    const targets = /^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
-      : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : [];
+    const targets = (/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
+      : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : []).map(physical);
     if (!targets.length) return null;
-    const seenAt = seenFile(stateDir, event.session_id);
-    let seen = {};
-    try { seen = JSON.parse(readFileSync(seenAt, 'utf8')); } catch { seen = {}; }
+    const seen = readSeen(stateDir, event.session_id) ?? {};
+    const before = { ...seen };
     const notes = targets.slice(0, 10).map((abs) => notesFor(abs, seen, now)).filter(Boolean);
     const waiting = pendingNotes(targets, seen, now);
-    try { writeFileSync(seenAt, JSON.stringify(seen)); } catch { /* best effort */ }
+    try { addSeen(stateDir, event.session_id, before, seen); } catch { /* best effort */ }
     if (!notes.length && !waiting.length) return null;
     // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes.
     const text = [...notes, ...waiting].join('\n\n');
@@ -319,7 +348,8 @@ function pendingNotes(targets, seen, now) {
 
 // The read list of one file as a few lines, or null (no repository, the map itself, shown in the last six hours, or
 // nothing to say). Marks the file as seen.
-function notesFor(abs, seen, now) {
+function notesFor(given, seen, now) {
+  const abs = physical(given);
   // The repository of the file: its nearest existing folder (a new file's folder may not exist yet).
   let dir = dirname(abs);
   while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
@@ -365,12 +395,14 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   let event;
   try { event = JSON.parse(input); } catch { return null; }
   if (event.stop_hook_active) return null;
-  let seen = {};
-  try { seen = JSON.parse(readFileSync(seenFile(stateDir, event.session_id), 'utf8')); } catch { return null; }
+  const seen = readSeen(stateDir, event.session_id);
+  if (!seen) return null;
   // Edited files by repository: absolute paths by the repository that holds them, older relative ones by the session's.
   const byRoot = new Map();
   const here = repoOf(event.cwd ?? process.cwd());
-  for (const key of Object.keys(seen)) {
+  for (const recorded of Object.keys(seen)) {
+    // Keys recorded before paths were resolved through symlinks are resolved here.
+    const key = isAbsolute(recorded) ? physical(recorded) : recorded;
     const root = isAbsolute(key) ? repoOf(existsSync(dirname(key)) ? dirname(key) : here ?? '/') : here;
     if (!root) continue;
     const path = isAbsolute(key) ? relative(root, key).replace(/\\/gu, '/') : key;
@@ -511,14 +543,19 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   if (cmd === 'init') {
     const at = join(root, MAP_PATH);
     if (existsSync(at) && args.force !== true) throw new Error(`${MAP_PATH} already exists (pass --force to replace it)`);
-    const map = draftMap(files, readText(root));
+    // The agent notes, agent configs and the workflow are written first and the files listed again, so the map places
+    // them: written after it, they were in no group and the very next step (prompt, check) stopped there (2026-11-08).
+    const later = [];
+    if (args.agent) later.push(setupReport(setup(root, args.for)));
+    if (args.ci) later.push(writeWorkflow(root) ? `wrote ${WORKFLOW_PATH}: a PR comment with the read list, and new files placed in the map on the PR branch.\n` : `${WORKFLOW_PATH} already exists; left as it is.\n`);
+    const now = later.length ? repoFiles(root) : files;
+    const map = draftMap(now, readText(root));
     mkdirSync(join(root, '.readfirst'), { recursive: true });
     writeFileSync(at, `${JSON.stringify(map, null, 2)}\n`);
-    const repoChecks = draftChecks(files, readText(root)).map((c) => c.run);
+    const repoChecks = draftChecks(now, readText(root)).map((c) => c.run);
     const scoped = map.groups.filter((g) => g.checks.length && g.checks.some((c) => !repoChecks.includes(c.run))).length;
     io.out(`wrote ${MAP_PATH}: ${map.groups.length} group${map.groups.length === 1 ? '' : 's'}${repoChecks.length ? `, checks found: ${repoChecks.join(', ')}` : ''}${scoped ? `; ${scoped} workspace package${scoped === 1 ? '' : 's'} got ${scoped === 1 ? 'its' : 'their'} own checks` : ''}.\n`);
-    if (args.agent) io.out(setupReport(setup(root, args.for)));
-    if (args.ci) io.out(writeWorkflow(root) ? `wrote ${WORKFLOW_PATH}: a PR comment with the read list, and new files placed in the map on the PR branch.\n` : `${WORKFLOW_PATH} already exists; left as it is.\n`);
+    for (const line of later) io.out(line);
     const next = [
       'run `readfirst prompt` and give the brief to your coding agent (or fill in titles, risks and rules by hand)',
       ...(args.agent ? [] : ['`readfirst setup` wires the agents this repository uses (Claude Code, Cursor, VS Code, Gemini CLI, Codex, OpenCode) to readfirst']),
@@ -574,14 +611,24 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     }
     return problems.length ? 1 : 0;
   }
+  // setup and hook --install may add files (.claude/settings.json, AGENTS.md, .cursor/mcp.json) that an existing map
+  // does not place yet, and then `check` fails on them. They do not write the map (only-init-and-fix-write): they say
+  // how to place them (2026-11-08).
+  const placeHint = () => {
+    if (!existsSync(join(root, MAP_PATH))) return '';
+    try {
+      const missing = mapProblems(readMapFile(root), repoFiles(root)).length;
+      return missing ? 'the map does not place every file yet (`npx readfirst check` lists them): run `npx readfirst fix`, or commit and let the Action\'s auto-fix do it.\n' : '';
+    } catch { return ''; }
+  };
   if (cmd === 'setup') {
-    io.out(setupReport(setup(root, args.for)));
+    io.out(setupReport(setup(root, args.for)) + placeHint());
     return 0;
   }
   if (cmd === 'hook') {
-    io.out(installHook(root, { verify: args.verify })
+    io.out((installHook(root, { verify: args.verify })
       ? `added the readfirst hook to .claude/settings.json: Claude Code now sees the read list before each edit${args.verify ? ', and cannot finish while a check for a file it edited fails (it gets one try to fix it)' : ''}.\n`
-      : '.claude/settings.json already has the readfirst hook.\n');
+      : '.claude/settings.json already has the readfirst hook.\n') + placeHint());
     return 0;
   }
   if (cmd === 'fix') {

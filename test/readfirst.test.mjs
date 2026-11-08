@@ -607,6 +607,26 @@ test('init: a workspace package gets its own scoped checks and its description a
   assert.deepEqual(workspaceChecks(files, 'packages/db', { scripts: { test: 'echo "Error: no test specified" && exit 1' } }), []);
 });
 
+// 2026-11-08: right after `init --agent --ci`, `prompt` and `check` failed: the map was written before AGENTS.md and the
+// workflow, so the files init itself had just made were in no group, and the next step of the setup stopped there.
+test('init --agent --ci: the map already places the files init wrote, so prompt and check pass right after', () => {
+  const { root } = repo(FIXTURE);
+  assert.equal(run(root, 'init', '--agent', '--ci').code, 0);
+  const check = run(root, 'check');
+  assert.equal(check.code, 0, check.out + check.err);
+  assert.equal(run(root, 'prompt').code, 0);
+});
+
+test('hook --install on a repository with a map says how to place the file it added', () => {
+  const { root } = repo(FIXTURE);
+  assert.equal(run(root, 'init').code, 0);
+  const hook = run(root, 'hook', '--install');
+  assert.match(hook.out, /readfirst fix/u, 'the new .claude/settings.json is in no group yet');
+  assert.equal(run(root, 'fix').code, 0);
+  assert.equal(run(root, 'check').code, 0);
+  assert.doesNotMatch(run(root, 'hook', '--install').out, /readfirst fix/u, 'nothing to place: no hint');
+});
+
 test('init --ci writes the Action with auto-fix once, and never over an existing workflow', async () => {
   const { WORKFLOW_PATH } = await import('../src/cli.mjs');
   const { root } = repo(FIXTURE);

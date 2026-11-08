@@ -99,20 +99,19 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
 
   for (const raw of targets) {
     const target = raw.replace(/^\.\//u, '').replace(/\\/gu, '/');
-    if (!tracked.has(target) && !isOwnFile(target)) {
-      out.targets.push({ path: target, group: null, status: 'NOT_TRACKED' });
-      out.notCovered.push({ path: target, why: 'not a tracked file at this commit (new, deleted or misspelt)' });
-      continue;
-    }
     if (isOwnFile(target)) { out.targets.push({ path: target, group: null, status: 'MAP' }); continue; }
+    // A file that is not tracked (deleted in the change, or new and not added yet) still gets what the map says for its
+    // place: its group's checks, rules, risks and requires entries, as editing a file beside it would.
+    const gone = !tracked.has(target);
     const group = groupOf(map, target);
-    out.targets.push({ path: target, group: group?.id ?? null, status: group ? 'IN_MAP' : ignored(target) ? 'IGNORED' : 'NO_GROUP' });
-    if (!group && !mapped) {
-      // no map at all: nothing to be "not covered" by
-    } else if (!group) {
+    out.targets.push({ path: target, group: group?.id ?? null, status: gone ? 'NOT_TRACKED' : group ? 'IN_MAP' : ignored(target) ? 'IGNORED' : 'NO_GROUP' });
+    if (gone) out.notCovered.push({ path: target, why: 'not a tracked file at this commit (new, deleted or misspelt)' });
+    else if (!group && mapped) {
+      // (with no map at all there is nothing to be "not covered" by)
       const suggest = ignored(target) ? null : suggestFor(target);
       out.notCovered.push({ path: target, why: ignored(target) ? 'ignored by the map' : suggest ? `in no group: \`readfirst fix\` would add it to group ${suggest.group}` : 'in no group: run `readfirst check`' });
-    } else {
+    }
+    if (group) {
       if (group.deprecated) note('deprecated', group.id, { group: group.id, why: group.deprecated.why, use: group.deprecated.use ?? null }, target);
       for (const r of group.risks ?? []) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text, named: Boolean(r.files) }, target);
       for (const c of group.checks ?? []) note('checks', c.run, { run: c.run, why: c.why ?? `checks for ${group.title}`, from: `group ${group.id}` }, target);
@@ -144,6 +143,7 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
         else if (at !== target) indirect.add(e.from);
       }
     }
+    if (gone) continue;
     if (isTest(target)) note('tests', target, { path: target, via: null }, target);
     out.unseen.push(...unseenIn(target, read));
   }
