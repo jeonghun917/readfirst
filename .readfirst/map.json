@@ -597,30 +597,6 @@
       "note": "Reads secrets or the environment"
     },
     {
-      "file": "src/bash-writes.mjs",
-      "symbol": "codeTargets",
-      "line": 36,
-      "labels": [
-        "network"
-      ],
-      "rules": [
-        "no-dependencies"
-      ],
-      "note": "Calls out over the network"
-    },
-    {
-      "file": "src/bash-writes.mjs",
-      "symbol": "passed",
-      "line": 41,
-      "labels": [
-        "network"
-      ],
-      "rules": [
-        "no-dependencies"
-      ],
-      "note": "Calls out over the network"
-    },
-    {
       "file": "src/cli.mjs",
       "symbol": "git",
       "line": 101,
