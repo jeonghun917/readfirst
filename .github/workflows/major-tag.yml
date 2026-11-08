@@ -11,6 +11,9 @@ permissions:
   contents: write
 jobs:
   move:
+    # Only CLI releases (vX.Y.Z). The plugin's releases (readfirst@X.Y.Z) also publish a release and failed here
+    # (readfirst@0.2.0, 2026-11-07).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

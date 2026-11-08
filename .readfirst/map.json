@@ -365,6 +365,9 @@
             ".claude/hooks/no-ai-signature.mjs",
             ".githooks/**"
           ]
+        },
+        {
+          "text": "every release published on GitHub fires major-tag and mcp-registry, including the plugin's (readfirst@X.Y.Z); both jobs run only for v-tags (or by hand), or a plugin release on the same commit moves nothing and lists the same server.json version first, failing the CLI release as a duplicate (v0.23.0 with readfirst@0.2.0). mcp-registry treats 'cannot publish duplicate version' as done - .github/workflows/mcp-registry.yml:14"
         }
       ]
     },

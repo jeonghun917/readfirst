@@ -11,6 +11,9 @@ permissions:
   id-token: write
 jobs:
   publish:
+    # Only CLI releases (vX.Y.Z): a plugin release (readfirst@X.Y.Z) on the same commit published the same version first,
+    # and the CLI release then failed as a duplicate (v0.23.0, 2026-11-07).
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,5 +35,12 @@ jobs:
             "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
           tar xzf mcp-publisher.tar.gz mcp-publisher
           ./mcp-publisher login github-oidc
-          for i in 1 2 3; do ./mcp-publisher publish && exit 0; sleep 30; done
+          # A version the Registry already lists is done, not a failure (a re-run, or v0.22.1 tagged on a commit whose
+          # server.json still named the version before it).
+          for i in 1 2 3; do
+            if out=$(./mcp-publisher publish 2>&1); then echo "$out"; exit 0; fi
+            echo "$out"
+            if echo "$out" | grep -q 'cannot publish duplicate version'; then echo "already listed"; exit 0; fi
+            sleep 30
+          done
           exit 1
