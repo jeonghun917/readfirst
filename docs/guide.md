@@ -260,8 +260,9 @@ jobs:
 ```
 
 Each PR gets one comment, updated on every push, that lists:
-- the rules, risks and checks for the files the PR changes, with the checks as boxes to tick;
-- the tests that reach the changed code;
+- the rules, risks and checks for the files the PR changes, with the checks as boxes to tick; risks written for a
+  changed file stay open, and those that only share its group are folded under a summary with their count;
+- the tests that reach the changed code, the files that use it and its hot spots, folded the same way;
 - **Files in this PR that broke before**, from the checkout's git log (see above). `actions/checkout` fetches only the
   last commit by default, so give it `fetch-depth: 200`; at depth 1 the section says "history not fetched (set
   fetch-depth: 200 on actions/checkout)". The changed files themselves come from the GitHub API at any depth, and
