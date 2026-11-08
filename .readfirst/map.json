@@ -415,7 +415,7 @@
   "rules": [
     {
       "id": "no-network-in-cli",
-      "rule": "the readfirst command reads only the checkout: no network calls, no model calls, no API key",
+      "rule": "the readfirst command reads only the checkout: no network calls, no model calls, no API key (src/pending.mjs reads the clone's refs as of the last fetch, never fetches)",
       "why": "it runs in agents' sandboxes and on private code; only the Action talks to the GitHub API",
       "files": [
         "bin/**",
@@ -585,22 +585,58 @@
   "ignore": [],
   "hotspots": [
     {
+      "file": "src/action.mjs",
+      "symbol": "runAction",
+      "line": 59,
+      "labels": [
+        "secrets"
+      ],
+      "rules": [
+        "fork-pr-does-not-fail"
+      ],
+      "note": "Reads secrets or the environment"
+    },
+    {
+      "file": "src/bash-writes.mjs",
+      "symbol": "codeTargets",
+      "line": 36,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "no-dependencies"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
+      "file": "src/bash-writes.mjs",
+      "symbol": "passed",
+      "line": 41,
+      "labels": [
+        "network"
+      ],
+      "rules": [
+        "no-dependencies"
+      ],
+      "note": "Calls out over the network"
+    },
+    {
       "file": "src/cli.mjs",
       "symbol": "git",
-      "line": 88,
+      "line": 101,
       "labels": [
         "exec"
       ],
       "rules": [
-        "no-network-in-cli",
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-network-in-cli"
       ],
       "note": "Runs commands"
     },
     {
       "file": "src/cli.mjs",
       "symbol": "addLineTo",
-      "line": 126,
+      "line": 145,
       "labels": [
         "fs-write"
       ],
@@ -612,21 +648,21 @@
     {
       "file": "src/cli.mjs",
       "symbol": "verifyChecks",
-      "line": 175,
+      "line": 195,
       "labels": [
         "secrets",
         "exec"
       ],
       "rules": [
-        "no-network-in-cli",
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-network-in-cli"
       ],
       "note": "Reads secrets or the environment, runs commands"
     },
     {
       "file": "src/cli.mjs",
       "symbol": "runHook",
-      "line": 221,
+      "line": 278,
       "labels": [
         "fs-write"
       ],
@@ -638,7 +674,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "writeWorkflow",
-      "line": 306,
+      "line": 430,
       "labels": [
         "fs-write"
       ],
