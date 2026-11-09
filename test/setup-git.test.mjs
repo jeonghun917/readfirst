@@ -3,7 +3,7 @@
 // replacing a hook; left alone and printed when the line would not run or the hook is not this repository's.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -100,6 +100,14 @@ test('a hooks folder outside the repository (a global core.hooksPath) and a hook
   assert.equal(readFileSync(elsewhere, 'utf8'), '#!/bin/sh\necho shared\n', 'the shared file is unchanged');
   assert.match(s.out, /by hand: \.git\/hooks\/pre-commit leads outside this repository and its git folder \(to .*readfirst-dotfiles-.*\/pre-commit\); add this line to it by hand/u);
   assert.match(readFileSync(join(b.root, '.git/hooks/pre-push'), 'utf8'), /readfirst verify/u, 'the other hook is still written');
+  // The hooks folder itself a link out (a dotfiles folder of hooks shared by every repository).
+  const c = repo();
+  const dotfiles = mkdtempSync(join(tmpdir(), 'readfirst-dotfiles-hooks-'));
+  rmSync(join(c.root, '.git/hooks'), { recursive: true, force: true });
+  symlinkSync(dotfiles, join(c.root, '.git/hooks'));
+  const t = run(c.root, 'setup', '--git');
+  assert.ok(!existsSync(join(dotfiles, 'pre-commit')) && !existsSync(join(dotfiles, 'pre-push')), 'nothing written through the link');
+  assert.match(t.out, /by hand: \.git\/hooks\/pre-commit is in a hooks folder outside this repository and its git folder/u);
 });
 
 test('a worktree writes the hooks of the repository it belongs to; no map stops before writing', () => {
