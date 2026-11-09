@@ -3,9 +3,8 @@
 // The changed files come from the GitHub API, so any checkout depth works; only the "broke before" section reads the
 // checkout's git log, and says so when the checkout is too shallow to have it.
 import { appendFileSync, readFileSync } from 'node:fs';
-import { readMapFile, readText, repoFiles } from './cli.mjs';
+import { edgesWith, readMapFile, readText, repoFiles } from './cli.mjs';
 import { HELD_PATH, parseHeld } from './held.mjs';
-import { importEdges } from './imports.mjs';
 import { baseRevision, brokeBefore } from './history.mjs';
 import { MAP_PATH, settleMap, unBom } from './map.mjs';
 import { brokeSection, readList, toMarkdown } from './readlist.mjs';
@@ -87,8 +86,10 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const targets = changed.filter((f) => f.status !== 'removed').map((f) => f.filename);
   // A broken map still gets a comment (the problems), but no read list from it.
   // Removed files are looked up too: their group's checks, rules and requires entries still apply to the change.
+  // A renamed file's old path is looked up as well: its old group's checks, and files that still import the old path.
+  const paths = [...new Set(changed.flatMap((f) => (f.status === 'renamed' && f.previous_filename ? [f.filename, f.previous_filename] : [f.filename])))];
   const list = changed.length && !problems.length
-    ? readList({ map, files, imports: importEdges(files, readText(root)), targets: changed.map((f) => f.filename), commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
+    ? readList({ map, files, imports: edgesWith(files, paths, readText(root)), targets: paths, before: raw, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
     : null;
   // From the checkout's git log at the PR's base (not the PR's own commits), whatever the map says. A checkout fetched at depth 1 has none: that is said, not hidden.
   const found = brokeBefore(root, targets, new Set(files), baseRevision(root, pr.base?.sha));

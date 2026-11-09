@@ -282,7 +282,7 @@
           ]
         },
         {
-          "text": "a target that is not tracked (deleted in the change, or new and not added) keeps status NOT_TRACKED and its 'not a tracked file' note, but readList still gives it its group's checks, risks and deprecation, and the rules, requires and dependents entries that match its path: verify, diff and the Action (which passes removed files too) rely on this so a change made only of deletions still runs its group's checks. It gets no tests, users or unseen entries. - src/readlist.mjs:102",
+          "text": "a target that is not tracked (deleted in the change, or new and not added) keeps status NOT_TRACKED and its 'not a tracked file' note, but readList still gives it its group's checks, risks and deprecation, and the rules, requires and dependents entries that match its path: verify, diff and the Action (which passes removed files too) rely on this so a change made only of deletions still runs its group's checks. It gets no tests or unseen entries; since 0.27.0 its users are listed, from import edges built over the tracked files plus the targets (edgesWith), with a 'still imported by' note, and a target that settling left in no group is looked up in the map as written (`before`). - src/readlist.mjs:102",
           "files": [
             "src/readlist.mjs"
           ]

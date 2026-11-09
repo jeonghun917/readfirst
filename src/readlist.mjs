@@ -71,7 +71,9 @@ export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit,
 // broke, optional, is brokeBefore() from history.mjs (path -> { count, weight, top, last } or { notFetched: true }): each
 // target it names gets that as `brokeBefore`. map may be null (no .readfirst/map.json): the list then carries no map
 // entries and does not call files "not covered".
-export function readList({ map: mapIn, files, imports, targets, commit = null, limit = 30, read = () => null, held = null, broke = {} }) {
+// `before`: the map as written, when `map` is settled. Settling drops a pattern that matches no file any more, so the
+// last file moved out of a folder lost its group and that group's checks; a target that is gone is looked up there too.
+export function readList({ map: mapIn, files, imports, targets, commit = null, limit = 30, read = () => null, held = null, broke = {}, before = null }) {
   if (!targets.length || targets.some((t) => !t.trim())) throw new Error('give at least one file path, none empty');
   const mapped = mapIn !== null && mapIn !== undefined;
   const map = mapped ? mapIn : { format: 'readfirst/map@1', groups: [] };
@@ -103,7 +105,7 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
     // A file that is not tracked (deleted in the change, or new and not added yet) still gets what the map says for its
     // place: its group's checks, rules, risks and requires entries, as editing a file beside it would.
     const gone = !tracked.has(target);
-    const group = groupOf(map, target);
+    const group = groupOf(map, target) ?? (gone && before?.groups ? groupOf(before, target) : null);
     out.targets.push({ path: target, group: group?.id ?? null, status: gone ? 'NOT_TRACKED' : group ? 'IN_MAP' : ignored(target) ? 'IGNORED' : 'NO_GROUP' });
     if (gone) out.notCovered.push({ path: target, why: 'not a tracked file at this commit (new, deleted or misspelt)' });
     else if (!group && mapped) {
@@ -143,7 +145,13 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
         else if (at !== target) indirect.add(e.from);
       }
     }
-    if (gone) continue;
+    if (gone) {
+      // A deleted or moved-away file that tracked files still import: the change breaks them unless they change too.
+      const users = out.usedBy.filter((u) => u.for.includes(target)).map((u) => u.path);
+      const nc = out.notCovered.find((n) => n.path === target);
+      if (users.length && nc) nc.why = `not a tracked file at this commit, but still imported by ${users.slice(0, 5).join(', ')}${users.length > 5 ? ` and ${users.length - 5} more` : ''}: change them too, or they break`;
+      continue;
+    }
     if (isTest(target)) note('tests', target, { path: target, via: null }, target);
     out.unseen.push(...unseenIn(target, read));
   }
