@@ -91,6 +91,45 @@ test('a plain lowercase name counts only as a function in the item\'s own files,
   assert.equal(list.risks[0].trigger.triggered, true);
 });
 
+test('on its own PR: names in docs, the map and comments do not count, and a function ends at its own closing brace', () => {
+  // readfirst#142 judged itself: its map edit and its comments named runHook and changedFiles, and an inner helper of
+  // main() (fromHere) ran to the end of main, so all three read as touched.
+  const CLI = [
+    'export function runHook(input) {',
+    '  const save = () => 1;',
+    '  function inner() {',
+    '    return 2;',
+    '  }',
+    '  return save() + inner();',
+    '}',
+    '',
+    'export function main(args) {',
+    '  const fromHere = (given) => {',
+    '    return given;',
+    '  };',
+    '  const changes = null;',
+    '  return fromHere(args);',
+    '}',
+    '',
+  ].join('\n');
+  const risks = [
+    { group: 'cli', text: 'runHook swallows every error', for: ['src/cli.mjs'] },
+    { group: 'cli', text: 'read takes a path through fromHere', for: ['src/cli.mjs'] },
+  ];
+  const list = { rules: [], risks };
+  const changes = new Map([
+    // main's body changed below fromHere; runHook's body changed below its inner functions.
+    ['src/cli.mjs', parsePatch('@@ -13 +13 @@\n-  const changes = null;\n+  const changes = judge();\n@@ -6 +6 @@\n-  return save() + inner();\n+  return save() + inner() + 1;')],
+    ['.readfirst/map.json', parsePatch('@@ -1 +1 @@\n-x\n+  "text": "fromHere and runHook"')],
+    ['docs/guide.md', parsePatch('@@ -1 +1 @@\n-x\n+see fromHere')],
+    ['src/trigger.mjs', parsePatch('@@ -0,0 +1 @@\n+// fromHere made fromHere read as changed')],
+  ]);
+  judge(list, { changes, read: (p) => (p === 'src/cli.mjs' ? CLI : null), files: ['src/cli.mjs', '.readfirst/map.json', 'docs/guide.md', 'src/trigger.mjs'] });
+  assert.equal(risks[0].trigger.triggered, true, 'runHook runs past its inner functions to its own closing brace');
+  assert.deepEqual(risks[0].trigger.by, ['`runHook`']);
+  assert.equal(risks[1].trigger.triggered, false, 'fromHere ends at its own brace; main changed below it, and the map, the guide and a comment only name it');
+});
+
 test('the read list shows triggered items in place and the others under "Not triggered by this change", whole', () => {
   const list = { targets: [{ path: 'src/pay.js', group: 'pay', status: 'IN_MAP' }], rules: [{ id: 'cents', rule: 'amounts stay in cents in `charge`', for: ['src/pay.js'], trigger: { triggered: false, about: ['`charge`'], by: [], why: 'the change does not touch `charge`' } }], risks: [{ group: 'pay', text: 'refundAll walks every order', named: true, for: ['src/pay.js'], trigger: { triggered: true, about: ['`refundAll`'], by: ['`refundAll`'] } }], hotspots: [], flows: [], vocabulary: [], checks: [], tests: [], usedBy: [], notCovered: [], unseen: [], deprecated: [], together: [], dependents: [] };
   const md = toMarkdown(list);

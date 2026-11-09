@@ -9,6 +9,7 @@
 // or removed line. An item that names nothing readfirst can find is triggered as before, by its files. When in doubt
 // (a file with no readable patch, a deleted file) everything in it counts as touched.
 import { definitions } from './find.mjs';
+import { codeOnly } from './readlist.mjs';
 
 // The changed lines of one file from unified diff text: the new-side numbers of added lines and of the place a deletion
 // was made, and the text of every added and removed line. Works on `git diff -U0` and on a pull request file's `patch`
@@ -72,6 +73,7 @@ const FILE_LIKE = /\.(?:m?[jt]sx?|cjs|py|json|md|ya?ml|toml|lock|html|css|sh|txt
 const PATH_LINE = /(?<![\w/.-])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z]\w*):(\d+)\b/gu;
 const PATH = /(?<![\w/.-])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z]\w*)(?![\w/-])/gu;
 const CODE_NAME = /(?<![\w$.\/-])(?:[a-z]+[A-Z][\w$]*|[a-z]+_[a-z0-9_]+|[A-Z][A-Z0-9]*_[A-Z0-9_]+)(?![\w$\/-])/gu;
+const NOT_CODE = /(?:^|\/)\.readfirst\/|\.(?:md|mdx|markdown|txt|rst|json|jsonl|ya?ml|toml|lock|ini|cfg|html?|css|svg|csv)$/iu;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 
 // Where each name is declared in a file, with the lines it spans: up to the next declaration (the definitions reader in
@@ -89,11 +91,49 @@ function declarations(path, body) {
   });
   starts.sort((a, b) => a.line - b.line);
   return starts.map((s, k) => {
+    // Its own end when it can be found (the closing brace, or in Python the next line indented no deeper): an inner
+    // helper declared inside main() ran to the end of main, and runHook stopped at its inner save() (readfirst#142).
+    const own = /\.py$/u.test(path) ? pyEnd(lines, s.line) : braceEnd(path, lines, s.line);
     let end = (starts[k + 1]?.line ?? lines.length + 1) - 1;
     if (starts[k + 1]) while (end > s.line && BLANK_OR_COMMENT.test(lines[end - 1])) end--;
-    return { ...s, end };
+    return { ...s, end: own ?? end };
   });
 }
+// The line of the brace that closes the block opened on or after line `at` (1-based), counting braces in code only;
+// a one-line declaration (`const x = 1;`, an arrow without a body) ends on its line. null when it does not close.
+function braceEnd(path, lines, at) {
+  let depth = 0;
+  let opened = false;
+  for (let i = at - 1; i < lines.length; i++) {
+    const code = codeText(path, lines[i]);
+    for (const c of code) {
+      if (c === '{') { depth++; opened = true; } else if (c === '}') depth--;
+    }
+    if (opened && depth <= 0) return i + 1;
+    if (!opened && i === at - 1 && /;\s*$/u.test(code)) return i + 1;
+  }
+  return null;
+}
+// Python: the last line before the next non-blank line indented no deeper than the declaration.
+function pyEnd(lines, at) {
+  const indent = (l) => l.match(/^\s*/u)[0].length;
+  const base = indent(lines[at - 1]);
+  let last = at;
+  for (let i = at; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    if (indent(lines[i]) <= base) return last;
+    last = i + 1;
+  }
+  return last;
+}
+
+// A changed line as code: a comment line is nothing, strings and regex literals are blanked (codeOnly), and a comment at
+// the end of the line is cut.
+const codeText = (path, l) => {
+  if (BLANK_OR_COMMENT.test(l)) return '';
+  const js = !/\.py$/u.test(path);
+  return codeOnly(l, js).replace(js ? /\/\/.*$/u : /#.*$/u, '');
+};
 
 const touches = (changes, from, to) => changes.whole || [...changes.lines].some((n) => n >= from && n <= to);
 
@@ -107,7 +147,11 @@ export function judge(list, { changes, read = () => null, files = [] }) {
     if (!decl.has(path)) { const body = read(path); decl.set(path, body ? declarations(path, body) : []); }
     return decl.get(path);
   };
-  const changedText = [...changes.values()].flatMap((c) => c.text);
+  // Names are looked for in the changed lines of code only: the map, docs and config name functions all the time, and
+  // a map risk that mentions runHook made every risk about runHook read as touched (readfirst#142, on its own PR).
+  // Comments and strings are left out too: the comments of this very file name changedFiles and runHook, and made the
+  // risks about them read as touched on its own PR.
+  const changedText = [...changes].filter(([path]) => !NOT_CODE.test(path)).flatMap(([path, c]) => c.text.map((l) => codeText(path, l)));
   const named = (name) => { const re = new RegExp(`(?<![\\w$])${esc(name)}(?![\\w$])`, 'u'); return changedText.some((t) => re.test(t)); };
   const judgeOne = (text, shownFor) => {
     // Backticked names, and names that look like code without backticks (camelCase, snake_case, UPPER_CASE with an
