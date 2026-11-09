@@ -147,6 +147,10 @@ function mustBeInside(root, ...paths) {
   if (away.length) throw new Error(`${away.map(([p, a]) => `${p} leads outside the repository (to ${a})`).join('; ')}: nothing was written`);
 }
 
+// Import edges over the tracked files plus the targets that are gone (deleted or moved away): a file that still imports a
+// deleted one then shows as its user, the break that matters most (2026-11-09: diff and verify listed no users at all).
+export const edgesWith = (files, targets, read) => importEdges([...new Set([...files, ...targets])].sort(), read);
+
 // read and diff keep working while the map is only behind the code (new files in no group, patterns for deleted files):
 // they warn and point at `readfirst fix`. A map that is broken in itself still stops them.
 // Without a map, read and diff still work: `readfirst read` then shows where the code broke before, from git history, and
@@ -162,8 +166,11 @@ function loadMapLenient(root, files, io, { allowNone = false } = {}) {
   const { map: settled, problems: behind, settled: placed } = settleMap(map, files);
   if (behind.length) io.err(`note: ${MAP_PATH} is behind the code (${behind.length} problem${behind.length > 1 ? 's' : ''}); \`readfirst fix\` repairs most of it.\n`);
   else if (placed.length) io.err(`note: ${placed.length} change${placed.length > 1 ? 's' : ''} not yet written in ${MAP_PATH} (new files placed by their neighbours); \`readfirst fix\` writes ${placed.length > 1 ? 'them' : 'it'} down.\n`);
+  if (settled !== map) asWritten.set(settled, map);
   return settled;
 }
+// The map as written, for a map loadMapLenient settled (readList's `before`).
+const asWritten = new WeakMap();
 
 // The one line that makes a coding agent use readfirst, added to the agent notes the project already has (CLAUDE.md,
 // AGENTS.md, .cursorrules), or to a new AGENTS.md when it has none. A file that already mentions readfirst is left alone.
@@ -236,10 +243,11 @@ function changedFiles(root, base) {
   }
   const names = new Set([
     // -z: without it git quotes names with non-ASCII characters ("src/caf\303\251.js"), which then match nothing.
-    ...git(root, 'diff', '--name-only', '-z', since).split('\0'),
+    // --no-renames: a moved file is its old path and its new one, so the group it left still runs its checks.
+    ...git(root, 'diff', '--name-only', '--no-renames', '-z', since).split('\0'),
     ...git(root, 'ls-files', '-z', '--others', '--exclude-standard').split('\0'),
   ].filter(Boolean));
-  return { ref, since, here, files: [...names].sort() };
+  return { ref, since, here, current, files: [...names].sort() };
 }
 
 // Runs each check with the shell in the repository root, one after another, and keeps the end of the output of the ones
@@ -370,11 +378,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const before = { ...seen };
     const notes = targets.slice(0, 10).map((abs) => notesFor(abs, seen, now)).filter(Boolean);
     const waiting = pendingNotes(targets, seen, now);
-    try { addSeen(stateDir, event.session_id, before, seen); } catch { /* best effort */ }
+    let saved = true;
+    try { addSeen(stateDir, event.session_id, before, seen); } catch { saved = false; }
     if (!notes.length && !waiting.length) return null;
     // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes.
     const text = [...notes, ...waiting].join('\n\n');
-    if (gate && notes.length) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
+    // the notes as context instead.
+    if (gate && notes.length && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch {
     return null;
@@ -436,20 +447,25 @@ function notesFor(given, seen, now) {
 // The check commands of the map as the base branch has it. The Stop hook runs a command without anyone asking, so it
 // runs only these: a command a branch adds or changes in the map is repository content nobody has merged yet.
 // Also why a command is not trusted, for the message.
-// On the base branch itself (main with no origin/main) the base moves with the session's own commits, so the map is
-// read as it was before the session first marked a file in this repository, never at HEAD: a check command the session
-// committed to the map ran in 0.26.4 (2026-11-09). No commit before that moment: nothing is trusted.
+// The base can move with the session's own commits: on main with no origin/main it is HEAD, and after the session
+// pushes to main, origin/main is too. So the map is read at the last base commit older than the session's first mark,
+// never one the session made: a check command the session committed to the map ran in 0.26.4 (2026-11-09). No such
+// commit: nothing is trusted.
 function trustedRuns(root, firstSeen) {
   let ref;
   let since;
   let here;
-  try { ({ ref, since, here } = changedFiles(root)); } catch { return { runs: new Set(), why: 'there is no base branch (main or master) to take trusted commands from' }; }
-  if (here) {
+  let current;
+  try { ({ ref, since, here, current } = changedFiles(root)); } catch { return { runs: new Set(), why: 'there is no base branch (main or master) to take trusted commands from' }; }
+  // Only when the base is the branch the session commits to (main itself, or origin/main while on main): a feature
+  // branch's merge-base holds no commit of the session.
+  const ownBase = here || (current && ref === `origin/${current}`);
+  if (ownBase && Number.isFinite(firstSeen)) {
     let before = '';
-    if (Number.isFinite(firstSeen)) try { before = git(root, 'rev-list', '-1', `--before=@${Math.floor(firstSeen / 1000) - 1}`, 'HEAD').trim(); } catch { /* no commits */ }
-    if (!before) return { runs: new Set(), why: `you are on ${ref} itself, and no commit of it is older than this session's first edit` };
+    try { before = git(root, 'rev-list', '-1', `--before=@${Math.floor(firstSeen / 1000) - 1}`, since).trim(); } catch { /* no commits */ }
+    if (!before) return { runs: new Set(), why: `no commit of ${ref} is older than this session's first edit` };
     since = before;
-  }
+  } else if (ownBase) return { runs: new Set(), why: `you are on ${ref} itself, and this session's start is unknown` };
   try {
     const map = JSON.parse(unBom(git(root, 'show', `${since}:${MAP_PATH}`)));
     return { runs: new Set([...(map.groups ?? []), ...(map.rules ?? [])].flatMap((x) => (x.checks ?? []).map((c) => c.run))), why: "the base branch's map does not list them yet" };
@@ -504,15 +520,15 @@ function stopFor(root, edited, timeout, named, since) {
   try {
     if (!existsSync(join(root, MAP_PATH))) return null;
     const at = named ? ` in ${basename(root)}` : '';
-    const dirty = new Set(git(root, 'status', '--porcelain', '-z', '--untracked-files=all').split('\0').filter(Boolean).map((l) => l.slice(3)));
-    // On the base branch itself (main with no origin/main) or with no base branch, a file committed in the session looks
+    const dirty = new Set(git(root, 'status', '--porcelain', '-z', '--no-renames', '--untracked-files=all').split('\0').filter(Boolean).map((l) => l.slice(3)));
+    // On the base branch itself (main with no origin/main), with no base branch, or after a push to main, a file committed in the session looks
     // unchanged, and committing before the stop skipped its checks: the files of commits made since the session first
     // marked a file in this repository count too.
     let changed = [];
     let known = true;
     try { const c = changedFiles(root); changed = c.files; known = !c.here; } catch { known = false; }
     let committed = new Set();
-    if (!known && Number.isFinite(since)) {
+    if (Number.isFinite(since)) {
       try { committed = new Set(git(root, 'log', `--since=@${Math.floor(since / 1000)}`, '--format=', '--name-only', '-z', 'HEAD').split(/[\0\n]/u).filter(Boolean)); } catch { /* no commits */ }
     }
     const targets = edited.filter((f) => dirty.has(f) || changed.includes(f) || committed.has(f)).sort();
@@ -523,7 +539,7 @@ function stopFor(root, edited, timeout, named, since) {
     let broken = [];
     try { map = readMapFile(root); broken = mapProblems(map, files, { placement: false }); } catch (e) { broken = [e.message]; }
     let list = null;
-    if (map) try { list = readList({ map, files, imports: importEdges(files, readText(root)), targets, limit: 1 }); } catch { list = null; }
+    if (map) try { list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets, limit: 1 }); } catch { list = null; }
     const brokenLine = broken.length ? `readfirst${at}: ${brokenMapLine(broken)}${list ? '' : ' The checks for the files you edited were not run.'} Fix it before you finish.` : null;
     if (!list) return brokenLine ? { block: brokenLine } : null;
     // Files left behind: what the map says changes together with an edited file, against everything changed so far.
@@ -853,7 +869,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const limit = Number(args.limit ?? 30);
     if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
     const broke = brokeBefore(root, targets, new Set(files), rev);
-    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke });
+    const list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke, before: map && asWritten.get(map) });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
     return 0;
   }
@@ -862,7 +878,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const changed = changedFiles(root, args.base);
     onBaseItself(changed, io);
     const list = changed.files.length
-      ? readList({ map, files, imports: importEdges(files, readText(root)), targets: changed.files, commit, limit: 1 })
+      ? readList({ map, files, imports: edgesWith(files, changed.files, readText(root)), targets: changed.files, commit, limit: 1, before: asWritten.get(map) })
       : emptyList(commit);
     const timeout = Number(args.timeout ?? 900);
     if (!(timeout > 0)) throw new Error('--timeout needs a number of seconds above 0');

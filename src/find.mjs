@@ -45,7 +45,11 @@ const meets = (q, w) => q === w || (Math.min(q.length, w.length) >= (/\p{Script=
 
 // Definitions by language: a name and the line it is on. Rough on purpose: a name a person would search for.
 const DEFS = [
-  { test: /\.(?:m?js|cjs|tsx?|jsx|mts|cts|vue|svelte)$/u, re: /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*([A-Za-z_$][\w$]*)|class\s+([A-Za-z_$][\w$]*)|(?:interface|type|enum)\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+)?=>|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function)/u },
+  // JS/TS: functions, classes (abstract, declare), types, arrow and function constants (also generic `<T,>(x) =>` and one
+  // wrapping call such as memoize(...) or useCallback(...)), `exports.x =` / `module.exports.x =`, and class methods
+  // (indented `name(...) {` with modifiers; control keywords are left out by KEYWORDS). The review of 2026-11-09 found
+  // `find "retry payment"` blind to `async retryPayment(id) {}` inside a class.
+  { test: /\.(?:m?js|cjs|tsx?|jsx|mts|cts|vue|svelte)$/u, re: /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:async\s+)?(?:function\s*\*?\s*([A-Za-z_$][\w$]*)|(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)|(?:interface|type|enum)\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:[\w$.]+\(\s*)?(?:async\s*)?(?:<[^>]*>\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+)?=>|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$.]+\(\s*)?(?:async\s+)?function)|^\s*(?:module\.)?exports\.([A-Za-z_$][\w$]*)\s*=|^\s+(?:(?:public|private|protected|static|async|override|readonly|get|set)\s+)*\*?\s*([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::\s*[^{=]+)?\{\s*(?:\}\s*)?$/u },
   { test: /\.py$/u, re: /^\s*(?:async\s+)?(?:def\s+([A-Za-z_]\w*)|class\s+([A-Za-z_]\w*))/u },
   { test: /\.go$/u, re: /^(?:func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)|type\s+([A-Za-z_]\w*))/u },
   { test: /\.rs$/u, re: /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn\s+([A-Za-z_]\w*)|(?:struct|enum|trait)\s+([A-Za-z_]\w*))/u },
@@ -54,7 +58,7 @@ const DEFS = [
   { test: /\.exs?$/u, re: /^\s*(?:defp?\s+([a-z_]\w*[?!]?)|defmodule\s+([A-Z][\w.]*))/u },
   { test: /\.(?:java|kts?|cs)$/u, re: /^\s*(?:(?:public|private|protected|internal|static|final|abstract|sealed|open|override|suspend|async|virtual|data)\s+)*(?:(?:class|interface|enum|record|object|struct)\s+([A-Za-z_]\w*)|fun\s+(?:<[^>]+>\s*)?([A-Za-z_]\w*)\s*\(|[\w<>[\],.?\s]+?\s+([A-Za-z_]\w*)\s*\([^;]*$)/u },
 ];
-const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'else', 'main']);
+const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'else', 'main', 'function', 'super', 'await', 'typeof']);
 const SKIP = /\.d\.ts$|\.min\.js$|(?:^|\/)(?:vendor|node_modules|dist|build|migrations)\//u;
 
 // The comment that says what a definition does: the comment lines right above it (decorators may sit between), or a

@@ -488,7 +488,10 @@ const PLACEHOLDER = /no test specified/u;
 // hook's 600 s, at every stop). `jest --watch`, `vitest watch`, `tsc -w`, nodemon; `--watchAll=false` runs once. Such a
 // script is not drafted as a check (verify sets CI=1, so a tool that watches only outside CI, like vitest, still counts).
 const WATCHES = /(?:^|\s)--watch(?:All)?(?!=false)(?:[=\s]|$)|\btsc\b[^&|;]*\s-w(?:\s|$)|\bnodemon\b|\bvitest\s+(?:watch|dev)\b/u;
-const runsOnce = (s) => typeof s === 'string' && !WATCHES.test(s);
+// A script that rewrites files is no check either: verify would change the working tree (`eslint --fix`,
+// `prettier --write`, `jest -u` updating snapshots, 2026-11-09).
+const REWRITES = /(?:^|\s)(?:--fix|--write|-u|--updateSnapshot|--update-snapshots?)(?:[=\s]|$)/u;
+const runsOnce = (s) => typeof s === 'string' && !WATCHES.test(s) && !REWRITES.test(s);
 // The scripts worth running as checks, in order, with what each covers.
 const scriptChecks = (scripts, run) => [
   ...(runsOnce(scripts.test) && !PLACEHOLDER.test(scripts.test) ? [{ run: run('test'), why: 'the test suite' }] : []),
@@ -631,11 +634,12 @@ export function draftChecks(files, read = () => null) {
     for (const c of scriptChecks(scripts, run)) add(c.run, c.why);
   }
   const makefile = has.has('Makefile') ? read('Makefile') ?? '' : '';
-  if (/^test:/mu.test(makefile)) add('make test', 'the test suite (Makefile)');
+  // A rule, not a variable: `test:=1` and `test := 1` set one and `make test` would do nothing and pass.
+  if (/^test\s*:(?!=)/mu.test(makefile)) add('make test', 'the test suite (Makefile)');
   if (has.has('go.mod')) add('go test ./...', 'the Go tests');
   if (has.has('Cargo.toml')) add('cargo test', 'the Rust tests');
   const py = has.has('pyproject.toml') || has.has('setup.py') || has.has('pytest.ini');
-  if (py && files.some((f) => /(?:^|\/)(?:test_[^/]*|[^/]*_test)\.py$/u.test(f))) add('pytest', 'the Python tests');
+  if (py && files.some((f) => /(?:^|\/)(?:test_[^/]*|[^/]*_test)\.py$/u.test(f))) add(has.has('poetry.lock') ? 'poetry run pytest' : has.has('uv.lock') ? 'uv run pytest' : 'pytest', 'the Python tests'); // the project's own environment
   if (files.some((f) => /\.(?:sln|csproj|fsproj)$/u.test(f))) add('dotnet test', 'the .NET tests');
   if (has.has('mix.exs')) add('mix test', 'the Elixir tests');
   if (has.has('gradlew') || has.has('build.gradle') || has.has('build.gradle.kts')) add(has.has('gradlew') ? './gradlew test' : 'gradle test', 'the JVM tests (Gradle)');

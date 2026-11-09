@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.26.5 read <file>` (and `jeonghun917/readfirst@v0.26.5` for
+exactly the version you reviewed, pin it: `npx readfirst@0.27.0 read <file>` (and `jeonghun917/readfirst@v0.27.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -89,7 +89,8 @@ Code hook in `.claude/settings.json`, `.cursor/mcp.json`, `.vscode/mcp.json` (Co
 second time, and never writes outside the repository: a file it cannot parse (JSON with comments, `.claude/settings.json`
 too), a file or folder that is a symlink to somewhere outside the repository, and settings that live in your home folder
 (Windsurf) are printed for you to add by hand, and the rest is still set up. Codex reads `.codex/config.toml` only in a
-project you have marked as trusted. `init --agent` runs it too.
+project you have marked as trusted; a config that already names readfirst (also as `[mcp_servers."readfirst"]`) or
+keeps its servers in an inline `mcp_servers = { ... }` table is left alone. `init --agent` runs it too.
 
 ### As a plugin (Claude Code, Paradev)
 
