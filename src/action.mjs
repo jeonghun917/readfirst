@@ -98,11 +98,21 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
 
   if ((env.INPUT_COMMENT ?? 'true') !== 'false') {
     const comments = await pages(fetchImpl, env, `/repos/${repo}/issues/${pr.number}/comments`);
-    const mine = comments.find((c) => typeof c.body === 'string' && c.body.startsWith(MARKER));
+    // Anyone can post a comment that starts with the marker. A bot's comment (the Action's token writes as one) comes
+    // first; a comment we may not edit is left alone and a new one posted, or another person's comment took ours away
+    // for good (2026-11-09).
+    // Each marked comment is tried in turn, bots' first, then newest first, and a new one is posted only when none can be
+    // edited: with a personal token our comment is a user's too, and posting at every push would break one-pr-comment.
+    const marked = comments.filter((c) => typeof c.body === 'string' && c.body.startsWith(MARKER));
+    const order = [...marked.filter((c) => c.user?.type === 'Bot'), ...marked.filter((c) => c.user?.type !== 'Bot').reverse()];
+    const post = () => api(fetchImpl, env, 'POST', `/repos/${repo}/issues/${pr.number}/comments`, { body });
     try {
-      if (mine) await api(fetchImpl, env, 'PATCH', `/repos/${repo}/issues/comments/${mine.id}`, { body });
-      else await api(fetchImpl, env, 'POST', `/repos/${repo}/issues/${pr.number}/comments`, { body });
-      log(`${mine ? 'updated' : 'posted'} the readfirst comment on #${pr.number}`);
+      let updated = false;
+      for (const c of order) {
+        try { await api(fetchImpl, env, 'PATCH', `/repos/${repo}/issues/comments/${c.id}`, { body }); updated = true; break; } catch (e) { if (!/: 40[34] /u.test(e.message)) throw e; }
+      }
+      if (!updated) await post();
+      log(`${updated ? 'updated' : 'posted'} the readfirst comment on #${pr.number}`);
     } catch (e) {
       // A PR from a fork gets a read-only token: the read list stays in the job summary.
       if (!/: 403 /u.test(e.message)) throw e;
