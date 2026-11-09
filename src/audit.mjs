@@ -10,7 +10,7 @@
 //   - what readfirst could not see: languages whose imports it does not read, modules loaded by computed names;
 //   - where the code broke most in the last 12 months (git log only, so it works with no map at all).
 // Every part is computed from the checkout and its git history; nothing runs.
-import { MAP_PATH, matcher, groupOf } from './map.mjs';
+import { MAP_PATH, matcher, groupOf, risksNaming } from './map.mjs';
 import { brokeMost, BROKE_MOST_MIN_COMMITS, BROKE_MOST_MIN_SCORE } from './history.mjs';
 import { isTest, OTHER_CODE, READS_IMPORTS, unseenIn } from './readlist.mjs';
 
@@ -236,7 +236,7 @@ function brokeMostRows(map, log, files) {
   return brokeMost(log, exists).map((r) => {
     if (!map) return r;
     const group = groupOf(map, r.path);
-    const risk = (group?.risks ?? []).some((x) => !x.files || matcher(x.files)(r.path));
+    const risk = (group?.risks ?? []).some((x) => !x.files || matcher(x.files)(r.path)) || risksNaming(map, r.path, group?.id ?? null).length > 0;
     const rules = (map.rules ?? []).filter((x) => matcher(x.files)(r.path)).map((x) => x.id);
     return { ...r, covered: { risk, rules } };
   });

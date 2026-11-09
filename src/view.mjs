@@ -1,6 +1,6 @@
 // What the map view needs, per file: its group, its read list in short form, and its marks. The page itself is drawn
 // by view-city.mjs.
-import { groupOf, matcher } from './map.mjs';
+import { groupOf, matcher, risksNaming } from './map.mjs';
 import { readList } from './readlist.mjs';
 
 // What the page needs, per file: its group, its read list in short form, and its marks.
@@ -21,7 +21,7 @@ export function viewData({ map, files, imports, name = 'repository' }) {
       tests: list.tests.map((t) => t.path),
       users: list.usedBy.length + list.usedByIndirectly,
       // A risk "on" a file: one that names the file, not one that covers its whole group.
-      own: (g.risks ?? []).filter((r) => r.files && matcher(r.files)(f)).length,
+      own: (g.risks ?? []).filter((r) => r.files && matcher(r.files)(f)).length + risksNaming(map, f, g.id).length,
     };
   }
   const links = new Map();

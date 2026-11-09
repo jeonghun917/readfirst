@@ -420,6 +420,52 @@ export function assertMap(map, files) {
 
 export const groupOf = (map, path) => map.groups.find((g) => matcher(g.files)(path)) ?? null;
 
+// The risks of other groups whose own `files` name this path: a risk shows wherever its files point, also in another
+// group (0.27.2). Before, only the path's own group was read, so a risk whose files named a file of another group showed
+// nowhere, and the map passed check (readfirst's own map had the Bash hook's risks on src/cli.mjs, not on
+// src/bash-writes.mjs, 2026-11-09). [{ group, risk }].
+export function risksNaming(map, path, exceptGroup = null) {
+  const out = [];
+  for (const g of map?.groups ?? []) {
+    if (g.id === exceptGroup) continue;
+    for (const r of g.risks ?? []) if (Array.isArray(r.files) && r.files.length && matcher(r.files)(path)) out.push({ group: g, risk: r });
+  }
+  return out;
+}
+
+// Risks whose text names a tracked file that does not show them when it is read: [{ group, index, path, about }].
+// `about` is true when the file is named in the risk's first clause (the subject: "src/x.mjs keeps ...", "Bash
+// commands in the hook (src/bash-writes.mjs): ..."): the risk was written beside the wrong file and the file it is about
+// gets nothing; `check` lists those first and `check --strict` fails on them. A file named further on is often a
+// consequence ("so changing it also changes src/action.mjs"): listed after, never a failure, never left out. A path
+// counts when it is written out (src/x.mjs) or as a file name only one tracked file has.
+export function unshownRisks(map, files) {
+  const tracked = new Set(files);
+  const byName = new Map();
+  for (const f of files) { const n = f.split('/').pop(); byName.set(n, byName.has(n) ? null : f); }
+  const PATH = /(?<![\w@/.-])((?:[\w.-]+\/)*[\w-][\w.-]*\.[A-Za-z][\w]{0,9})(?![\w/-])/gu;
+  const named = (text) => {
+    const out = new Set();
+    for (const m of text.matchAll(PATH)) {
+      const t = m[1].replace(/^\.\//u, '').replace(/\.+$/u, '');
+      const path = tracked.has(t) ? t : !t.includes('/') && byName.get(t) ? byName.get(t) : null;
+      if (path) out.add(path);
+    }
+    return out;
+  };
+  const out = [];
+  for (const g of map?.groups ?? []) (g.risks ?? []).forEach((r, index) => {
+    if (typeof r?.text !== 'string') return;
+    const subject = named(r.text.split(/[:;,]|\. /u)[0]);
+    for (const path of named(r.text)) {
+      const own = groupOf(map, path)?.id === g.id && (!r.files || matcher(r.files)(path));
+      const listed = Array.isArray(r.files) && matcher(r.files)(path);
+      if (!own && !listed) out.push({ group: g.id, index, path, about: subject.has(path) });
+    }
+  });
+  return out.sort((a, b) => Number(b.about) - Number(a.about));
+}
+
 // A first map from the file tree alone: one group per top folder (one per sub-folder under src/, lib/ and app/),
 // tests together. Folders of only media or fonts get a group of their own too: code usually loads them, so the risks of
 // that code belong there; "ignore" is left for a person to fill with what nothing depends on. Titles and risks are left

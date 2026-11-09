@@ -17,7 +17,8 @@ export function cursorRules(map, files) {
   for (const g of map.groups) {
     const inGroup = files.filter(matcher(g.files));
     const rules = (map.rules ?? []).filter((r) => inGroup.some(matcher(r.files)));
-    const risks = g.risks ?? [];
+    // Risks of other groups whose files name a file of this group show in this group's rules too (risksNaming).
+    const risks = [...(g.risks ?? []), ...map.groups.filter((o) => o.id !== g.id).flatMap((o) => (o.risks ?? []).filter((r) => Array.isArray(r.files) && r.files.length && inGroup.some(matcher(r.files))))];
     const checks = [...new Map([...(g.checks ?? []), ...rules.flatMap((r) => r.checks ?? [])].map((c) => [c.run, c])).values()];
     if (!rules.length && !risks.length && !checks.length && !g.deprecated) continue;
     const lines = [
