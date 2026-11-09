@@ -269,6 +269,7 @@ export function dependencyHint(root, output = '') {
 
 // Runs each check with the shell in the repository root, one after another, and keeps the end of the output of the ones
 // that fail. readfirst writes nothing itself; the commands are the map's own and may write, as they would by hand.
+const OUTPUT_LINES = 30;
 export function verifyChecks(root, checks, { dryRun = false, timeout = 900, progress = () => {} } = {}) {
   const out = [];
   for (const c of checks) {
@@ -281,7 +282,11 @@ export function verifyChecks(root, checks, { dryRun = false, timeout = 900, prog
     const timedOut = r.error?.code === 'ETIMEDOUT';
     const status = timedOut ? 'timeout' : r.status === 0 ? 'pass' : 'fail';
     const all = status === 'pass' ? '' : `${r.stdout ?? ''}${r.stderr ?? ''}${r.error && !timedOut ? r.error.message : ''}`.trimEnd();
-    const tail = status === 'pass' ? undefined : all.split('\n').slice(-30).join('\n');
+    const lines = all.split('\n');
+    // The last OUTPUT_LINES lines of a failing check (readfirst watch on readfirst#139: it said only "last lines").
+    // cut: a line before them says how many came before and that running the command itself shows them all.
+    const shown = lines.length > OUTPUT_LINES ? [`(${lines.length - OUTPUT_LINES} earlier lines not shown; run \`${c.run}\` to see them all)`, ...lines.slice(-OUTPUT_LINES)] : lines;
+    const tail = status === 'pass' ? undefined : shown.join('\n');
     const hint = status === 'fail' ? dependencyHint(root, all) : null;
     out.push({ ...row, status, code: r.status, seconds, ...(tail !== undefined ? { output: tail } : {}), ...(hint ? { hint } : {}) });
   }

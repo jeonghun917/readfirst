@@ -67,3 +67,16 @@ test('a map field one letter or a plural away is named; format says it is requir
   assert.ok(p({ ...base, format: 'readfirst/map@2' }).includes(`format: must be "${MAP_FORMAT}", not "readfirst/map@2"`));
   assert.deepEqual(p(base), [], 'a right map has no problems');
 });
+
+// readfirst watch on readfirst#139: a failing check's output was cut to its last 30 lines with no word of the rest.
+test('a failing check with long output says how many lines came before the last 30', () => {
+  const map = { format: MAP_FORMAT, groups: [{ id: 'src', title: 'Source', files: ['src/**'], checks: [{ run: 'node src/long.mjs', why: 'long output' }] }] };
+  const { root, git } = repo({ 'src/long.mjs': "for (let i = 1; i <= 45; i++) console.log('line ' + i);\nprocess.exit(1);\n", '.readfirst/map.json': JSON.stringify(map) });
+  git('checkout', '-q', '-b', 'work');
+  writeFileSync(join(root, 'src/long.mjs'), "for (let i = 1; i <= 45; i++) console.log('line ' + i);\nprocess.exit(1);\n// changed\n");
+  const v = run(root, 'verify', '--base', 'main');
+  assert.equal(v.code, 1);
+  assert.match(v.out, /\(15 earlier lines not shown; run `node src\/long\.mjs` to see them all\)\nline 16\n/u);
+  assert.match(v.out, /line 45/u);
+  assert.doesNotMatch(v.out, /line 15\n/u);
+});

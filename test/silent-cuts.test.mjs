@@ -18,7 +18,10 @@ const root = new URL('..', import.meta.url).pathname;
 // through (in readfirst-cloud, eleven list cuts; here the audit's files still using deprecated code, cut to five).
 const SIZE = String.raw`(?:[0-9]+|[A-Z][A-Z0-9_]*|max\w*|limit|count)`;
 const BOUND = String.raw`(?:[3-9]|[1-9][0-9]+|[A-Z][A-Z0-9_]*|max\w*|limit|count)`;
-export const CUT = new RegExp(String.raw`\.slice\(0, *${SIZE}\)|length *< *${BOUND}\)[^;]*\.push\(|(?:\.length|\bn) *(?:===|>=) *${BOUND}\) *(?:return|break|continue)`, 'u');
+// A slice from the end, `.slice(-30)`, keeps the last N and drops the rest the same way: a failing check's output in
+// verify was cut to its last 30 lines with no word of how many came before (readfirst watch on readfirst#139); this
+// test, which looked only at slice(0, N), passed it.
+export const CUT = new RegExp(String.raw`\.slice\(0, *${SIZE}\)|\.slice\(-${BOUND}\)|length *< *${BOUND}\)[^;]*\.push\(|(?:\.length|\bn) *(?:===|>=) *${BOUND}\) *(?:return|break|continue)`, 'u');
 // A cut of text, not of a list, is left out before the shapes are looked for: a short sha, a hash, a date string, a
 // title, subject, message or body, the result of a string method or of String(), inert() or codeSpan().
 export const TEXT = new RegExp(String.raw`(?:\b\w*(?:[sS]ha|[cC]ommit\w*|[hH]ash)\w*(?:\([^()]*\))?\)?\??|digest\('hex'\)|toISOString\(\)|\b(?:title|subject|message|body|route|text|value|why|since|slug)(?: \?\? '')?\)?|\.(?:trim|text)\(\)\)?|\.(?:join|replace)\([^()]*(?:\([^()]*\)[^()]*)*\)|\.split\([^()]*\)\[0\]|\b(?:String|inert|codeSpan)\([^;]*\)|\x60)\.slice\(0, *\d+\)|\.slice\(0, *\d+\)\}?…`, 'gu');
@@ -40,9 +43,9 @@ export function silentCuts(dirs) {
 }
 
 test('the cut shapes catch what the first version missed, and leave text cuts alone', () => {
-  for (const l of ['  return unique(out).slice(0, 5);', '  for (const d of defs.slice(0, 2)) {', '  .slice(0, max)', '    if (out.length === 10) break;', '    if (n >= PER_FILE) continue;', "      if (lead.commits.length < 3) lead.commits.push(c);", '  for (const path of pinFiles(tracked).slice(0, 20)) {'])
+  for (const l of ['  return unique(out).slice(0, 5);', '  for (const d of defs.slice(0, 2)) {', '  .slice(0, max)', '    if (out.length === 10) break;', '    if (n >= PER_FILE) continue;', "      if (lead.commits.length < 3) lead.commits.push(c);", '  for (const path of pinFiles(tracked).slice(0, 20)) {', "  const tail = all.split('\\n').slice(-30).join('\\n');", '  rows.slice(-MAX_ROWS)'])
     assert.ok(CUT.test(l.replace(TEXT, '')), l);
-  for (const l of ['`${sha.slice(0, 7)}`', "createHash('sha256').update(x).digest('hex').slice(0, 16)", "new Date().toISOString().slice(0, 7)", 'inert(f.title.slice(0, 200))', "String(c.commit?.message ?? '').split('\\n')[0].slice(0, 120)", '(pr.body ?? \'\').slice(0, 2000)', 'pr.head?.sha?.slice(0, 7)', "if (parts.length === 1) return x;"])
+  for (const l of ['`${sha.slice(0, 7)}`', "createHash('sha256').update(x).digest('hex').slice(0, 16)", "new Date().toISOString().slice(0, 7)", 'inert(f.title.slice(0, 200))', "String(c.commit?.message ?? '').split('\\n')[0].slice(0, 120)", '(pr.body ?? \'\').slice(0, 2000)', 'pr.head?.sha?.slice(0, 7)', "if (parts.length === 1) return x;", 'parts.slice(-1)[0]', "name.split('.').slice(-2)"])
     assert.ok(!CUT.test(l.replace(TEXT, '')), l);
 });
 
