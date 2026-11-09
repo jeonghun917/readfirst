@@ -39,7 +39,7 @@
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap, which settles the map as check does (settleMap) and throws (exit 2 from bin) only on what check fails on. read, diff, view, verify and export --cursor use loadMapLenient (read and diff, and the PreToolUse hook and audit, also work with no map at all: they then show only where the code broke before, from git history, and `readList` gets a null map): they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
+          "text": "`check` reports map problems and exits 1; since 0.27.2 it also lists risks that name a file which does not show them (unshownRisks), those about the file first, and `check --strict` fails on those, never on a mere mention. prompt goes through loadMap, which settles the map as check does (settleMap) and throws (exit 2 from bin) only on what check fails on without --strict. read, diff, view, verify and export --cursor use loadMapLenient (read and diff, and the PreToolUse hook and audit, also work with no map at all: they then show only where the code broke before, from git history, and `readList` gets a null map): they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -66,13 +66,6 @@
           "files": [
             "src/mcp.mjs",
             "src/cli.mjs"
-          ]
-        },
-        {
-          "text": "brokeBefore (src/history.mjs) runs one `git log` per code file for read, diff, the hook and the Action, and never throws: a missing git, a non-repository or a repository with no commits gives {} (nothing shown). A shallow clone with fewer than 200 commits gives { notFetched: true } for files with nothing to show, so a test that runs read in a `--depth 1` clone sees 'history not fetched'; a clone fetched to depth 200 or more counts as having the history",
-          "files": [
-            "src/cli.mjs",
-            "src/history.mjs"
           ]
         },
         {
@@ -152,6 +145,31 @@
           "files": [
             "bin/readfirst.mjs"
           ]
+        },
+        {
+          "text": "brokeBefore (src/history.mjs) runs one `git log` per code file for read, diff, the hook and the Action, and never throws: a missing git, a non-repository or a repository with no commits gives {} (nothing shown). The PreToolUse hook reaches it through cachedBrokeBefore (src/hook-cache.mjs), which keeps each path's result per HEAD between calls. A shallow clone with fewer than 200 commits gives { notFetched: true } for files with nothing to show, so a test that runs read in a `--depth 1` clone sees 'history not fetched'; a clone fetched to depth 200 or more counts as having the history",
+          "files": [
+            "src/cli.mjs",
+            "src/history.mjs"
+          ]
+        },
+        {
+          "text": "src/action.mjs imports edgesWith, repoFiles, readMapFile and readText from cli.mjs, so changing how files are listed, the map is read or import edges are built over deleted files also changes the GitHub Action",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "verify runs the map's check commands with the shell in the repository root; a map is repository content and its commands run with the user's rights, so verify stays an explicit command, never called from the PreToolUse hook or the Action. The one exception is the opt-in Stop hook (`hook --install --verify`), and it runs only commands the base branch's map already lists (trustedRuns): a command a branch adds or changes is named, never run, so checking out someone's branch cannot run their new command. When the base is the branch the session commits to (main with no origin/main, or origin/main while on main, so also after the session pushes to main) trustedRuns reads the map at the last base commit older than the session's first mark, never HEAD or a commit the session made: in 0.26.4 a command the session committed to the map ran. Every file readfirst writes in the checkout (init, fix, export --cursor, verify --record, view's default page) goes through mustBeInside first, and setup through outsideRepo: a symlink that leads outside the repository stops the write. A check the Stop hook does not run blocks the stop once per state of the files (a `notrun:` mark in the hook state) and tells the agent to run `npx readfirst verify`; before 0.27.1 it passed with a note.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "init writes the agent notes, agent configs (--agent) and the workflow (--ci) before it lists the files again and drafts the map, so the map places AGENTS.md, .claude/settings.json and .github/workflows/readfirst.yml; writing them after the map left them in no group, and the next `prompt` or `check` failed. Keep that order if init gains another file it writes. setup and hook --install, which only add files to a repository that already has a map, do not write the map (only-init-and-fix-write): placeHint in main() prints 'run `npx readfirst fix`' when mapProblems still finds files unplaced, so a new file they write needs no extra code there but must stay a file the map can place."
+        },
+        {
+          "text": "changedFiles() (diff, verify, the Stop hook's trustedRuns) returns `here: true` when the base it found is the branch you are on (main with no origin/main), and `current` (the branch name): commits cannot be told from the base, so onBaseItself makes diff and verify throw 'nothing is uncommitted; pass --base <ref>' instead of answering 'nothing changed'. The Stop hook always counts files committed since the session first marked a file there (also after a push to main, when origin/main moved with the session), and trustedRuns takes the map from the last base commit older than that first mark when the base is the session's own branch (here, or origin/<current>); nothing is trusted when there is none. changedFiles diffs with --no-renames, so a moved file is its old path and its new one. A new caller of changedFiles must handle `here`, or a failing check passes on main"
         }
       ]
     },
@@ -173,12 +191,6 @@
           "text": "composite actions do not set INPUT_* env vars, so action.yml maps each input to an env var by hand; a new input needs a line in action.yml and a read in action.mjs",
           "files": [
             "action.yml",
-            "src/action.mjs"
-          ]
-        },
-        {
-          "text": "the existing PR comment is found by its first line (MARKER); changing MARKER makes every open PR get a second comment instead of an update",
-          "files": [
             "src/action.mjs"
           ]
         },
@@ -234,6 +246,12 @@
         },
         {
           "text": "The Action finds its comment by the first line (MARKER; partMarker(N) for the parts of a long one) and edits it in place. Anyone can post a comment that starts with the marker: until 0.26.5 (readfirst#132, security) another user's such comment was taken as ours, the PATCH failed with 403, the 403 was read as a fork PR, and no readfirst comment was posted. Bots' marked comments are tried first, then the rest newest first, each PATCH that fails with 403 or 404 moves to the next, and a new comment is posted only when none can be edited. Test with a marked comment by another user.",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "the existing PR comment is found by its first line (MARKER); changing MARKER makes every open PR get a second comment instead of an update. Anyone can post a comment that starts with the marker, so every marked comment is tried in turn (a bot's first, then newest first): a PATCH answered 403 or 404 moves on to the next, and a new comment is posted only when none can be edited. Posting at every push would break one-pr-comment, since with a personal token our own comment is a user's too",
           "files": [
             "src/action.mjs"
           ]
@@ -322,24 +340,13 @@
           "text": "the view page only has interface strings for en and ko, and the language switch only toggles between them: a labels file for any other language (e.g. `prompt --labels ja`) is read and inlined but never shown, and the plain/technical switch appears only when the current language's file has \"plain\""
         },
         {
-          "text": "check, read, diff, verify and the Action settle a map that is only behind the code the way fix would (settleMap) and pass; only what fix cannot place, broken rules and new top-level folders fail. Making them strict again breaks every PR that adds a file",
-          "files": [
-            "src/map.mjs",
-            "src/cli.mjs",
-            "src/action.mjs"
-          ]
-        },
-        {
           "text": "audit's 'hot spots nothing checks' counts a group check as a check of its own only if fewer than half the groups share the same `run` string (always, if the map has under two groups). Adding one command such as `npm test` to most groups, or writing the same check with different text, changes which hot spots are listed. A rule check only counts when the rule's files cover the hot spot's file. - src/audit.mjs:109"
         },
         {
           "text": "readfirst's own files (the map, .readfirst/held.json and the exported .cursor/rules/readfirst-*.mdc) belong to no group: isOwnFile in map.mjs (OWN_FILES and OWN_PATTERN) keeps them out of placement, and readlist.mjs reports them as status MAP. A new file readfirst writes into the checkout must be added there, or check fails with it as an unplaced file. The Cursor file name is matched twice (OWN_PATTERN in map.mjs and isCursorExport in export.mjs): change both together. The text export writes is compared byte for byte by `export --cursor --check`, so rewording it makes every user's CI fail until they re-export. - src/map.mjs:10"
         },
         {
-          "text": "the agents setup knows are listed in several places: AGENTS, detectAgents, PLAN and SNIPPETS in src/agents.mjs, the notes-file list in addAgentLine (cli.mjs), the HELP text and the 'Wire every agent at once' section of docs/guide.md. A new agent must be added to all of them: without a PLAN entry setupAgents throws on it, and without a SNIPPETS entry the by-hand message for an unparsable file says only 'the readfirst MCP server'. Setup writes a file only when it parses as plain JSON (or, for Codex, when no [mcp_servers.readfirst] table exists), and a readfirst key that is already there is never compared or updated."
-        },
-        {
-          "text": "src/shapes.mjs and src/lex.mjs are copied from readfirst-cloud lib/discarded.mjs and lib/lex.mjs with only the published shapes kept (queryset, str-method, str-replace, js-string, js-replace, js-expect-promise); do not add the server's other shapes here, they stay hosted. js-expect-promise leaves out files on vitest or bun test (notIn: a *.vitest.* name or an import of vitest or bun:test), which fail such a test themselves; keep notIn the same on both sides",
+          "text": "src/shapes.mjs and src/lex.mjs are copied from readfirst-cloud lib/discarded.mjs and lib/lex.mjs with only the published shapes kept (queryset, str-method, str-replace, js-string, js-replace, js-expect-promise); do not add the server's other shapes here, they stay hosted. Since 0.27.3 discardedResults returns every finding here: the cap (MAX_DISCARDED, 5) and the `muted` option are gone, and a cap must not be copied back. js-expect-promise leaves out files on vitest or bun test (notIn: a *.vitest.* name or an import of vitest or bun:test), which fail such a test themselves; keep notIn the same on both sides",
           "files": [
             "src/shapes.mjs",
             "src/lex.mjs"
@@ -428,6 +435,29 @@
             "src/export.mjs",
             "src/cli.mjs"
           ]
+        },
+        {
+          "text": "check, prompt, read, diff, verify and the Action settle a map that is only behind the code the way fix would (settleMap) and pass; only what fix cannot place, broken rules and new top-level folders fail. Making them strict again breaks every PR that adds a file",
+          "files": [
+            "src/map.mjs",
+            "src/cli.mjs",
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "the agents setup knows are listed in several places: AGENTS, detectAgents, PLAN and SNIPPETS in src/agents.mjs, the notes-file list in addAgentLine (cli.mjs), the HELP text and the 'Wire every agent at once' section of docs/guide.md. A new agent must be added to all of them: without a PLAN entry setupAgents throws on it, and without a SNIPPETS entry the by-hand message for an unparsable file says only 'the readfirst MCP server'. Setup writes a file only when it parses as plain JSON (a UTF-8 BOM is read past) and it does not lead outside the repository through a symlink (outsideRepo; the by-hand message then says where it points), or, for Codex, when no [mcp_servers.readfirst] table exists, and a readfirst key that is already there is never compared or updated. An addLine callback returns true (wrote), false (already there) or a string (a line for the user)."
+        },
+        {
+          "text": "every repository file readfirst parses as JSON goes through unBom (map.mjs) first, because Windows editors write a UTF-8 BOM that JSON.parse refuses and npm accepts; a new JSON.parse of a map, package.json, composer.json, settings or labels without it makes such a file look broken"
+        },
+        {
+          "text": "scriptChecks drafts a package.json script as a check only when WATCHES does not match it (jest --watch, vitest watch, tsc -w, nodemon are skipped; --watchAll=false and jest -w 4 are kept): a script that watches never exits, so as a check it would hang until verify's timeout. A new way a tool watches must be added to WATCHES, or its script is drafted as a check"
+        },
+        {
+          "text": "workspaceChecks builds drafted check commands from package names and folders found in the repository, and a check runs in a shell: each such word goes through q() and is quoted unless it is a plain word. A new drafted command that puts a repository-derived word in a command line must quote it the same way"
+        },
+        {
+          "text": "summarizeScars (src/history.mjs) gives the strongest TOP_SHOWN scar commits in `top` and every other scar commit (sha, date, kind) in `others` (since 0.27.3). A reader or renderer of a file's brokeBefore that prints `top` must also name `others` (brokeSection in src/readlist.mjs does), or the commits past TOP_SHOWN are hidden again."
         }
       ]
     },
@@ -475,6 +505,9 @@
           "files": [
             "test/silent-cuts.test.mjs"
           ]
+        },
+        {
+          "text": "on main with no origin/main, verify and diff exit 2 instead of saying 'nothing changed' (commits cannot be told apart from the base); a test that runs them on a fresh `main` repository with nothing changed must first `git checkout -b work` or pass --base"
         }
       ]
     },
@@ -687,6 +720,14 @@
           "why": "every fixed-size cut of a list carries a cut: comment"
         }
       ]
+    },
+    {
+      "id": "no-write-through-symlink",
+      "rule": "init, fix, export --cursor, verify --record and view's default page call mustBeInside before writing, and setup uses outsideRepo: a file or folder that is a symlink leading outside the repository stops the write with 'nothing was written'",
+      "why": "a symlinked .readfirst or .cursor/rules, or a symlinked map, would carry a write into any file the user can reach",
+      "files": [
+        "src/cli.mjs"
+      ]
     }
   ],
   "requires": [
@@ -759,7 +800,7 @@
     {
       "file": "src/action.mjs",
       "symbol": "runAction",
-      "line": 59,
+      "line": 91,
       "labels": [
         "secrets"
       ],
@@ -770,66 +811,80 @@
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "git",
-      "line": 101,
-      "labels": [
-        "exec"
-      ],
-      "rules": [
-        "only-init-and-fix-write",
-        "no-network-in-cli"
-      ],
-      "note": "Runs commands"
-    },
-    {
-      "file": "src/cli.mjs",
       "symbol": "addLineTo",
-      "line": 145,
+      "line": 182,
       "labels": [
         "fs-write"
       ],
       "rules": [
+        "no-write-through-symlink",
         "only-init-and-fix-write"
       ],
       "note": "Writes files"
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "verifyChecks",
-      "line": 195,
+      "symbol": "treeState",
+      "line": 660,
       "labels": [
-        "secrets",
-        "exec"
+        "crypto"
       ],
       "rules": [
-        "only-init-and-fix-write",
-        "no-network-in-cli"
-      ],
-      "note": "Reads secrets or the environment, runs commands"
-    },
-    {
-      "file": "src/cli.mjs",
-      "symbol": "runHook",
-      "line": 278,
-      "labels": [
-        "fs-write"
-      ],
-      "rules": [
+        "no-write-through-symlink",
         "only-init-and-fix-write"
       ],
-      "note": "Writes files"
+      "note": "Hashes, signs or encrypts"
     },
     {
       "file": "src/cli.mjs",
       "symbol": "writeWorkflow",
-      "line": 430,
+      "line": 671,
       "labels": [
         "fs-write"
       ],
       "rules": [
+        "no-write-through-symlink",
         "only-init-and-fix-write"
       ],
       "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "installHook",
+      "line": 704,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "no-write-through-symlink",
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/cli.mjs",
+      "symbol": "main",
+      "line": 727,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "no-write-through-symlink",
+        "only-init-and-fix-write"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/history.mjs",
+      "symbol": "git",
+      "line": 135,
+      "labels": [
+        "exec"
+      ],
+      "rules": [
+        "no-network-in-cli"
+      ],
+      "note": "Runs commands"
     }
   ]
 }
