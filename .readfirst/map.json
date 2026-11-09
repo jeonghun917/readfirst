@@ -666,6 +666,21 @@
       "files": [
         "src/**"
       ]
+    },
+    {
+      "id": "no-silent-cut",
+      "rule": "nothing readfirst finds is cut to look shorter: a list cut to a fixed size for output (slice(0, N), a count that stops a loop) names the rest or says where it is, in a `cut:` comment on that line or the one above",
+      "why": "the owner's rule (2026-11-09): no bug hidden, no check skipped; fourteen silent cuts were found in two days, each hiding files, tests, lines or findings",
+      "files": [
+        "src/**",
+        "bin/**"
+      ],
+      "checks": [
+        {
+          "run": "node --test test/silent-cuts.test.mjs",
+          "why": "every fixed-size cut of a list carries a cut: comment"
+        }
+      ]
     }
   ],
   "requires": [
