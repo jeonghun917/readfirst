@@ -1,3 +1,0 @@
-#!/bin/sh
-# No AI signatures in commit messages (CLAUDE.md).
-exec node "$(git rev-parse --show-toplevel)/.claude/hooks/no-ai-signature.mjs" msg "$1"
