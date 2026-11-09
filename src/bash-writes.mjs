@@ -42,6 +42,7 @@ function patchFiles(args) {
     if (/^-[pidoDrBFVYz]$/u.test(args[i])) { i++; continue; }
     if (!args[i].startsWith('-')) out.push(args[i]);
   }
+  // cut: not a list: patch writes its first positional argument; a second one is the patch it reads
   return out.slice(0, 1);
 }
 function unwrap(ws) {

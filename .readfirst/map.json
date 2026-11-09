@@ -469,6 +469,12 @@
         },
         {
           "text": "the hook test calls main(['hook']) without a stateDir, so it writes to the real temp folder and relies on a unique session_id; reusing a fixed id would make the hook print nothing on later runs"
+        },
+        {
+          "text": "test/silent-cuts.test.mjs finds cuts by their shape, not by meaning: a slice to a number, an UPPER_CASE constant or max/limit/count, a push under such a bound, a loop stopped at one. A cut of text is told apart by its receiver (sha, hash, title, subject, message, body, String(), a string method): a list named like one of those, or a cut to a bound of another name (k, at, end), is not looked at. When it misses one, widen the shapes; do not add a cut: note to pass it",
+          "files": [
+            "test/silent-cuts.test.mjs"
+          ]
         }
       ]
     },
@@ -665,6 +671,21 @@
       "why": "the free code is MIT and public; the paid value is the server's judgement. The hosted design lives in the private readfirst-cloud repository.",
       "files": [
         "src/**"
+      ]
+    },
+    {
+      "id": "no-silent-cut",
+      "rule": "nothing readfirst finds is cut to look shorter: a list cut to a fixed size for output (slice(0, N), a count that stops a loop) names the rest or says where it is, in a `cut:` comment on that line or the one above",
+      "why": "the owner's rule (2026-11-09): no bug hidden, no check skipped; fourteen silent cuts were found in two days, each hiding files, tests, lines or findings",
+      "files": [
+        "src/**",
+        "bin/**"
+      ],
+      "checks": [
+        {
+          "run": "node --test test/silent-cuts.test.mjs",
+          "why": "every fixed-size cut of a list carries a cut: comment"
+        }
       ]
     }
   ],
