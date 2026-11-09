@@ -2,8 +2,29 @@
 // Only files inside the checkout are written, and only to add readfirst next to what is there: a JSON file that does
 // not parse, or a tool whose settings live in the user's home folder (Windsurf), is left alone and the lines to add
 // are printed instead. Nothing here runs a command or touches the network.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { existsSync, lstatSync, mkdirSync, readFileSync, readlinkSync, realpathSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve, sep } from 'node:path';
+import { unBom } from './map.mjs';
+
+// Where a file in the checkout really is when that is outside the repository (a symlinked CLAUDE.md or .claude folder),
+// else null. A file that does not exist yet is placed by its nearest existing folder; a link to a missing file counts
+// by where it points, since writing it would create that file. setup and hook --install print what to add instead.
+export function outsideRepo(root, file) {
+  const at = join(root, file);
+  let real;
+  try { real = realpathSync(at); } catch {
+    try { if (lstatSync(at).isSymbolicLink()) real = resolve(realpathSync(dirname(at)), readlinkSync(at)); } catch { /* not there */ }
+    if (!real) {
+      let dir = dirname(at);
+      const rest = [basename(at)];
+      while (!existsSync(dir) && dirname(dir) !== dir) { rest.unshift(basename(dir)); dir = dirname(dir); }
+      try { real = join(realpathSync(dir), ...rest); } catch { return null; }
+    }
+  }
+  let top;
+  try { top = realpathSync(root); } catch { return null; }
+  return real === top || real.startsWith(top.endsWith(sep) ? top : top + sep) ? null : real;
+}
 
 const MCP_ARGS = ['--yes', 'readfirst', 'mcp'];
 export const AGENTS = ['claude', 'cursor', 'vscode', 'gemini', 'codex', 'opencode', 'windsurf'];
@@ -26,9 +47,11 @@ export function detectAgents(root) {
 // was left alone (the file is not plain JSON).
 function mergeJson(root, file, path, value) {
   const at = join(root, file);
+  const away = outsideRepo(root, file);
+  if (away) return `it is outside the repository, at ${away}`;
   let doc = {};
   if (existsSync(at)) {
-    try { doc = JSON.parse(readFileSync(at, 'utf8')); } catch { return 'not plain JSON'; }
+    try { doc = JSON.parse(unBom(readFileSync(at, 'utf8'))); } catch { return 'not plain JSON'; }
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return 'not a JSON object';
   }
   let node = doc;
@@ -47,6 +70,8 @@ function mergeJson(root, file, path, value) {
 const CODEX_BLOCK = `[mcp_servers.readfirst]\ncommand = "npx"\nargs = ["--yes", "readfirst", "mcp"]\n`;
 function codexConfig(root) {
   const at = join(root, '.codex', 'config.toml');
+  const away = outsideRepo(root, '.codex/config.toml');
+  if (away) return `it is outside the repository, at ${away}`;
   const now = existsSync(at) ? readFileSync(at, 'utf8') : '';
   if (/^\s*\[mcp_servers\.readfirst\]/mu.test(now)) return 'present';
   mkdirSync(dirname(at), { recursive: true });
@@ -76,14 +101,18 @@ export const SNIPPETS = {
   'opencode.jsonc': '{"mcp": {"readfirst": {"type": "local", "command": ["npx", "--yes", "readfirst", "mcp"], "enabled": true}}}',
 };
 
-// Wires the given agents. addLine(file) adds the read-first line to one notes file and says whether it wrote.
-// Returns { wrote: [files], manual: [lines for the user] }.
+// Wires the given agents. addLine(file) adds the read-first line to one notes file and says whether it wrote (true), had
+// it already (false), or why it left the file alone (a line for the user). Returns { wrote: [files], manual: [lines] }.
 export function setupAgents(root, agents, { addLine }) {
   const wrote = [];
   const manual = [];
   for (const a of agents) {
     const p = PLAN[a];
-    for (const f of p.notes ?? []) if (addLine(f)) wrote.push(f);
+    for (const f of p.notes ?? []) {
+      const r = addLine(f);
+      if (r === true) wrote.push(f);
+      else if (typeof r === 'string' && !manual.includes(r)) manual.push(r);
+    }
     if (p.mcp) {
       const [file, result] = p.mcp(root);
       if (result === 'wrote') wrote.push(file);

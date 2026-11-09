@@ -4,7 +4,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { MAP_PATH } from './map.mjs';
+import { MAP_PATH, unBom } from './map.mjs';
 
 export const LOCAL_DIR = '.readfirst/local';
 export const LABELS_DIR = `${LOCAL_DIR}/labels`;
@@ -32,7 +32,7 @@ export function readLabels(root, warn = () => {}) {
   if (!existsSync(dir)) return out;
   for (const f of readdirSync(dir).filter((x) => x.endsWith('.json')).sort()) {
     try {
-      const l = JSON.parse(readFileSync(join(dir, f), 'utf8'));
+      const l = JSON.parse(unBom(readFileSync(join(dir, f), 'utf8')));
       const lang = typeof l.lang === 'string' && l.lang ? l.lang : f.replace(/\.json$/u, '');
       out[lang] = { text: l.text ?? {}, ...(l.plain ? { plain: { groups: l.plain.groups ?? {}, files: l.plain.files ?? {}, text: l.plain.text ?? {} } } : {}) };
     } catch (e) { warn(`skipped ${LABELS_DIR}/${f}: ${e.message}\n`); }

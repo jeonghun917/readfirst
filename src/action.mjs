@@ -7,7 +7,7 @@ import { readMapFile, readText, repoFiles } from './cli.mjs';
 import { HELD_PATH, parseHeld } from './held.mjs';
 import { importEdges } from './imports.mjs';
 import { baseRevision, brokeBefore } from './history.mjs';
-import { MAP_PATH, settleMap } from './map.mjs';
+import { MAP_PATH, settleMap, unBom } from './map.mjs';
 import { brokeSection, readList, toMarkdown } from './readlist.mjs';
 
 export const MARKER = '<!-- readfirst:pr-comment -->';
@@ -126,7 +126,7 @@ async function commitFix({ fetchImpl, env, repo, pr, raw, fixed, settled, log })
   try {
     const now = await api(fetchImpl, env, 'GET', `/repos/${repo}/contents/${path}?ref=${encodeURIComponent(pr.head.ref)}`);
     let onBranch = null;
-    try { onBranch = JSON.parse(Buffer.from(now.content ?? '', 'base64').toString('utf8')); } catch { onBranch = null; }
+    try { onBranch = JSON.parse(unBom(Buffer.from(now.content ?? '', 'base64').toString('utf8'))); } catch { onBranch = null; }
     if (JSON.stringify(onBranch) !== JSON.stringify(raw)) {
       log('::warning::readfirst auto-fix: the map on the branch differs from the one this run read (a newer push, or the base changed it); nothing committed.');
       return null;

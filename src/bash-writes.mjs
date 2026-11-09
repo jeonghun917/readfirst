@@ -131,8 +131,63 @@ const moveTo = (from, target) => {
   return from == null ? null : resolve(from, t);
 };
 
-// Quoted text blanked to spaces, same length, so positions found in it hold in the original.
-const blank = (s) => s.replace(/'[^']*'|"(?:\\.|[^"\\])*"/gu, (q) => ' '.repeat(q.length));
+// Where the quoted text or $( ) that opens at i ends (the index past its last character), or -1 when it never closes.
+// Quotes open again inside $( ), as the shell reads them; inside "..." a ' is a plain character.
+function closeOf(s, i) {
+  if (s[i] === "'") { const k = s.indexOf("'", i + 1); return k < 0 ? -1 : k + 1; }
+  const sub = s[i] === '$';
+  for (let j = i + (sub ? 2 : 1); j < s.length;) {
+    const c = s[j];
+    if (c === '\\') { j += 2; continue; }
+    if (!sub && c === '"') return j + 1;
+    if (sub && c === ')') return j + 1;
+    if ((c === '$' && s[j + 1] === '(') || (sub && (c === '"' || c === "'"))) {
+      const k = closeOf(s, j);
+      if (k < 0) return -1;
+      j = k;
+      continue;
+    }
+    j++;
+  }
+  return -1;
+}
+
+// Quoted text blanked to spaces, same length, so positions found in it hold in the original. A $( ) inside "..." stays
+// visible: it holds commands, and its own quotes are blanked in turn. A regex took `"$(python3 -c "` for one quoted string
+// and the code after it for commands, so `i>=0` was a write to the file `=0` (2026-11-09). A quote that never closes is
+// read as a plain character, as before.
+function blank(s) {
+  const out = s.split('');
+  const hide = (from, to) => { for (let k = from; k < to; k++) out[k] = ' '; };
+  const walk = (from, to) => {
+    for (let i = from; i < to;) {
+      const c = s[i];
+      if (c === '\\') { i += 2; continue; }
+      if (c !== "'" && c !== '"') { i++; continue; }
+      const end = closeOf(s, i);
+      if (end < 0 || end > to) { i++; continue; }
+      if (c === "'") hide(i, end);
+      else {
+        // "...": hidden, except the commands of each $( ) in it.
+        let shown = i;
+        for (let j = i + 1; j < end - 1;) {
+          if (s[j] === '\\') { j += 2; continue; }
+          if (s[j] !== '$' || s[j + 1] !== '(') { j++; continue; }
+          const close = closeOf(s, j);
+          if (close < 0 || close > end) break;
+          hide(shown, j + 2);
+          walk(j + 2, close - 1);
+          shown = close - 1;
+          j = close;
+        }
+        hide(shown, end);
+      }
+      i = end;
+    }
+  };
+  walk(0, s.length);
+  return out.join('');
+}
 // Command segments split at && || ; | and newlines outside quotes: node -e "a; fs.writeFileSync(...)" is one segment
 // (split inside the quotes, the write call never reached its -e argument, 2026-11-08).
 const segments = (shell) => {
@@ -192,9 +247,11 @@ export function bashWrites(command, cwd = process.cwd()) {
     const cmd = unquote(ws[0]).split('/').pop();
     if (cmd === 'cd' && ws[1]) { base = moveTo(base, ws[1]); continue; }
     // Redirects anywhere in the segment, not 2> or >&, and not a > inside quotes (an arrow `=>` in node -e "..." code
-    // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself.
-    for (const m of blank(segment).matchAll(/(?<![0-9&=-])>>?(?!\s*&)/gu)) {
-      const t = segment.slice(m.index + m[0].length).match(/^\s*('[^']+'|"[^"]+"|[^\s;&|]+)/u);
+    // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself. &> and &>>
+    // (stdout and stderr to a file) write too; the & before them once kept &> out.
+    for (const m of blank(segment).matchAll(/(?<![0-9=-])>>?(?!\s*&)/gu)) {
+      // A target ends at the ) that closes a $( ): `"$(sort a > b.txt)"` writes b.txt.
+      const t = segment.slice(m.index + m[0].length).match(/^\s*('[^']+'|"[^"]+"|[^\s;&|)]+)/u);
       if (t) add(t[1]);
     }
     const args = withoutRedirects(ws.slice(1)).map(unquote);

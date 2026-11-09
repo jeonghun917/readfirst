@@ -20,14 +20,14 @@
 //   readfirst mcp                  an MCP server on stdio: read_list, changed_read_list and check_map as tools for any agent
 //   readfirst pending              map edits waiting on an unmerged upkeep branch (from local refs, as of the last fetch)
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
-// Options: --root <dir> (default: the current git repository), --json, --limit <n>.
+// Options: --root <dir> (default: the current git repository), --json, --limit <n>, --version; --name=value works too.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { importEdges } from './imports.mjs';
 import { scan, scanTextReport } from './scan.mjs';
-import { MAP_PATH, assertMap, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap } from './map.mjs';
+import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
 import { bashWrites } from './bash-writes.mjs';
@@ -35,7 +35,7 @@ import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { find, findText } from './find.mjs';
 import { CURSOR_DIR, cursorPlan } from './export.mjs';
-import { AGENTS, detectAgents, setupAgents } from './agents.mjs';
+import { AGENTS, detectAgents, outsideRepo, setupAgents } from './agents.mjs';
 import { HELD_PATH, heldInRun, parseHeld, recordHeld } from './held.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
@@ -68,33 +68,47 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst prompt --labels <lang>  brief for your agent to write personal labels for the view (e.g. ko, en)
 
 Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; default 900), --force (init: replace the map),
+         --version; an option's value can also follow an = (--base=main),
          --agent (init: also run setup), --for (setup: the agents to wire, e.g. cursor,codex),
          --ci (init: add .github/workflows/readfirst.yml, the Action with auto-fix)`;
 
-function parse(argv) {
+// The on/off flags (name -> key in args) and the options that take a value. Anything else that starts with `--` is an
+// error: an unknown option used to take the next word as its value, so `hook --new-flag --stop` quietly ran the wrong hook.
+const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', ci: 'ci', stop: 'stop', gate: 'gate', help: 'help', version: 'version' };
+const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels']);
+export function parse(argv) {
   const args = { _: [], json: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     // Everything after `--` is a name, never an option: the MCP server passes file names and words from the agent.
     if (a === '--') { args._.push(...argv.slice(i + 1)); break; }
-    if (a === '--json') args.json = true;
-    else if (a === '--force') args.force = true;
-    else if (a === '--agent') args.agent = true;
-    else if (a === '--install') args.install = true;
-    else if (a === '--dry-run') args.dryRun = true;
-    else if (a === '--record') args.record = true;
-    else if (a === '--cursor') args.cursor = true;
-    else if (a === '--check') args.check = true;
-    else if (a === '--strict') args.strict = true;
-    else if (a === '--verify') args.verify = true;
-    else if (a === '--ci') args.ci = true;
-    else if (a === '--stop') args.stop = true;
-    else if (a === '--gate') args.gate = true;
-    else if (a === '-h' || a === '--help') args.help = true;
-    else if (a.startsWith('--')) { const v = argv[++i]; if (v === undefined) throw new Error(`${a} needs a value`); args[a.slice(2)] = v; }
-    else args._.push(a);
+    if (a === '-h') { args.help = true; continue; }
+    if (!a.startsWith('--')) { args._.push(a); continue; }
+    // --name=value is the same as --name value.
+    const eq = a.indexOf('=');
+    const name = eq < 0 ? a.slice(2) : a.slice(2, eq);
+    if (Object.hasOwn(FLAGS, name)) {
+      if (eq >= 0) throw new Error(`--${name} takes no value`);
+      args[FLAGS[name]] = true;
+    } else if (VALUES.has(name)) {
+      const v = eq < 0 ? argv[++i] : a.slice(eq + 1);
+      if (v === undefined || v === '') throw new Error(`--${name} needs a value`);
+      args[name] = v;
+    } else throw new Error(`unknown option --${name} (\`readfirst --help\` lists them)`);
   }
   return args;
+}
+
+export const VERSION = () => JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+// The command word: the first argument that is not an option or an option's value.
+function firstWord(argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--') return argv[i + 1];
+    if (!a.startsWith('-')) return a;
+    if (VALUES.has(a.slice(2))) i++;
+  }
+  return undefined;
 }
 
 // stderr is captured, not shown: a repository with no commits yet makes `rev-parse HEAD` complain, and that is expected.
@@ -107,17 +121,22 @@ export function repoFiles(root) {
 }
 
 export const readText = (root) => (path) => {
-  try { return readFileSync(join(root, path), 'utf8'); } catch { return null; }
+  try { return unBom(readFileSync(join(root, path), 'utf8')); } catch { return null; }
 };
 
 export function readMapFile(root) {
   const at = join(root, MAP_PATH);
   if (!existsSync(at)) throw new Error(`no ${MAP_PATH} here: run \`readfirst init\` first`);
-  try { return JSON.parse(readFileSync(at, 'utf8')); } catch (e) { throw new Error(`${MAP_PATH} is not valid JSON: ${e.message}`); }
+  try { return JSON.parse(unBom(readFileSync(at, 'utf8'))); } catch (e) { throw new Error(`${MAP_PATH} is not valid JSON: ${e.message}`); }
 }
 
+// prompt's map: what `check` passes, prompt takes. New files beside placed ones and patterns for deleted files are
+// settled the way fix would (settleMap), as check does; what check fails on still stops it. It used to take only a map
+// with nothing to settle, so `check` passed and `prompt` refused the same tree (a new TODO.md, init --agent's files).
 function loadMap(root, files) {
-  return assertMap(readMapFile(root), files);
+  const { map, problems } = settleMap(readMapFile(root), files);
+  if (problems.length) throw new Error(`${MAP_PATH} has problems (\`readfirst check\` lists them, \`readfirst fix\` repairs most):\n- ${problems.join('\n- ')}`);
+  return map;
 }
 
 // read and diff keep working while the map is only behind the code (new files in no group, patterns for deleted files):
@@ -141,8 +160,11 @@ function loadMapLenient(root, files, io, { allowNone = false } = {}) {
 // The one line that makes a coding agent use readfirst, added to the agent notes the project already has (CLAUDE.md,
 // AGENTS.md, .cursorrules), or to a new AGENTS.md when it has none. A file that already mentions readfirst is left alone.
 export const AGENT_LINE = 'Before changing a file, run `npx readfirst read <file>` and follow what it says: keep the rules, read the risks, run the checks it lists. Before writing a new function or module, run `npx readfirst find <what it does>` and reuse what already exists. Before you finish, run `npx readfirst verify`: it runs the checks the map lists for everything you changed; fix what fails. When you learn something a newcomer would get wrong, add it as a risk in .readfirst/map.json.';
-// Adds the line to one notes file (created when missing). Returns whether it wrote.
+// Adds the line to one notes file (created when missing). Returns whether it wrote, or, for a file that is really
+// outside the repository (a symlink), the line for the user to add it by hand.
 function addLineTo(root, f) {
+  const away = outsideRepo(root, f);
+  if (away) return `${f} was left alone (it is outside the repository, at ${away}); add this line to it by hand: ${AGENT_LINE}`;
   const at = join(root, f);
   const now = existsSync(at) ? readFileSync(at, 'utf8') : '';
   if (/readfirst/u.test(now)) return false;
@@ -152,7 +174,8 @@ function addLineTo(root, f) {
 }
 function addAgentLine(root) {
   const notes = ['CLAUDE.md', 'AGENTS.md', '.cursorrules', 'GEMINI.md', '.windsurfrules', '.github/copilot-instructions.md'].filter((f) => existsSync(join(root, f)));
-  return (notes.length ? notes : ['AGENTS.md']).filter((f) => addLineTo(root, f));
+  const results = (notes.length ? notes : ['AGENTS.md']).map((f) => [f, addLineTo(root, f)]);
+  return { wrote: results.filter(([, r]) => r === true).map(([f]) => f), manual: results.map(([, r]) => r).filter((r) => typeof r === 'string') };
 }
 
 // The agent notes line, plus each detected (or named) agent wired to readfirst: the Claude Code hook, and the MCP server
@@ -161,10 +184,14 @@ function setup(root, only) {
   const agents = only ? only.split(',').map((a) => a.trim().toLowerCase()).filter(Boolean) : detectAgents(root);
   const unknown = agents.filter((a) => !AGENTS.includes(a));
   if (unknown.length) throw new Error(`unknown agent: ${unknown.join(', ')} (one of ${AGENTS.join(', ')})`);
-  const wrote = addAgentLine(root);
-  if (agents.includes('claude') && installHook(root)) wrote.push('.claude/settings.json');
+  const { wrote, manual } = addAgentLine(root);
+  // A settings file setup cannot rewrite (comments, not an object, outside the repository) is left alone and the hook
+  // printed, as for the other agents' configs: throwing here stopped init --agent half-way, after the notes were written.
+  if (agents.includes('claude')) {
+    try { if (installHook(root)) wrote.push('.claude/settings.json'); } catch (e) { manual.push(`${e.message}; ${hookSnippet()}`); }
+  }
   const done = setupAgents(root, agents, { addLine: (f) => addLineTo(root, f) });
-  return { agents, wrote: [...new Set([...wrote, ...done.wrote])], manual: done.manual };
+  return { agents, wrote: [...new Set([...wrote, ...done.wrote])], manual: [...new Set([...manual, ...done.manual])] };
 }
 function setupReport({ agents, wrote, manual }) {
   return [
@@ -175,9 +202,26 @@ function setupReport({ agents, wrote, manual }) {
   ].join('\n') + '\n';
 }
 
+// The files changed since the branch left its base. `here` is true when the base found is the branch you are on (main
+// with no origin/main): then only uncommitted changes show, and commits you made read as nothing changed, so verify
+// and diff say so instead of passing.
+const exists = (root, ref) => { try { git(root, 'rev-parse', '--verify', '--quiet', `${ref}^{commit}`); return true; } catch { return false; } };
+// What diff and verify say on the base branch itself: a note when there are uncommitted changes, an error when there are
+// none (it cannot tell your commits from the base, and "nothing to verify" would pass a failing check).
+function onBaseItself(changed, io) {
+  if (!changed.here) return;
+  const why = `you are on ${changed.ref}, the base branch itself, and there is no origin/${changed.ref}: readfirst cannot tell your commits from the base`;
+  const how = 'pass --base <ref> (the commit you started from, or HEAD~1)';
+  if (!changed.files.length) throw new Error(`${why}, and nothing is uncommitted; ${how}`);
+  io.err(`note: ${why}, so only uncommitted changes are counted; ${how} to count your commits too.\n`);
+}
 function changedFiles(root, base) {
-  const ref = base ?? ['origin/main', 'main', 'origin/master', 'master'].find((r) => { try { git(root, 'rev-parse', '--verify', '--quiet', r); return true; } catch { return false; } });
+  if (base !== undefined && !exists(root, base)) throw new Error(`no branch or commit named ${base} here (\`git branch -a\` lists them)`);
+  const ref = base ?? ['origin/main', 'main', 'origin/master', 'master'].find((r) => exists(root, r));
   if (!ref) throw new Error('no base branch found: pass --base <ref>');
+  let current = null;
+  try { current = git(root, 'symbolic-ref', '--quiet', '--short', 'HEAD').trim(); } catch { /* detached */ }
+  const here = base === undefined && ref === current;
   let since;
   try { since = git(root, 'merge-base', ref, 'HEAD').trim(); } catch {
     throw new Error(`cannot find where this branch left ${ref}, often because the clone is shallow: fetch more history (git fetch --deepen=100, or fetch-depth: 0 in actions/checkout) or pass --base <ref>`);
@@ -187,7 +231,7 @@ function changedFiles(root, base) {
     ...git(root, 'diff', '--name-only', '-z', since).split('\0'),
     ...git(root, 'ls-files', '-z', '--others', '--exclude-standard').split('\0'),
   ].filter(Boolean));
-  return { ref, since, files: [...names].sort() };
+  return { ref, since, here, files: [...names].sort() };
 }
 
 // Runs each check with the shell in the repository root, one after another, and keeps the end of the output of the ones
@@ -360,12 +404,20 @@ function notesFor(given, seen, now) {
   const key = join(root, path);
   if (seen[key] && now - seen[key] < 6 * 3600_000) return null;
   const files = repoFiles(root);
-  // Without a map the hook still says where the file broke before.
-  const map = existsSync(join(root, MAP_PATH)) ? readMapFile(root) : null;
-  if (map && mapProblems(map, files, { placement: false }).length) return null;
+  // Without a map the hook still says where the file broke before. A map broken in itself (a rule naming a renamed file,
+  // bad JSON) used to make the hook silent for the whole repository: now it says so, with what the map still gives.
+  let map = null;
+  let broken = [];
+  if (existsSync(join(root, MAP_PATH))) {
+    try { map = readMapFile(root); broken = mapProblems(map, files, { placement: false }); } catch (e) { map = null; broken = [e.message]; }
+  }
   const all = files.includes(path) ? files : [...files, path].sort();
-  const list = readList({ map, files: all, imports: map ? importEdges(files, readText(root)) : [], targets: [path], limit: 10, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke: brokeBefore(root, [path], new Set(all)) });
+  const broke = brokeBefore(root, [path], new Set(all));
+  const listFor = (m) => readList({ map: m, files: all, imports: m ? importEdges(files, readText(root)) : [], targets: [path], limit: 10, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke });
+  let list;
+  try { list = listFor(map); } catch { map = null; list = listFor(null); }
   const lines = brief(list);
+  if (broken.length) lines.unshift(brokenMapLine(broken));
   seen[key] = now;
   if (!lines.length) return null;
   const shown = lines.slice(0, 12);
@@ -375,16 +427,21 @@ function notesFor(given, seen, now) {
 
 // The check commands of the map as the base branch has it. The Stop hook runs a command without anyone asking, so it
 // runs only these: a command a branch adds or changes in the map is repository content nobody has merged yet.
+// Also why a command is not trusted, for the message.
 function trustedRuns(root) {
+  let ref;
+  let since;
+  try { ({ ref, since } = changedFiles(root)); } catch { return { runs: new Set(), why: 'there is no base branch (main or master) to take trusted commands from' }; }
   try {
-    const { ref } = changedFiles(root);
-    const since = git(root, 'merge-base', ref, 'HEAD').trim();
-    const map = JSON.parse(git(root, 'show', `${since}:${MAP_PATH}`));
-    return new Set([...(map.groups ?? []), ...(map.rules ?? [])].flatMap((x) => (x.checks ?? []).map((c) => c.run)));
+    const map = JSON.parse(unBom(git(root, 'show', `${since}:${MAP_PATH}`)));
+    return { runs: new Set([...(map.groups ?? []), ...(map.rules ?? [])].flatMap((x) => (x.checks ?? []).map((c) => c.run))), why: "the base branch's map does not list them yet" };
   } catch {
-    return new Set();
+    return { runs: new Set(), why: `the base branch (${ref}) has no ${MAP_PATH} yet` };
   }
 }
+
+// The line that says the map is broken in itself, for both hooks.
+const brokenMapLine = (broken) => `${MAP_PATH} is broken (${broken.length} problem${broken.length === 1 ? '' : 's'}; first: ${broken[0]}), so read, diff and verify stop until it is fixed: \`npx readfirst check\` lists the problems and \`npx readfirst fix\` repairs most.`;
 
 // Claude Code Stop hook (opt-in, `hook --install --verify`): before Claude Code ends its turn, run the map's checks for the
 // files it edited in this session that are still changed. A failing check blocks the stop once, with the failure as the
@@ -399,6 +456,7 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   if (!seen) return null;
   // Edited files by repository: absolute paths by the repository that holds them, older relative ones by the session's.
   const byRoot = new Map();
+  const firstSeen = new Map(); // the earliest time a file of each repository was marked
   const here = repoOf(event.cwd ?? process.cwd());
   for (const recorded of Object.keys(seen)) {
     // Keys recorded before paths were resolved through symlinks are resolved here.
@@ -409,11 +467,12 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     if (path.startsWith('..')) continue;
     if (!byRoot.has(root)) byRoot.set(root, []);
     byRoot.get(root).push(path);
+    firstSeen.set(root, Math.min(firstSeen.get(root) ?? Infinity, seen[recorded]));
   }
   const passed = [];
   const blocks = [];
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
-    const r = stopFor(root, edited, timeout, byRoot.size > 1);
+    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root));
     if (r?.pass) passed.push(r.pass);
     if (r?.block) blocks.push(r.block);
   }
@@ -423,30 +482,44 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
 }
 
 // The Stop hook for one repository: its map's checks for the files edited there that are still changed.
-function stopFor(root, edited, timeout, named) {
+function stopFor(root, edited, timeout, named, since) {
   try {
     if (!existsSync(join(root, MAP_PATH))) return null;
     const at = named ? ` in ${basename(root)}` : '';
     const dirty = new Set(git(root, 'status', '--porcelain', '-z', '--untracked-files=all').split('\0').filter(Boolean).map((l) => l.slice(3)));
+    // On the base branch itself (main with no origin/main) or with no base branch, a file committed in the session looks
+    // unchanged, and committing before the stop skipped its checks: the files of commits made since the session first
+    // marked a file in this repository count too.
     let changed = [];
-    try { changed = changedFiles(root).files; } catch { /* no base branch: the working tree is enough */ }
-    const targets = edited.filter((f) => dirty.has(f) || changed.includes(f)).sort();
+    let known = true;
+    try { const c = changedFiles(root); changed = c.files; known = !c.here; } catch { known = false; }
+    let committed = new Set();
+    if (!known && Number.isFinite(since)) {
+      try { committed = new Set(git(root, 'log', `--since=@${Math.floor(since / 1000)}`, '--format=', '--name-only', '-z', 'HEAD').split(/[\0\n]/u).filter(Boolean)); } catch { /* no commits */ }
+    }
+    const targets = edited.filter((f) => dirty.has(f) || changed.includes(f) || committed.has(f)).sort();
     if (!targets.length) return null;
     const files = repoFiles(root);
-    const map = readMapFile(root);
-    if (mapProblems(map, files, { placement: false }).length) return null;
-    const list = readList({ map, files, imports: importEdges(files, readText(root)), targets, limit: 1 });
+    // A map broken in itself blocks the stop once with what is wrong; whatever it still gives is checked.
+    let map = null;
+    let broken = [];
+    try { map = readMapFile(root); broken = mapProblems(map, files, { placement: false }); } catch (e) { broken = [e.message]; }
+    let list = null;
+    if (map) try { list = readList({ map, files, imports: importEdges(files, readText(root)), targets, limit: 1 }); } catch { list = null; }
+    const brokenLine = broken.length ? `readfirst${at}: ${brokenMapLine(broken)}${list ? '' : ' The checks for the files you edited were not run.'} Fix it before you finish.` : null;
+    if (!list) return brokenLine ? { block: brokenLine } : null;
     // Files left behind: what the map says changes together with an edited file, against everything changed so far.
     const all = [...new Set([...dirty, ...changed])];
     const missing = list.together.filter((t) => !all.some(matcher(t.also)));
-    if (!list.checks.length && !missing.length) return null;
+    if (!list.checks.length && !missing.length) return brokenLine ? { block: brokenLine } : null;
     const trusted = trustedRuns(root);
-    const skipped = list.checks.filter((c) => !trusted.has(c.run)).map((c) => c.run);
-    const result = verifyChecks(root, list.checks.filter((c) => trusted.has(c.run)), { timeout });
+    const skipped = list.checks.filter((c) => !trusted.runs.has(c.run)).map((c) => c.run);
+    const result = verifyChecks(root, list.checks.filter((c) => trusted.runs.has(c.run)), { timeout });
     const failed = result.filter((c) => c.status !== 'pass');
-    const notRun = skipped.length ? ` Not run, because the base branch's map does not list them yet: ${skipped.map((r) => `\`${r}\``).join(', ')}; run \`npx readfirst verify\` to run them on purpose.` : '';
-    if (!failed.length && !missing.length) return { pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}` };
+    const notRun = skipped.length ? ` Not run, because ${trusted.why}: ${skipped.map((r) => `\`${r}\``).join(', ')}; run \`npx readfirst verify\` to run them on purpose.` : '';
+    if (!failed.length && !missing.length && !brokenLine) return { pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}` };
     return { block: [
+      ...(brokenLine ? [brokenLine] : []),
       ...(failed.length ? [`readfirst verify${at}: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}`] : []),
       ...missing.map((t) => `readfirst${at}: ${t.for.join(', ')} changed, but none of ${t.also.join(', ')} did. The map says they change together: ${t.why}. Change it too, or say why it does not apply, before you finish.`),
       ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}`),
@@ -459,9 +532,10 @@ function stopFor(root, edited, timeout, named) {
 export const WORKFLOW_PATH = '.github/workflows/readfirst.yml';
 // The Action as `init --ci` writes it: on each PR, the read-list comment, and new files placed in the map on the PR's
 // branch (auto-fix). Never over a workflow that is already there.
+// Returns whether it wrote; a path that is really outside the repository (a symlinked .github) is left alone.
 export function writeWorkflow(root) {
   const at = join(root, WORKFLOW_PATH);
-  if (existsSync(at)) return false;
+  if (existsSync(at) || outsideRepo(root, WORKFLOW_PATH)) return false;
   mkdirSync(dirname(at), { recursive: true });
   writeFileSync(at, [
     '# readfirst: one comment per PR with the rules, risks and checks for the files it changes,',
@@ -490,11 +564,16 @@ export const HOOK_COMMAND = 'npx --yes readfirst hook';
 export const STOP_HOOK_COMMAND = 'npx --yes readfirst hook --stop';
 // Adds the hook to the project's .claude/settings.json, keeping everything already there. With verify, also the Stop
 // hook that runs the checks before Claude Code finishes.
+// What to add by hand when installHook leaves the file alone.
+const hookSnippet = (verify = false) => `add ${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Edit|Write|MultiEdit|Bash', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }], ...(verify ? { Stop: [{ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }] } : {}) } })} to it by hand`;
 export function installHook(root, { verify = false } = {}) {
   const at = join(root, '.claude', 'settings.json');
+  const away = outsideRepo(root, '.claude/settings.json');
+  if (away) throw new Error(`.claude/settings.json was left alone (it is outside the repository, at ${away})`);
   let settings = {};
   if (existsSync(at)) {
-    try { settings = JSON.parse(readFileSync(at, 'utf8')); } catch { throw new Error('.claude/settings.json is not valid JSON; fix it first'); }
+    try { settings = JSON.parse(unBom(readFileSync(at, 'utf8'))); } catch { throw new Error('.claude/settings.json was left alone (it is not plain JSON: comments or a trailing comma?)'); }
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('.claude/settings.json was left alone (it is not a JSON object)');
   }
   const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
   const has = (list) => list.some((m) => (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '')));
@@ -511,18 +590,30 @@ export function installHook(root, { verify = false } = {}) {
 }
 
 export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }, stdin = () => readFileSync(0, 'utf8')) {
-  const args = parse(argv);
+  // A hook that cannot read its own command line, or fails before it starts, warns and lets the call through: exit 2
+  // from a PreToolUse hook refuses the tool call, so one option this readfirst did not know (an older one under a newer
+  // settings.json) stopped every Edit and Bash call of the session, including the ones that would fix it (2026-11-08).
+  const hookCall = firstWord(argv) === 'hook' && !argv.includes('--install');
+  const letThrough = (e) => {
+    io.out(`${JSON.stringify({ systemMessage: `readfirst ${VERSION()} hook: ${e.message}. The hook did nothing and let this call through; fix the hook command in .claude/settings.json.` })}\n`);
+    return 0;
+  };
+  let args;
+  try { args = parse(argv); } catch (e) { if (hookCall) return letThrough(e); throw e; }
   const [cmd, ...rest] = args._;
+  if (args.version) { io.out(`${VERSION()}\n`); return 0; }
   if (args.help || !cmd) { io.out(`${HELP}\n`); return cmd || args.help ? 0 : 2; }
   if (cmd === 'hook' && !args.install) {
-    const out = args.stop ? runStopHook(stdin()) : runHook(stdin(), { gate: args.gate });
-    if (out) io.out(`${out}\n`);
+    try {
+      const out = args.stop ? runStopHook(stdin()) : runHook(stdin(), { gate: args.gate });
+      if (out) io.out(`${out}\n`);
+    } catch (e) { return letThrough(e); }
     return 0;
   }
   if (cmd === 'mcp') {
     // The server starts and answers initialize and tools/list anywhere, also outside a git repository (directories
     // start it in an empty container to check it). The repository is looked up at each tool call.
-    const version = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+    const version = VERSION();
     const run = (argv) => {
       let out = ''; let err = ''; let code;
       try {
@@ -547,7 +638,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     // them: written after it, they were in no group and the very next step (prompt, check) stopped there (2026-11-08).
     const later = [];
     if (args.agent) later.push(setupReport(setup(root, args.for)));
-    if (args.ci) later.push(writeWorkflow(root) ? `wrote ${WORKFLOW_PATH}: a PR comment with the read list, and new files placed in the map on the PR branch.\n` : `${WORKFLOW_PATH} already exists; left as it is.\n`);
+    if (args.ci) later.push(writeWorkflow(root) ? `wrote ${WORKFLOW_PATH}: a PR comment with the read list, and new files placed in the map on the PR branch.\n` : outsideRepo(root, WORKFLOW_PATH) && !existsSync(join(root, WORKFLOW_PATH)) ? `${WORKFLOW_PATH} was left alone: it is outside the repository, at ${outsideRepo(root, WORKFLOW_PATH)}.\n` : `${WORKFLOW_PATH} already exists; left as it is.\n`);
     const now = later.length ? repoFiles(root) : files;
     const map = draftMap(now, readText(root));
     mkdirSync(join(root, '.readfirst'), { recursive: true });
@@ -626,7 +717,9 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     return 0;
   }
   if (cmd === 'hook') {
-    io.out((installHook(root, { verify: args.verify })
+    let added;
+    try { added = installHook(root, { verify: args.verify }); } catch (e) { throw new Error(`${e.message}; ${hookSnippet(args.verify)}`); }
+    io.out((added
       ? `added the readfirst hook to .claude/settings.json: Claude Code now sees the read list before each edit${args.verify ? ', and cannot finish while a check for a file it edited fails (it gets one try to fix it)' : ''}.\n`
       : '.claude/settings.json already has the readfirst hook.\n') + placeHint());
     return 0;
@@ -712,12 +805,23 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   }
   if (cmd === 'read' || cmd === 'diff') {
     const map = loadMapLenient(root, files, io, { allowNone: true });
-    let targets = rest;
+    // A path is taken as the shell gives it: an absolute path, or one from the current folder (`read math.js` inside
+    // src/). It used to be read from the repository root only, so both came back "not a tracked file". With --root (the
+    // MCP server, scripts) a relative path stays relative to the root, as before.
+    const top = (() => { try { return realpathSync(root); } catch { return resolve(root); } })();
+    const fromHere = (given) => {
+      const p = given.replace(/\\/gu, '/');
+      if (!isAbsolute(p) && args.root) return p;
+      const rel = relative(top, physical(isAbsolute(p) ? p : resolve(process.cwd(), p))).replace(/\\/gu, '/');
+      return rel && !rel.startsWith('../') && rel !== '..' && !isAbsolute(rel) ? rel : p;
+    };
+    let targets = rest.map(fromHere);
     // read looks at HEAD; diff at the commit where the branch left its base, so the branch's own "fix: ..." commits are not
     // counted as the file having broken before.
     let rev = 'HEAD';
     if (cmd === 'diff') {
       const changed = changedFiles(root, args.base);
+      onBaseItself(changed, io);
       rev = changed.since;
       targets = changed.files;
       if (!targets.length) {
@@ -735,6 +839,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   if (cmd === 'verify') {
     const map = loadMapLenient(root, files, io);
     const changed = changedFiles(root, args.base);
+    onBaseItself(changed, io);
     const list = changed.files.length
       ? readList({ map, files, imports: importEdges(files, readText(root)), targets: changed.files, commit, limit: 1 })
       : emptyList(commit);
