@@ -98,11 +98,19 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
 
   if ((env.INPUT_COMMENT ?? 'true') !== 'false') {
     const comments = await pages(fetchImpl, env, `/repos/${repo}/issues/${pr.number}/comments`);
-    const mine = comments.find((c) => typeof c.body === 'string' && c.body.startsWith(MARKER));
+    // Anyone can post a comment that starts with the marker. A bot's comment (the Action's token writes as one) comes
+    // first; a comment we may not edit is left alone and a new one posted, or another person's comment took ours away
+    // for good (2026-11-09).
+    const marked = comments.filter((c) => typeof c.body === 'string' && c.body.startsWith(MARKER));
+    const mine = marked.find((c) => c.user?.type === 'Bot') ?? marked[0];
+    const post = () => api(fetchImpl, env, 'POST', `/repos/${repo}/issues/${pr.number}/comments`, { body });
     try {
-      if (mine) await api(fetchImpl, env, 'PATCH', `/repos/${repo}/issues/comments/${mine.id}`, { body });
-      else await api(fetchImpl, env, 'POST', `/repos/${repo}/issues/${pr.number}/comments`, { body });
-      log(`${mine ? 'updated' : 'posted'} the readfirst comment on #${pr.number}`);
+      let updated = false;
+      if (mine) {
+        try { await api(fetchImpl, env, 'PATCH', `/repos/${repo}/issues/comments/${mine.id}`, { body }); updated = true; } catch (e) { if (!/: 40[34] /u.test(e.message)) throw e; }
+      }
+      if (!updated) await post();
+      log(`${updated ? 'updated' : 'posted'} the readfirst comment on #${pr.number}`);
     } catch (e) {
       // A PR from a fork gets a read-only token: the read list stays in the job summary.
       if (!/: 403 /u.test(e.message)) throw e;

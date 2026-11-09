@@ -500,11 +500,14 @@ export function workspaceChecks(files, dir, pkg) {
   const scripts = pkg?.scripts && typeof pkg.scripts === 'object' ? pkg.scripts : {};
   const name = typeof pkg?.name === 'string' && pkg.name ? pkg.name : null;
   const pm = packageManager(new Set(files));
+  // The name and folder come from the repository's files and the check runs in a shell: each is one quoted word unless
+  // it is plain (`"name": "a; touch x"` became a command, and `packages/my pkg` two arguments, 2026-11-09).
+  const q = (w) => (/^[\w@%+=:,./-]+$/u.test(w) ? w : `'${w.replace(/'/gu, "'\\''")}'`);
   const run = (script) => {
-    if (pm === 'pnpm') return `pnpm --filter ${name ?? `./${dir}`} ${script === 'test' ? 'test' : `run ${script}`}`;
-    if (pm === 'yarn' && name) return `yarn workspace ${name} ${script === 'test' ? 'test' : `run ${script}`}`;
-    if (pm === 'bun' && name) return `bun --filter ${name} run ${script}`;
-    return script === 'test' ? `npm test -w ${dir}` : `npm run ${script} -w ${dir}`;
+    if (pm === 'pnpm') return `pnpm --filter ${q(name ?? `./${dir}`)} ${script === 'test' ? 'test' : `run ${script}`}`;
+    if (pm === 'yarn' && name) return `yarn workspace ${q(name)} ${script === 'test' ? 'test' : `run ${script}`}`;
+    if (pm === 'bun' && name) return `bun --filter ${q(name)} run ${script}`;
+    return script === 'test' ? `npm test -w ${q(dir)}` : `npm run ${script} -w ${q(dir)}`;
   };
   return scriptChecks(scripts, run).map((c) => ({ ...c, why: `${c.why} of ${name ?? dir}` }));
 }

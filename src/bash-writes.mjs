@@ -15,6 +15,53 @@ const CODE_WRITES = /\bopen\([^)]*,\s*['"][wax]|\.write_text\(|\.write_bytes\(|w
 const PATHISH = /(?:\.{0,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z0-9]{1,6}\b/gu;
 const RUNNER = /^(?:python3?|node|ruby|perl|bash|sh|zsh|deno|bun)$/u;
 const unquote = (w) => w.replace(/^(['"])(.*)\1$/u, '$2');
+const SHELLS = /^(?:bash|sh|zsh|dash|ksh)$/u;
+
+// Words that only set up the command after them: `FOO=1 sed -i ...`, `sudo tee f`, `env -i X=1 cp a b`,
+// `timeout 10 sed -i ...`, `nohup cp ...`. The command is the first word past them; each wrapper's options that take a
+// value are listed so the value is not read as the command (2026-11-09: every one of these hid its write).
+const WRAPPERS = new Map([
+  ['sudo', /^(?:-[ugpCDhRrT]|--(?:user|group|prompt|chdir|close-from|host|role|type))$/u],
+  ['env', /^(?:-[uCS]|--(?:unset|chdir|split-string))$/u],
+  ['nice', /^(?:-n|--adjustment)$/u],
+  ['timeout', /^(?:-[sk]|--(?:signal|kill-after))$/u],
+  ['ionice', /^-[cnp]$/u],
+  ['exec', /^-a$/u],
+  ['time', null], ['nohup', null], ['command', null], ['stdbuf', null], ['chronic', null],
+]);
+function unwrap(ws) {
+  let i = 0;
+  for (;;) {
+    while (i < ws.length && /^[A-Za-z_]\w*=/u.test(ws[i])) i++;
+    const name = unquote(ws[i] ?? '').split('/').pop();
+    if (!WRAPPERS.has(name)) return ws.slice(i);
+    const value = WRAPPERS.get(name);
+    i++;
+    while (i < ws.length && ws[i].startsWith('-') && ws[i] !== '--') { if (value?.test(ws[i])) i++; i++; }
+    if (ws[i] === '--') i++;
+    if (name === 'timeout' && i < ws.length) i++; // the duration
+  }
+}
+
+// The working-tree files `git checkout` / `git restore` overwrite. After `--` every word is a path. `restore` takes
+// paths only; `checkout` without `--` takes a branch, tag or commit too, so there a word counts only when it is a file
+// here (`git checkout release-0.26` or `-B name.x` read as a write, 2026-11-09). `restore --staged` without
+// --worktree changes only the index.
+const GIT_VALUE = /^(?:-[bBs]|--orphan|--source|--conflict|--pathspec-from-file)$/u;
+function gitPaths(args, exists) {
+  const [sub, ...rest] = args;
+  const flag = (long, short) => rest.some((w) => w === long || (/^-[a-zA-Z]+$/u.test(w) && w.includes(short)));
+  if (sub === 'restore' && flag('--staged', 'S') && !flag('--worktree', 'W')) return [];
+  const dd = rest.indexOf('--');
+  if (dd >= 0) return rest.slice(dd + 1);
+  const out = [];
+  for (let i = 0; i < rest.length; i++) {
+    if (GIT_VALUE.test(rest[i])) { i++; continue; }
+    if (rest[i].startsWith('-')) continue;
+    if (sub === 'restore' || exists(rest[i])) out.push(rest[i]);
+  }
+  return out;
+}
 
 // A quoted string literal: group 1 the quote, group 2 the text.
 const LIT = String.raw`(['"])((?:\\.|(?!\1)[^\\\n])*)\1`;
@@ -227,7 +274,8 @@ export function bashWrites(command, cwd = process.cwd()) {
   // the hook showed another repository's notes for a relative path after a cd).
   let kept = ''; // the shell text up to this here-document, earlier bodies taken out
   let last = 0;
-  const shell = String(command ?? '').replace(/([^\n]*?)<<-?\s*['"]?(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\2(?=\s|$)/gu, (all, head, tag, rest, body, offset, text) => {
+  // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`).
+  const shell = String(command ?? '').replace(/\\\r?\n/gu, ' ').replace(/([^\n]*?)<<-?\s*['"]?(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\2(?=\s|$)/gu, (all, head, tag, rest, body, offset, text) => {
     kept += `${text.slice(last, offset)}${head}`;
     last = offset + all.length;
     base = cdIn(kept);
@@ -237,14 +285,15 @@ export function bashWrites(command, cwd = process.cwd()) {
     const at = hw.findIndex((w) => RUNNER.test(w.split('/').pop()));
     // The script's arguments: words after the runner that are not options, the script itself ('-') or a redirect.
     const args = at < 0 ? [] : hw.slice(at + 1).filter((w) => w !== '-' && !w.startsWith('-') && !/^[<>|&]/u.test(w));
-    if (at >= 0 && CODE_WRITES.test(body)) codeTargets(body, { args, exists: here, glob }).forEach(add);
+    // A shell fed a here-document runs its body as commands: read them as commands.
+    if (at >= 0 && SHELLS.test(hw[at].split('/').pop())) { if (base != null) bashWrites(body, base).forEach(add); }
+    else if (at >= 0 && CODE_WRITES.test(body)) codeTargets(body, { args, exists: here, glob }).forEach(add);
     return `${head} ${rest}`;
   });
   base = cwd; // the segments below follow the cds again themselves
   for (const segment of segments(shell)) {
-    const ws = words(segment);
-    if (!ws.length) continue;
-    const cmd = unquote(ws[0]).split('/').pop();
+    const ws = unwrap(words(segment));
+    const cmd = unquote(ws[0] ?? '').split('/').pop();
     if (cmd === 'cd' && ws[1]) { base = moveTo(base, ws[1]); continue; }
     // Redirects anywhere in the segment, not 2> or >&, and not a > inside quotes (an arrow `=>` in node -e "..." code
     // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself. &> and &>>
@@ -263,7 +312,12 @@ export function bashWrites(command, cwd = process.cwd()) {
     else if (cmd === 'patch') files.forEach(add);
     else if (['cp', 'mv', 'install'].includes(cmd) && o.values.t) add(o.values.t.at(-1));
     else if (['cp', 'mv', 'install', 'rsync'].includes(cmd) && o.files.length >= 2) add(o.files.at(-1));
-    else if (cmd === 'git' && /^(?:checkout|restore)$/u.test(args[0] ?? '')) args.slice(args.indexOf('--') + 1 || 1).filter((w) => !w.startsWith('-') && w.includes('.')).forEach(add);
+    else if (cmd === 'git' && /^(?:checkout|restore)$/u.test(args[0] ?? '')) gitPaths(args, here).forEach(add);
+    // `bash -c '...'`, `sh -lc "..."`: the string is commands, read the same way.
+    else if (SHELLS.test(cmd) && args.findIndex((w) => /^-[a-z]*c[a-z]*$/u.test(w)) >= 0) {
+      const script = args[args.findIndex((w) => /^-[a-z]*c[a-z]*$/u.test(w)) + 1];
+      if (script !== undefined && base != null) bashWrites(script, base).forEach(add);
+    }
     else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e') && CODE_WRITES.test(segment)) {
       const i = args.findIndex((w) => w === '-c' || w === '-e');
       codeTargets(args[i + 1] ?? '', { args: args.slice(i + 2).filter((w) => !w.startsWith('-')), exists: here, glob }).forEach(add);

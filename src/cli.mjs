@@ -139,6 +139,14 @@ function loadMap(root, files) {
   return map;
 }
 
+// A file readfirst writes in the checkout must be in it: a symlinked .readfirst or .cursor/rules, or a symlinked file,
+// carries the write outside the repository (export, init and fix did, 2026-11-09). setup prints what to add instead;
+// these stop before writing anything.
+function mustBeInside(root, ...paths) {
+  const away = paths.map((p) => [p, outsideRepo(root, p)]).filter(([, a]) => a);
+  if (away.length) throw new Error(`${away.map(([p, a]) => `${p} leads outside the repository (to ${a})`).join('; ')}: nothing was written`);
+}
+
 // read and diff keep working while the map is only behind the code (new files in no group, patterns for deleted files):
 // they warn and point at `readfirst fix`. A map that is broken in itself still stops them.
 // Without a map, read and diff still work: `readfirst read` then shows where the code broke before, from git history, and
@@ -428,10 +436,20 @@ function notesFor(given, seen, now) {
 // The check commands of the map as the base branch has it. The Stop hook runs a command without anyone asking, so it
 // runs only these: a command a branch adds or changes in the map is repository content nobody has merged yet.
 // Also why a command is not trusted, for the message.
-function trustedRuns(root) {
+// On the base branch itself (main with no origin/main) the base moves with the session's own commits, so the map is
+// read as it was before the session first marked a file in this repository, never at HEAD: a check command the session
+// committed to the map ran in 0.26.4 (2026-11-09). No commit before that moment: nothing is trusted.
+function trustedRuns(root, firstSeen) {
   let ref;
   let since;
-  try { ({ ref, since } = changedFiles(root)); } catch { return { runs: new Set(), why: 'there is no base branch (main or master) to take trusted commands from' }; }
+  let here;
+  try { ({ ref, since, here } = changedFiles(root)); } catch { return { runs: new Set(), why: 'there is no base branch (main or master) to take trusted commands from' }; }
+  if (here) {
+    let before = '';
+    if (Number.isFinite(firstSeen)) try { before = git(root, 'rev-list', '-1', `--before=@${Math.floor(firstSeen / 1000) - 1}`, 'HEAD').trim(); } catch { /* no commits */ }
+    if (!before) return { runs: new Set(), why: `you are on ${ref} itself, and no commit of it is older than this session's first edit` };
+    since = before;
+  }
   try {
     const map = JSON.parse(unBom(git(root, 'show', `${since}:${MAP_PATH}`)));
     return { runs: new Set([...(map.groups ?? []), ...(map.rules ?? [])].flatMap((x) => (x.checks ?? []).map((c) => c.run))), why: "the base branch's map does not list them yet" };
@@ -512,7 +530,7 @@ function stopFor(root, edited, timeout, named, since) {
     const all = [...new Set([...dirty, ...changed])];
     const missing = list.together.filter((t) => !all.some(matcher(t.also)));
     if (!list.checks.length && !missing.length) return brokenLine ? { block: brokenLine } : null;
-    const trusted = trustedRuns(root);
+    const trusted = trustedRuns(root, since);
     const skipped = list.checks.filter((c) => !trusted.runs.has(c.run)).map((c) => c.run);
     const result = verifyChecks(root, list.checks.filter((c) => trusted.runs.has(c.run)), { timeout });
     const failed = result.filter((c) => c.status !== 'pass');
@@ -634,6 +652,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   if (cmd === 'init') {
     const at = join(root, MAP_PATH);
     if (existsSync(at) && args.force !== true) throw new Error(`${MAP_PATH} already exists (pass --force to replace it)`);
+    mustBeInside(root, MAP_PATH);
     // The agent notes, agent configs and the workflow are written first and the files listed again, so the map places
     // them: written after it, they were in no group and the very next step (prompt, check) stopped there (2026-11-08).
     const later = [];
@@ -672,6 +691,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     keepLocal(root);
     const out = args.out ? (isAbsolute(args.out) ? args.out : join(process.cwd(), args.out)) : join(root, LOCAL_DIR, 'view.html');
     const labels = readLabels(root, io.err);
+    if (!args.out) mustBeInside(root, `${LOCAL_DIR}/view.html`); // --out is where the person asked for it
     mkdirSync(join(out, '..'), { recursive: true });
     writeFileSync(out, viewHtmlCity(cityData(viewData({ map, files, imports, name: basename(root) }), imports, labels)));
     const langs = Object.keys(labels);
@@ -730,7 +750,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const fixed = fixMap(migrated.map, files);
     const { map, problems } = fixed;
     const changes = [...migrated.changes, ...fixed.changes];
-    if (changes.length) writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`);
+    if (changes.length) { mustBeInside(root, MAP_PATH); writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`); }
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, changes, problems }, null, 2)}\n`);
     else {
       io.out(changes.length ? `updated ${MAP_PATH}:\n- ${changes.join('\n- ')}\n` : 'nothing to fix automatically.\n');
@@ -761,6 +781,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       io.out(stale.length ? `${stale.length} Cursor rule file(s) no longer match ${MAP_PATH}: ${stale.join(', ')}. Run \`readfirst export --cursor\`.\n` : `Cursor rules match ${MAP_PATH} (${Object.keys(plan.want).length} file(s)).\n`);
       return stale.length ? 1 : 0;
     }
+    mustBeInside(root, ...plan.write, ...plan.remove);
     if (plan.write.length) mkdirSync(dir, { recursive: true });
     for (const p of plan.write) writeFileSync(join(root, p), plan.want[p]);
     for (const p of plan.remove) unlinkSync(join(root, p));
@@ -854,6 +875,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       if (ids.length) {
         const dirty = git(root, 'status', '--porcelain', '--untracked-files=no').split('\n').some((l) => l.trim() && !l.endsWith(HELD_PATH));
         const next = recordHeld(parseHeld(readText(root)(HELD_PATH)), ids, { commit, date: new Date().toISOString().slice(0, 10), dirty, map });
+        mustBeInside(root, HELD_PATH);
         writeFileSync(join(root, HELD_PATH), `${JSON.stringify(next, null, 2)}\n`);
       }
       report.recorded = ids;
