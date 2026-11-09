@@ -13,7 +13,7 @@ const PY = /\.py$/u;
 const JS_IMPORT = /\b(?:import|export)\s+(?:type\s+)?(?:[\w*{}$,]+(?:\s+[\w*{}$,]+)*\s+from\s*)?['"]([^'"\n]+)['"]|\bimport\(\s*['"]([^'"\n]+)['"]\s*[),]|\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/gu;
 // `from a import (b,\n c)` may span lines inside its parentheses.
 const PY_IMPORT = /^[ \t]*(?:from[ \t]+(\.*[\w.]*)[ \t]+import[ \t]+(\([^)]*\)|[\w*, \t]+)|import[ \t]+([\w., \t]+))/gmu;
-const JS_EXT = ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.mts', '.vue', '.svelte', '/index.js', '/index.ts', '/index.tsx', '/index.mjs'];
+const JS_EXT = ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.mts', '.cts', '.vue', '.svelte', '/index.js', '/index.ts', '/index.tsx', '/index.jsx', '/index.mjs', '/index.cjs', '/index.mts', '/index.cts', '/index.vue', '/index.svelte'];
 
 const lineAt = (body, index) => body.slice(0, index).split('\n').length;
 const dirOf = (f) => (posix.dirname(f) === '.' ? '' : posix.dirname(f));
@@ -66,10 +66,26 @@ function jsResolver(files, tracked, read) {
     pkgs.push({ name: j.name, dir: dirOf(f), entries: [...entries, 'src/index', 'index'] });
   }
   pkgs.sort((a, b) => b.name.length - a.name.length);
+  // package.json "imports": `#internal/*` names files of that package (Node subpath imports), the root's too.
+  const subpaths = [];
+  for (const f of files) {
+    if (!/(?:^|\/)package\.json$/u.test(f) || f.includes('node_modules/')) continue;
+    let j;
+    try { j = JSON.parse(read(f) ?? ''); } catch { continue; }
+    if (!j?.imports || typeof j.imports !== 'object') continue;
+    for (const [pattern, target] of Object.entries(j.imports)) {
+      const t = typeof target === 'string' ? target : ['import', 'default', 'node', 'require'].map((k) => target?.[k]).find((v) => typeof v === 'string');
+      if (pattern.startsWith('#') && t) subpaths.push({ scope: dirOf(f), pattern, targets: [posix.join(dirOf(f), t)] });
+    }
+  }
+  subpaths.sort((a, b) => b.scope.length - a.scope.length);
   const aliases = [];
+  const baseUrls = [];
   for (const f of files) {
     if (!/(?:^|\/)(?:tsconfig|jsconfig)(?:\.[\w-]+)?\.json$/u.test(f) || f.includes('node_modules/')) continue;
     const opts = parseJsonc(read(f))?.compilerOptions;
+    // baseUrl alone (CRA, Next): `components/ui/Button` is <baseUrl>/components/ui/Button.
+    if (typeof opts?.baseUrl === 'string') baseUrls.push({ scope: dirOf(f), base: posix.join(dirOf(f), opts.baseUrl) });
     if (!opts?.paths || typeof opts.paths !== 'object') continue;
     const base = posix.join(dirOf(f), opts.baseUrl ?? '.');
     for (const [pattern, targets] of Object.entries(opts.paths)) {
@@ -78,8 +94,9 @@ function jsResolver(files, tracked, read) {
   }
   // The nearest config wins, as it would for the compiler.
   aliases.sort((a, b) => b.scope.length - a.scope.length);
+  baseUrls.sort((a, b) => b.scope.length - a.scope.length);
   return (from, spec) => {
-    for (const a of aliases) {
+    for (const a of [...(spec.startsWith('#') ? subpaths : []), ...aliases]) {
       if (!within(a.scope, from)) continue;
       const star = a.pattern.indexOf('*');
       let rest = null;
@@ -90,7 +107,10 @@ function jsResolver(files, tracked, read) {
       if (hit) return hit;
     }
     const pkg = pkgs.find((p) => spec === p.name || spec.startsWith(`${p.name}/`));
-    if (!pkg) return undefined;
+    if (!pkg) {
+      const b = baseUrls.find((u) => within(u.scope, from));
+      return b && !spec.startsWith('#') ? firstTracked([posix.join(b.base, spec)]) : undefined;
+    }
     const sub = spec.slice(pkg.name.length + 1);
     return sub
       ? firstTracked([posix.join(pkg.dir, sub), posix.join(pkg.dir, 'src', sub)])
@@ -177,13 +197,18 @@ function isPython2(body) {
   return !/^from[ \t]+__future__[ \t]+import[^\n]*\babsolute_import\b/mu.test(body) && PY2_ONLY.test(body.replace(/(['"])\1\1[\s\S]*?\1\1\1/gu, '').replace(/#[^\n]*/gu, ''));
 }
 
-// Where absolute Python imports start: the repository root, src/, and each folder that holds a Django manage.py
-// (backend/manage.py means "from feeds.models import Feed" is backend/feeds/models.py).
+// Where absolute Python imports start: the repository root, src/, each folder that holds a Django manage.py
+// (backend/manage.py means "from feeds.models import Feed" is backend/feeds/models.py), and each folder that holds a
+// project file (pyproject.toml, setup.py, setup.cfg) and its src/: `backend/app/main.py` importing `app.models` is a
+// FastAPI or Flask layout (2026-11-09: no edges at all there).
 function pythonRoots(files) {
   const roots = new Set(['', 'src']);
   for (const f of files) {
-    const m = f.match(/^(.+)\/manage\.py$/u);
-    if (m && !f.includes('node_modules/')) roots.add(m[1]);
+    if (f.includes('node_modules/')) continue;
+    const m = f.match(/^(.+)\/(manage\.py|pyproject\.toml|setup\.py|setup\.cfg)$/u);
+    if (!m) continue;
+    roots.add(m[1]);
+    if (m[2] !== 'manage.py') roots.add(`${m[1]}/src`);
   }
   return [...roots];
 }

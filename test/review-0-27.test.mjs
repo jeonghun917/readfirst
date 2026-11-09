@@ -120,3 +120,18 @@ test('Bash: numbered and >| redirects, subshell and pushd folders, globs and ~ a
     ['rsync -a a host:b', []], ['rsync -n a b', []], ['npm test 2>&1 | tail', []], ['echo x >&2', []], ['cmd 2>/dev/null', []],
   ]) assert.deepEqual(at(c), want, c);
 });
+
+test('imports: tsconfig baseUrl, package.json #imports, index.jsx/.cjs folders and Python below a pyproject.toml resolve', async () => {
+  const { importEdges } = await import('../src/imports.mjs');
+  const T = {
+    'tsconfig.json': JSON.stringify({ compilerOptions: { baseUrl: 'src' } }), 'src/components/ui/Button.tsx': '', 'src/app.tsx': "import {B} from 'components/ui/Button';\nimport x from 'react';",
+    'package.json': JSON.stringify({ imports: { '#internal/*': './src/lib/*.js' } }), 'src/lib/helper.js': '', 'src/use.js': "import h from '#internal/helper';",
+    'web/components/ui/index.jsx': '', 'web/page.js': "import ui from './components/ui';", 'lib/dir/index.cjs': '', 'lib/m.js': "require('./dir')",
+    'backend/pyproject.toml': '', 'backend/app/__init__.py': '', 'backend/app/models/__init__.py': '', 'backend/app/models/user.py': '', 'backend/app/main.py': 'from app.models.user import User\n', 'backend/tests/test_main.py': 'from app.main import x\n',
+  };
+  const edges = importEdges(Object.keys(T).sort(), (f) => T[f] ?? null).map((e) => `${e.from} -> ${e.to}`).sort();
+  assert.deepEqual(edges, [
+    'backend/app/main.py -> backend/app/models/user.py', 'backend/tests/test_main.py -> backend/app/main.py', 'lib/m.js -> lib/dir/index.cjs',
+    'src/app.tsx -> src/components/ui/Button.tsx', 'src/use.js -> src/lib/helper.js', 'web/page.js -> web/components/ui/index.jsx',
+  ]);
+});
