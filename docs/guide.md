@@ -92,6 +92,24 @@ too), a file or folder that is a symlink to somewhere outside the repository, an
 project you have marked as trusted; a config that already names readfirst (also as `[mcp_servers."readfirst"]`) or
 keeps its servers in an inline `mcp_servers = { ... }` table is left alone. `init --agent` runs it too.
 
+### Git hooks every agent goes through
+
+Notes, skills and MCP tools are read only by agents that choose to; a git hook runs for every commit and push, whoever
+makes them.
+
+```sh
+npx readfirst setup --git
+```
+
+It adds one line to `pre-commit` (`readfirst check`: the map places every file) and one to `pre-push` (`readfirst
+verify`: the checks the map lists for what changed; it can take minutes), in the folder git runs hooks from:
+`.git/hooks`, a `core.hooksPath` inside the repository, or your own `.husky/<hook>` with husky. A hook that is already
+there keeps what it has and gets the line at the end. A hook that hands over with `exec` (the pre-commit framework's
+does), one that is not a shell script, a hook file that is a link out of the repository and a hooks folder outside the
+repository (a global `core.hooksPath`) are left alone, and the line is printed for you to add. It needs a map first, and
+writes only the hooks. `check` reads the working tree, so a new file that is not ignored has to be placed in the map
+even before you stage it. `git commit --no-verify` and `git push --no-verify` skip the hooks once.
+
 ### As a plugin (Claude Code, Paradev)
 
 The same instructions, packaged: a skill that tells the agent to `read` before editing, `find` before writing new code
