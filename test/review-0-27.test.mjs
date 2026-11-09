@@ -135,3 +135,9 @@ test('imports: tsconfig baseUrl, package.json #imports, index.jsx/.cjs folders a
     'src/app.tsx -> src/components/ui/Button.tsx', 'src/use.js -> src/lib/helper.js', 'web/page.js -> web/components/ui/index.jsx',
   ]);
 });
+
+test('find sees JS/TS class methods, exports.x =, wrapped arrows, generic arrows, abstract and declared names', async () => {
+  const { definitions } = await import('../src/find.mjs');
+  const body = 'export class Payments {\n  async retryPayment(id) {}\n  static refundOrder(order) {\n    if (order) {\n      return x;\n    }\n  }\n  private get total(): number {\n}\nexports.formatMoney = function (n) {};\nmodule.exports.chargeCard = (c) => c;\nconst slugify = memoize((s) => s);\nconst onSave = useCallback(async () => {});\nconst pick = <T,>(x: T) => x;\nexport abstract class Base {}\ndeclare function legacy(x: string): void;\n';
+  assert.deepEqual(definitions('a.ts', body).map((d) => d.name), ['Payments', 'retryPayment', 'refundOrder', 'total', 'formatMoney', 'chargeCard', 'slugify', 'onSave', 'pick', 'Base', 'legacy']);
+});
