@@ -108,6 +108,21 @@ test('the Action posts its own comment when another user posted one that starts 
   const r = await runAction({ env: { GITHUB_WORKSPACE: root, GITHUB_EVENT_PATH: event, GITHUB_REPOSITORY: 'o/r', INPUT_TOKEN: 't', GITHUB_API_URL: 'https://api.example' }, fetchImpl, log: () => {} });
   assert.equal(r.ok, true);
   assert.ok(calls.includes('POST /repos/o/r/issues/7/comments'), calls.join('\n'));
+  // With a personal token our own comment is a user's too: it is found and edited, not posted again at every push.
+  const ours = [{ id: 5, user: { type: 'User' }, body: `${MARKER}\nnot ours` }, { id: 6, user: { type: 'User' }, body: `${MARKER}\nours` }];
+  const seen = [];
+  const fetch2 = async (url, init) => {
+    const u = new URL(url);
+    seen.push(`${init.method} ${u.pathname}`);
+    const json = (v, status = 200) => ({ ok: status < 300, status, json: async () => v, text: async () => JSON.stringify(v) });
+    if (init.method === 'GET' && u.pathname.endsWith('/pulls/7/files')) return json(u.searchParams.get('page') === '1' ? [{ filename: 'src/a.js', status: 'modified' }] : []);
+    if (init.method === 'GET' && u.pathname.endsWith('/issues/7/comments')) return json(u.searchParams.get('page') === '1' ? ours : []);
+    if (init.method === 'PATCH') return u.pathname.endsWith('/5') ? json({ message: 'forbidden' }, 403) : json({ id: 6 });
+    return json({ id: 9 }, 201);
+  };
+  await runAction({ env: { GITHUB_WORKSPACE: root, GITHUB_EVENT_PATH: event, GITHUB_REPOSITORY: 'o/r', INPUT_TOKEN: 't', GITHUB_API_URL: 'https://api.example' }, fetchImpl: fetch2, log: () => {} });
+  assert.ok(seen.includes('PATCH /repos/o/r/issues/comments/6'), seen.join('\n'));
+  assert.ok(!seen.some((c) => c.startsWith('POST')), seen.join('\n'));
 });
 
 test('Bash: env assignments, wrappers, continued lines and shell -c strings do not hide a write', () => {
