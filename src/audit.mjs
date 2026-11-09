@@ -18,6 +18,10 @@ export const AUDIT_FORMAT = 'readfirst/audit@1';
 // A rule or risk is listed once this many commits changed its files after the line was written.
 export const STALE_COMMITS = 10;
 const TOP = 15;
+// The text report gives the first TOP rows of a long list in full and names every other one on one line: nothing is cut
+// (2026-11-09; before, it said "…and N more" and pointed at --json, which held the same first 15). --json has all rows.
+// cut: TOP rows in full, the rest named on one line
+const firstThenNamed = (rows, line, name, what = 'more') => [...rows.slice(0, TOP).map(line), ...(rows.length > TOP ? [`- …and ${rows.length - TOP} ${what}: ${rows.slice(TOP).map(name).join(', ')}`] : [])];
 // Not code a test is expected to reach: generated, vendored, examples and docs, tool folders (.semgrep/, .github/),
 // test setup, and the files that configure or start the project.
 const SKIP_CODE = /\.d\.ts$|\.min\.js$|(?:^|\/)(?:vendor|node_modules|dist|build|migrations|examples?|docs?|fixtures)\/|(?:^|\/)\.[^/]+\/|(?:^|\/)(?:conftest|setup|manage|noxfile|fabfile)\.py$|\.config\.[cm]?[jt]s$|(?:^|\/)(?:Gruntfile|Gulpfile|gulpfile)\.js$/u;
@@ -218,13 +222,13 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
     untested: {
       code: code.length,
       reached: code.length - untested.length,
-      files: untested.map((f) => ({ path: f, group: groupOf(map, f)?.id ?? null, usedBy: users.get(f) ?? 0 })).sort((a, b) => b.usedBy - a.usedBy || a.path.localeCompare(b.path)).slice(0, TOP),
+      files: untested.map((f) => ({ path: f, group: groupOf(map, f)?.id ?? null, usedBy: users.get(f) ?? 0 })).sort((a, b) => b.usedBy - a.usedBy || a.path.localeCompare(b.path)),
       byGroup: [...byGroup].map(([group, count]) => ({ group, count })).sort((a, b) => b.count - a.count),
     },
-    unused: { names: unused.slice(0, TOP), count: unused.length },
+    unused: { names: unused, count: unused.length },
     unseen: {
       languages: [...other].map(([ext, count]) => ({ ext, count })).sort((a, b) => b.count - a.count),
-      computed: computed.slice(0, TOP),
+      computed,
       computedCount: computed.length,
     },
   };
@@ -257,36 +261,33 @@ export function auditText(a) {
   }
   section(`Broke most (last 12 months; ${BROKE_MOST_MIN_COMMITS}+ fixes and weight ${BROKE_MOST_MIN_SCORE}+)`, brokeRows);
   section('Map problems (as `readfirst check` reports them)', a.problems.map((p) => `- ${p}`));
-  section(`Rules and risks that may be out of date (${STALE_COMMITS}+ commits changed their files since they were written)`, [...a.stale.slice(0, TOP).map((s) =>
-    `- ${s.kind === 'rule' ? `rule **${s.id}**` : `risk in group ${s.group}`}: "${s.text.length > 100 ? `${s.text.slice(0, 100)}…` : s.text}" — written ${s.written.date} (${s.written.commit}); ${s.commits} commits changed ${s.files} of its files since${s.relied?.commits ? `, and ${s.relied.commits} changed ${s.relied.files} file${s.relied.files === 1 ? '' : 's'} they import` : ''}. Still true?`), ...(a.stale.length > TOP ? [`- …and ${a.stale.length - TOP} more (\`readfirst audit --json\` lists all)`] : [])]);
+  section(`Rules and risks that may be out of date (${STALE_COMMITS}+ commits changed their files since they were written)`, firstThenNamed(a.stale, (s) =>
+    `- ${s.kind === 'rule' ? `rule **${s.id}**` : `risk in group ${s.group}`}: "${s.text.length > 100 ? `${s.text.slice(0, 100)}…` : s.text}" — written ${s.written.date} (${s.written.commit}); ${s.commits} commits changed ${s.files} of its files since${s.relied?.commits ? `, and ${s.relied.commits} changed ${s.relied.files} file${s.relied.files === 1 ? '' : 's'} they import` : ''}. Still true?`, (s) => (s.kind === 'rule' ? `rule ${s.id}` : `risk in ${s.group} "${s.text.length > 50 ? `${s.text.slice(0, 50)}…` : s.text}"`)));
   section('Hot spots no longer at their line', a.hotspots.map((h) => `- \`${h.symbol}\` in \`${h.file}\`: map says line ${h.line}, ${h.status === 'MOVED' ? `now line ${h.now}` : 'not found in the file'}`));
-  section('Hot spots nothing checks (no test reaches their file, and no check of their own in the map)', a.unguarded.slice(0, TOP).map((h) =>
-    `- \`${h.symbol}\` in \`${h.file}:${h.line}\`: ${h.labels.join(', ')}`).concat(a.unguarded.length > TOP ? [`- …and ${a.unguarded.length - TOP} more`] : []));
+  section('Hot spots nothing checks (no test reaches their file, and no check of their own in the map)', firstThenNamed(a.unguarded, (h) =>
+    `- \`${h.symbol}\` in \`${h.file}:${h.line}\`: ${h.labels.join(', ')}`, (h) => `\`${h.symbol}\` (\`${h.file}:${h.line}\`)`));
   section('Code being replaced that is still used', a.replacing.filter((d) => d.users).map((d) => `- group **${d.group}**${d.use ? ` (use \`${d.use}\`)` : ''}: imported by ${d.users} file(s) outside it, e.g. ${d.files.map((f) => `\`${f}\``).join(', ')}`));
   if (a.held) section('When rules last held (.readfirst/held.json)', [
-    ...a.held.changed.slice(0, TOP).map((h) => `- rule **${h.id}**: held at ${h.commit} on ${h.date}; ${h.commits} commit(s) changed its files since. Run \`readfirst verify --record\` again.`),
-    ...(a.held.never.length ? [`- never recorded as holding: ${a.held.never.slice(0, 10).join(', ')}${a.held.never.length > 10 ? ', …' : ''}`] : []),
+    ...firstThenNamed(a.held.changed, (h) => `- rule **${h.id}**: held at ${h.commit} on ${h.date}; ${h.commits} commit(s) changed its files since. Run \`readfirst verify --record\` again.`, (h) => h.id, 'more rules changed since they held'),
+    ...(a.held.never.length ? [`- never recorded as holding: ${a.held.never.join(', ')}`] : []),
   ]);
   section('Not filled in yet', [
-    ...(a.placeholders.length ? [`- ${a.placeholders.length} group(s) still have the TODO title from init: ${a.placeholders.slice(0, 10).join(', ')}${a.placeholders.length > 10 ? ', …' : ''}. \`readfirst prompt\` gives your agent the brief.`] : []),
-    ...(a.unchecked.length ? [`- ${a.unchecked.length} rule(s) with no check that shows they hold: ${a.unchecked.slice(0, 10).join(', ')}${a.unchecked.length > 10 ? ', …' : ''}`] : []),
+    ...(a.placeholders.length ? [`- ${a.placeholders.length} group(s) still have the TODO title from init: ${a.placeholders.join(', ')}. \`readfirst prompt\` gives your agent the brief.`] : []),
+    ...(a.unchecked.length ? [`- ${a.unchecked.length} rule(s) with no check that shows they hold: ${a.unchecked.join(', ')}`] : []),
   ]);
   const u = a.untested;
   if (u.code) section(`Code no test reaches through imports (${u.code - u.reached} of ${u.code} files)`, [
-    ...u.files.map((f) => `- \`${f.path}\`${f.usedBy ? ` — used by ${f.usedBy} file(s)` : ''}${f.group ? ` _(group ${f.group})_` : ''}`),
-    ...(u.code - u.reached > u.files.length ? [`- …and ${u.code - u.reached - u.files.length} more`] : []),
-    ...(u.byGroup.length > 1 ? ['', `By group: ${u.byGroup.slice(0, 10).map((g) => `${g.group ?? '(no group)'} ${g.count}`).join(', ')}`] : []),
+    ...firstThenNamed(u.files, (f) => `- \`${f.path}\`${f.usedBy ? ` — used by ${f.usedBy} file(s)` : ''}${f.group ? ` _(group ${f.group})_` : ''}`, (f) => `\`${f.path}\``),
+    ...(u.byGroup.length > 1 ? ['', `By group: ${u.byGroup.map((g) => `${g.group ?? '(no group)'} ${g.count}`).join(', ')}`] : []),
   ]);
   if (a.unused?.count) section(`Code nothing else uses (${a.unused.count}: exported or top-level, named in no other file and not used in its own)`, [
-    ...a.unused.names.map((u) => `- \`${u.name}\` in \`${u.path}:${u.line}\`${u.dependents?.length ? ` — the map says ${u.dependents.join(', ')} depends on this file: look there before deleting` : ''}`),
-    ...(a.unused.count > a.unused.names.length ? [`- …and ${a.unused.count - a.unused.names.length} more (\`readfirst audit --json\` lists ${TOP})`] : []),
+    ...firstThenNamed(a.unused.names, (u) => `- \`${u.name}\` in \`${u.path}:${u.line}\`${u.dependents?.length ? ` — the map says ${u.dependents.join(', ')} depends on this file: look there before deleting` : ''}`, (u) => `\`${u.name}\` (\`${u.path}:${u.line}\`)`),
     '',
     `A name built at run time (getattr, a computed import, a string key) is not seen: check before deleting.${a.unseen.computedCount ? ` This repository loads ${a.unseen.computedCount} module(s) by computed names.` : ''}`,
   ]);
   section('Not seen by readfirst', [
     ...a.unseen.languages.map((l) => `- ${l.count} .${l.ext} file(s): imports in this language are not read, so their users and tests are unknown`),
-    ...a.unseen.computed.map((c) => `- \`${c.path}:${c.line}\` loads a module by a computed name: what it loads is not followed`),
-    ...(a.unseen.computedCount > a.unseen.computed.length ? [`- …and ${a.unseen.computedCount - a.unseen.computed.length} more computed loads`] : []),
+    ...firstThenNamed(a.unseen.computed, (c) => `- \`${c.path}:${c.line}\` loads a module by a computed name: what it loads is not followed`, (c) => `\`${c.path}:${c.line}\``, 'more computed loads'),
   ]);
   if (out.length === 2) out.push('Nothing to report: the map matches the code.', '');
   out.push('---', PRO_LINE, '');

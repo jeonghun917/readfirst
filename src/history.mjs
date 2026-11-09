@@ -121,10 +121,13 @@ export function summarizeScars(path, commits) {
   const weight = scars.reduce((n, c) => n + c.weight, 0) * half;
   if (weight < MIN_WEIGHT) return undefined;
   // Strongest first, newest first within equal weight.
-  const top = [...scars].sort((a, b) => b.weight - a.weight || b.time - a.time).slice(0, TOP_SHOWN)
-    .map((c) => ({ sha: c.sha.slice(0, 7), date: day(c.time), kind: c.kind, subject: c.subject }));
+  // The strongest TOP_SHOWN in full; every other scar commit is named in `others` (sha, date, kind), so none is left out.
+  const ranked = [...scars].sort((a, b) => b.weight - a.weight || b.time - a.time);
+  const row = (c) => ({ sha: c.sha.slice(0, 7), date: day(c.time), kind: c.kind, subject: c.subject });
+  const top = ranked.slice(0, TOP_SHOWN).map(row); // cut: the rest are in `others`
+  const others = ranked.slice(TOP_SHOWN).map((c) => ({ sha: c.sha.slice(0, 7), date: day(c.time), kind: c.kind }));
   const last = scars.reduce((a, b) => (b.time > a.time ? b : a));
-  return { count: scars.length, weight, top, last: { sha: last.sha.slice(0, 7), date: day(last.time), kind: last.kind, subject: last.subject } };
+  return { count: scars.length, weight, top, ...(others.length ? { others } : {}), last: { sha: last.sha.slice(0, 7), date: day(last.time), kind: last.kind, subject: last.subject } };
 }
 
 // Never throws: not a git repository, git missing or any other failure gives null.

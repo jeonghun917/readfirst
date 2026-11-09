@@ -185,6 +185,7 @@ export function brokeSection(targets, { title = 'Broke before', hint = ' (this c
     const b = t.brokeBefore;
     lines.push(`- \`${t.path}\`: broke before: ${b.count} fix${b.count === 1 ? '' : 'es'}, last ${b.last.date} ${b.last.sha} "${b.last.subject}"`);
     if (b.count > 1) for (const c of b.top) lines.push(`  - ${c.date} ${c.sha} ${c.kind}: "${c.subject}"`);
+    if (b.others?.length) lines.push(`  - and ${b.others.length} more: ${b.others.map((c) => `${c.date} ${c.sha} ${c.kind}`).join(', ')}`);
   }
   if (missing.length) lines.push(`- history not fetched for ${missing.length === 1 ? `\`${missing[0].path}\`` : `${missing.length} files`}${hint}`);
   lines.push('');

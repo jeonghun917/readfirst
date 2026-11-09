@@ -6,7 +6,6 @@ import { createHash } from 'node:crypto';
 import { blockLines } from './lex.mjs';
 
 export const PATTERNS_VERSION = 'patterns-7';
-export const MAX_DISCARDED = 5;
 // Patterns about test code: the audit and the pattern bank read test files for these and for nothing else.
 export const TEST_PATTERNS = () => new Set(PATTERNS.filter((p) => p.tests).map((p) => p.id));
 
@@ -318,12 +317,12 @@ export function candidates(file) {
 // Findings for the files of a pull request. fileText(path) returns the file at the head commit, or null; it is asked
 // only when a queryset candidate's receiver isn't shown to be one by the patch itself.
 // muted: pattern ids left out (lib/pattern-health.mjs: patterns people almost never act on in live PRs).
-export async function discardedResults(files, fileText = async () => null, { muted = new Set(), only = null } = {}) {
+export async function discardedResults(files, fileText = async () => null, { only = null } = {}) {
   const out = [];
   for (const f of files) {
     if (f.status === 'removed' || !f.patch) continue;
     for (const c of candidates(f)) {
-      if (muted.has(c.pattern.id) || (only && !only.has(c.pattern.id))) continue;
+      if (only && !only.has(c.pattern.id)) continue;
       if (c.pattern.queryset && !QS_HINT.test(c.recv)) {
         const name = c.recv.match(/^[A-Za-z_][\w.]*/u)[0];
         const shown = newLines(f.patch).filter((r) => !r.hunk).map((r) => r.text).join('\n');
@@ -343,7 +342,6 @@ export async function discardedResults(files, fileText = async () => null, { mut
         if (!text || !followedHere(c, text)) continue;
       }
       out.push({ ref: `pattern:${c.pattern.id}`, file: c.file, line: c.line, why: c.pattern.why(c.method), rule: 'result thrown away', hash: lineHash(c.text), version: PATTERNS_VERSION });
-      if (out.length === MAX_DISCARDED) return out;
     }
   }
   return out;
