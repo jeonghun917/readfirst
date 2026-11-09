@@ -22,7 +22,8 @@
 //   readfirst view [--out <file>]  the map as a city in one HTML page (default .readfirst/local/view.html)
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>, --version; --name=value works too.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { importEdges } from './imports.mjs';
@@ -43,6 +44,7 @@ import { mcpHandler, serveMcp } from './mcp.mjs';
 import { cityData, viewHtmlCity } from './view-city.mjs';
 import { emptyList, readList, toMarkdown } from './readlist.mjs';
 import { brokeBefore, readScarLog } from './history.mjs';
+import { cachedBrokeBefore, cachedEdges } from './hook-cache.mjs';
 
 const HELP = `readfirst — what to read and check before changing a file
 
@@ -305,21 +307,25 @@ function doneText(r) {
   return s;
 }
 
-// The read list as a few factual lines for an agent's context: rules, risks and checks, nothing else.
+// The read list as factual lines for an agent's context: what to do first (being replaced, change together, other
+// repositories, checks), then what to know (rules, risks, where it broke, tests, what readfirst could not see). Every
+// line is given (0.27.1: no "N more"); with several files, a line for only some of them names them.
 export function brief(list) {
   const lines = [];
-  for (const d of list.deprecated ?? []) lines.push(`Being replaced: group ${d.group}${d.use ? `; use ${d.use} instead` : ''} (${d.why}). Do not add to it.`);
-  for (const r of list.rules) lines.push(`Rule ${r.id}: ${r.rule}${r.why ? ` (why: ${r.why})` : ''}`);
-  for (const r of list.risks) lines.push(`Risk: ${r.text}`);
-  for (const t of list.together ?? []) lines.push(`Change together: when this file changes, also change ${t.also.join(' or ')} (${t.why}). verify fails otherwise.`);
-  for (const d of list.dependents ?? []) lines.push(`Another repository depends on this: ${d.repo}${d.paths.length ? ` (${d.paths.join(', ')})` : ''} (${d.why}).`);
+  const all = (list.targets ?? []).length;
+  const forSome = (row) => (all > 1 && row.for && row.for.length < all ? ` [${row.for.join(', ')}]` : '');
+  for (const d of list.deprecated ?? []) lines.push(`Being replaced: group ${d.group}${d.use ? `; use ${d.use} instead` : ''} (${d.why}). Do not add to it.${forSome(d)}`);
+  for (const t of list.together ?? []) lines.push(`Change together: when this file changes, also change ${t.also.join(' or ')} (${t.why}). verify fails otherwise.${forSome(t)}`);
+  for (const d of list.dependents ?? []) lines.push(`Another repository depends on this: ${d.repo}${d.paths.length ? ` (${d.paths.join(', ')})` : ''} (${d.why}).${forSome(d)}`);
+  for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}${forSome(c)}`);
+  for (const r of list.rules) lines.push(`Rule ${r.id}: ${r.rule}${r.why ? ` (why: ${r.why})` : ''}${forSome(r)}`);
+  for (const r of list.risks) lines.push(`Risk: ${r.text}${forSome(r)}`);
   for (const t of list.targets ?? []) {
     const b = t.brokeBefore;
     if (b && !b.notFetched) lines.push(`Broke before: ${b.count} fix${b.count === 1 ? '' : 'es'} in ${t.path}, last ${b.last.date} ${b.last.sha} "${b.last.subject}"`);
     else if (b) lines.push(`Broke before: history not fetched for ${t.path} (shallow clone)`);
   }
-  for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}`);
-  if (list.tests.length) lines.push(`Tests that reach this file: ${list.tests.slice(0, 5).map((t) => t.path).join(', ')}`);
+  if (list.tests.length) lines.push(`Tests that reach ${all > 1 ? 'these files' : 'this file'}: ${list.tests.map((t) => `${t.path}${forSome(t)}`).join(', ')}`);
   if (lines.length) for (const u of list.unseen ?? []) lines.push(`Not seen by readfirst: ${u.why}`);
   return lines;
 }
@@ -361,45 +367,63 @@ function physical(abs) {
 }
 
 // Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file, or a Bash
-// command that writes files (src/bash-writes.mjs), prints the read list of each file as additionalContext, once per file
-// per session. Never blocks by default; with --gate (`hook --gate`) the first call that touches a file it has not shown
-// is refused with the read list as the reason, and the same call goes through when made again, as welsmere's map gate
-// does. Any problem means no output.
-export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = false } = {}) {
+// command that writes files (src/bash-writes.mjs), prints the read list of the files as additionalContext, once per file
+// per session: every file the call writes, each repository's lines once, nothing cut (0.27.1; before, the first 10 files
+// and 12 lines per file). Never blocks by default; with --gate (`hook --gate`) the first call that touches a file it has
+// not shown is refused with the read list as the reason, and the same call goes through when made again, as welsmere's
+// map gate does. Any problem means no output.
+// budget: how long it may spend looking up (the hook has 15 s). Files it had no time for are named, marked for the Stop
+// hook's checks, and looked up on the next call that writes them; with --gate the call is refused so it is made again.
+// A call that writes nothing readfirst can name (a script, a build) still marks when the session started in that
+// repository, so the Stop hook checks the files changed after it.
+export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = false, budget = 10_000 } = {}) {
   try {
     const event = JSON.parse(input);
     const cwd = event.cwd ?? process.cwd();
     const tool = event.tool_name ?? '';
     const file = event.tool_input?.file_path;
-    const targets = (/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
-      : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : []).map(physical);
-    if (!targets.length) return null;
+    const targets = [...new Set((/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
+      : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : []).map(physical))];
     const seen = readSeen(stateDir, event.session_id) ?? {};
     const before = { ...seen };
-    const notes = targets.slice(0, 10).map((abs) => notesFor(abs, seen, now)).filter(Boolean);
+    const save = () => { try { addSeen(stateDir, event.session_id, before, seen); return true; } catch { return false; } };
+    if (!targets.length) {
+      const root = repoOf(cwd);
+      if (root && !seen[`start:${root}`]) { seen[`start:${root}`] = now; save(); }
+      return null;
+    }
+    const deadline = Date.now() + budget;
+    const { notes, late } = notesFor(targets, seen, now, { deadline, stateDir });
     const waiting = pendingNotes(targets, seen, now);
-    let saved = true;
-    try { addSeen(stateDir, event.session_id, before, seen); } catch { saved = false; }
-    if (!notes.length && !waiting.length) return null;
+    const saved = save();
+    const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
+    if (!notes.length && !waiting.length && !lateLine) return null;
     // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes.
-    const text = [...notes, ...waiting].join('\n\n');
+    const text = [...notes, ...(lateLine ? [lateLine] : []), ...waiting].join('\n\n');
     // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
     // the notes as context instead.
-    if (gate && notes.length && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    if (gate && (notes.length || lateLine) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch {
     return null;
   }
 }
 
+// The repository of a path: that of its nearest existing folder (a new file's folder may not exist yet). `known` keeps
+// the answers of one call, so a command writing many files in one folder asks git once.
+function rootOf(abs, known = new Map()) {
+  let dir = dirname(abs);
+  while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
+  if (!known.has(dir)) known.set(dir, repoOf(dir));
+  return known.get(dir);
+}
+
 // Once per session for each repository edited: map edits waiting a week or ten merges on its upkeep branch
 // (src/pending.mjs). The repository is found from the file, as in notesFor.
 function pendingNotes(targets, seen, now) {
   const out = [];
-  for (const abs of targets.slice(0, 10)) {
-    let dir = dirname(abs);
-    while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
-    const root = repoOf(dir);
+  const known = new Map();
+  for (const root of new Set(targets.map((abs) => rootOf(abs, known)))) {
     const key = `pending:${root}`;
     if (!root || seen[key]) continue;
     seen[key] = now;
@@ -409,19 +433,9 @@ function pendingNotes(targets, seen, now) {
   return out;
 }
 
-// The read list of one file as a few lines, or null (no repository, the map itself, shown in the last six hours, or
-// nothing to say). Marks the file as seen.
-function notesFor(given, seen, now) {
-  const abs = physical(given);
-  // The repository of the file: its nearest existing folder (a new file's folder may not exist yet).
-  let dir = dirname(abs);
-  while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
-  const root = repoOf(dir);
-  if (!root) return null;
-  const path = relative(root, abs).replace(/\\/gu, '/');
-  if (path.startsWith('..') || path === MAP_PATH || path.startsWith('.git/')) return null;
-  const key = join(root, path);
-  if (seen[key] && now - seen[key] < 6 * 3600_000) return null;
+// What a repository's notes are read from, worked out once per call: its files, map, import graph (kept between calls
+// by src/hook-cache.mjs) and the commit its clean files are at.
+function hookContext(root, stateDir) {
   const files = repoFiles(root);
   // Without a map the hook still says where the file broke before. A map broken in itself (a rule naming a renamed file,
   // bad JSON) used to make the hook silent for the whole repository: now it says so, with what the map still gives.
@@ -430,18 +444,59 @@ function notesFor(given, seen, now) {
   if (existsSync(join(root, MAP_PATH))) {
     try { map = readMapFile(root); broken = mapProblems(map, files, { placement: false }); } catch (e) { map = null; broken = [e.message]; }
   }
-  const all = files.includes(path) ? files : [...files, path].sort();
-  const broke = brokeBefore(root, [path], new Set(all));
-  const listFor = (m) => readList({ map: m, files: all, imports: m ? importEdges(files, readText(root)) : [], targets: [path], limit: 10, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke });
-  let list;
-  try { list = listFor(map); } catch { map = null; list = listFor(null); }
-  const lines = brief(list);
-  if (broken.length) lines.unshift(brokenMapLine(broken));
-  seen[key] = now;
-  if (!lines.length) return null;
-  const shown = lines.slice(0, 12);
-  if (lines.length > shown.length) shown.push(`${lines.length - shown.length} more in \`npx readfirst read ${path}\``);
-  return `readfirst notes for ${path}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${shown.join('\n- ')}`;
+  let head = null;
+  try { head = git(root, 'rev-parse', '--verify', '-q', 'HEAD').trim() || null; } catch { head = null; }
+  let dirty = new Set();
+  try { dirty = new Set(git(root, 'status', '--porcelain', '-z', '--no-renames', '--untracked-files=all').split('\0').filter(Boolean).map((l) => l.slice(3))); } catch { head = null; }
+  let imports = null;
+  const edges = () => (imports ??= cachedEdges({ root, files, read: readText(root), head, dirty, stateDir, version: VERSION() }));
+  return { files, map, broken, head, edges };
+}
+
+// The read lists of the files a call writes, one block per repository (its lines once, each marked with the files it is
+// for when there are several), or nothing for a repository with nothing to say. Files shown in the last six hours,
+// outside a repository, the map itself and .git/ are left out. Marks each file looked up as seen; a file it had no time
+// for is marked `touched:` (the Stop hook checks it) and returned in `late`.
+function notesFor(targets, seen, now, { deadline = Infinity, stateDir } = {}) {
+  const known = new Map();
+  const byRoot = new Map();
+  for (const abs of targets) {
+    const root = rootOf(abs, known);
+    if (!root) continue;
+    const path = relative(root, abs).replace(/\\/gu, '/');
+    if (path.startsWith('..') || path === MAP_PATH || path.startsWith('.git/')) continue;
+    const key = join(root, path);
+    if (seen[key] && now - seen[key] < 6 * 3600_000) continue;
+    if (!byRoot.has(root)) byRoot.set(root, []);
+    if (!byRoot.get(root).includes(path)) byRoot.get(root).push(path);
+  }
+  const notes = [];
+  const late = [];
+  for (const [root, paths] of byRoot) {
+    const later = (rest) => { for (const p of rest) { seen[`touched:${join(root, p)}`] = now; late.push(p); } };
+    if (Date.now() > deadline) { later(paths); continue; }
+    const ctx = hookContext(root, stateDir);
+    const all = [...new Set([...ctx.files, ...paths])].sort();
+    const tracked = new Set(all);
+    const done = [];
+    const broke = {};
+    for (const [i, path] of paths.entries()) {
+      if (Date.now() > deadline) { later(paths.slice(i)); break; }
+      Object.assign(broke, cachedBrokeBefore({ root, paths: [path], tracked, head: ctx.head, stateDir }));
+      done.push(path);
+    }
+    if (!done.length) continue;
+    const listFor = (m) => readList({ map: m, files: all, imports: m ? ctx.edges() : [], targets: done, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke });
+    let map = ctx.map;
+    let list;
+    try { list = listFor(map); } catch { map = null; list = listFor(null); }
+    const lines = brief(list);
+    if (ctx.broken.length) lines.unshift(brokenMapLine(ctx.broken));
+    for (const p of done) seen[join(root, p)] = now;
+    if (!lines.length) continue;
+    notes.push(`readfirst notes for ${done.join(', ')}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${lines.join('\n- ')}`);
+  }
+  return { notes, late };
 }
 
 // The check commands of the map as the base branch has it. The Stop hook runs a command without anyone asking, so it
@@ -493,20 +548,34 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   const firstSeen = new Map(); // the earliest time a file of each repository was marked
   const here = repoOf(event.cwd ?? process.cwd());
   for (const recorded of Object.keys(seen)) {
+    // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
+    // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
+    // no time to look up. The last two are checked like any edited file.
+    const tag = recorded.match(/^(pending|notrun|start|touched):(.*)$/su);
+    if (tag && (tag[1] === 'pending' || tag[1] === 'notrun')) continue;
+    if (tag?.[1] === 'start') {
+      if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
+      firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
+      continue;
+    }
     // Keys recorded before paths were resolved through symlinks are resolved here.
-    const key = isAbsolute(recorded) ? physical(recorded) : recorded;
+    const raw = tag ? tag[2] : recorded;
+    const key = isAbsolute(raw) ? physical(raw) : raw;
     const root = isAbsolute(key) ? repoOf(existsSync(dirname(key)) ? dirname(key) : here ?? '/') : here;
     if (!root) continue;
     const path = isAbsolute(key) ? relative(root, key).replace(/\\/gu, '/') : key;
     if (path.startsWith('..')) continue;
     if (!byRoot.has(root)) byRoot.set(root, []);
-    byRoot.get(root).push(path);
+    if (!byRoot.get(root).includes(path)) byRoot.get(root).push(path);
     firstSeen.set(root, Math.min(firstSeen.get(root) ?? Infinity, seen[recorded]));
   }
   const passed = [];
   const blocks = [];
+  // Checks that did not run block once for a state of the files: the mark says so to the next stop.
+  const said = (key) => Boolean(seen[key]);
+  const say = (key) => { try { addSeen(stateDir, event.session_id, {}, { [key]: Date.now() }); } catch { /* blocks again next time */ } };
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
-    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root));
+    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say });
     if (r?.pass) passed.push(r.pass);
     if (r?.block) blocks.push(r.block);
   }
@@ -516,11 +585,17 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
 }
 
 // The Stop hook for one repository: its map's checks for the files edited there that are still changed.
-function stopFor(root, edited, timeout, named, since) {
+function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {} } = {}) {
   try {
     if (!existsSync(join(root, MAP_PATH))) return null;
     const at = named ? ` in ${basename(root)}` : '';
     const dirty = new Set(git(root, 'status', '--porcelain', '-z', '--no-renames', '--untracked-files=all').split('\0').filter(Boolean).map((l) => l.slice(3)));
+    // Files changed since the session first wrote here that no tool call named (a script, a generator, a build): a check
+    // that never ran on them is a check skipped. Two seconds of slack for file systems that keep whole seconds.
+    const unnamed = Number.isFinite(since)
+      ? [...dirty].filter((f) => !edited.includes(f) && f !== MAP_PATH && (() => { try { return statSync(join(root, f)).mtimeMs >= since - 2000; } catch { return false; } })()).sort()
+      : [];
+    edited = [...edited, ...unnamed];
     // On the base branch itself (main with no origin/main), with no base branch, or after a push to main, a file committed in the session looks
     // unchanged, and committing before the stop skipped its checks: the files of commits made since the session first
     // marked a file in this repository count too.
@@ -539,7 +614,7 @@ function stopFor(root, edited, timeout, named, since) {
     let broken = [];
     try { map = readMapFile(root); broken = mapProblems(map, files, { placement: false }); } catch (e) { broken = [e.message]; }
     let list = null;
-    if (map) try { list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets, limit: 1 }); } catch { list = null; }
+    if (map) try { list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets }); } catch { list = null; }
     const brokenLine = broken.length ? `readfirst${at}: ${brokenMapLine(broken)}${list ? '' : ' The checks for the files you edited were not run.'} Fix it before you finish.` : null;
     if (!list) return brokenLine ? { block: brokenLine } : null;
     // Files left behind: what the map says changes together with an edited file, against everything changed so far.
@@ -551,16 +626,31 @@ function stopFor(root, edited, timeout, named, since) {
     const result = verifyChecks(root, list.checks.filter((c) => trusted.runs.has(c.run)), { timeout });
     const failed = result.filter((c) => c.status !== 'pass');
     const notRun = skipped.length ? ` Not run, because ${trusted.why}: ${skipped.map((r) => `\`${r}\``).join(', ')}; run \`npx readfirst verify\` to run them on purpose.` : '';
-    if (!failed.length && !missing.length && !brokenLine) return { pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}` };
+    const byCommand = unnamed.filter((f) => targets.includes(f));
+    const fromCommands = byCommand.length ? ` Changed in this session by commands readfirst could not read, so checked too: ${byCommand.join(', ')}.` : '';
+    // Checks that did not run block the stop once for this state of the files (0.27.1: they used to pass it with a note).
+    const state = skipped.length ? `notrun:${root}:${treeState(root, dirty)}` : null;
+    const blockNotRun = state && !said(state);
+    if (blockNotRun) say(state);
+    if (!failed.length && !missing.length && !brokenLine && !blockNotRun) return { pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}${fromCommands}` };
     return { block: [
       ...(brokenLine ? [brokenLine] : []),
-      ...(failed.length ? [`readfirst verify${at}: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}`] : []),
+      ...(failed.length ? [`readfirst verify${at}: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}${fromCommands}`] : []),
+      ...(blockNotRun && !failed.length ? [`readfirst verify${at}: ${skipped.length} check(s) the map lists for the files you edited did not run (${result.length} ran and passed).${notRun} Run it, or say why they need not run, before you finish.${fromCommands}`] : []),
       ...missing.map((t) => `readfirst${at}: ${t.for.join(', ')} changed, but none of ${t.also.join(', ')} did. The map says they change together: ${t.why}. Change it too, or say why it does not apply, before you finish.`),
       ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}`),
     ].join('\n') };
   } catch {
     return null;
   }
+}
+
+// The state of a repository's files, as a short hash: HEAD and each changed file with its size and time.
+function treeState(root, dirty) {
+  let head = '';
+  try { head = git(root, 'rev-parse', '--verify', '-q', 'HEAD').trim(); } catch { head = ''; }
+  const parts = [...dirty].sort().map((f) => { try { const st = statSync(join(root, f)); return `${f}\0${st.size}\0${st.mtimeMs}`; } catch { return `${f}\0gone`; } });
+  return createHash('sha1').update([head, ...parts].join('\0')).digest('hex').slice(0, 16);
 }
 
 export const WORKFLOW_PATH = '.github/workflows/readfirst.yml';
@@ -866,8 +956,9 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
         return 0;
       }
     }
-    const limit = Number(args.limit ?? 30);
-    if (!Number.isInteger(limit) || limit < 1) throw new Error('--limit needs a whole number of 1 or more');
+    // No limit unless asked for: a cut list says how many it left out.
+    const limit = args.limit === undefined ? Infinity : Number(args.limit);
+    if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) throw new Error('--limit needs a whole number of 1 or more');
     const broke = brokeBefore(root, targets, new Set(files), rev);
     const list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke, before: map && asWritten.get(map) });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);

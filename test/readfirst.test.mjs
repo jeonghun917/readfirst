@@ -564,7 +564,8 @@ test('hook --stop: before Claude Code finishes, the checks for files it edited r
   assert.match(blocked.reason, /test -f ok\.flag \(fail, exit 1\) covers the flag/u);
   assert.equal(stop({ stop_hook_active: true }), null, 'the second stop of the turn lets go');
   writeFileSync(join(root, 'ok.flag'), '');
-  assert.match(JSON.parse(stop()).systemMessage, /1 check\(s\) passed for 1 edited file/u);
+  // ok.flag was written after the session's first mark by no tool readfirst reads: it is checked too, and named.
+  assert.match(JSON.parse(stop()).systemMessage, /1 check\(s\) passed for 2 edited file\(s\)\. Changed in this session by commands readfirst could not read, so checked too: ok\.flag/u);
   assert.equal(stop({ session_id: 'other' }), null, 'another session edited nothing');
 
   // A branch that changes a check command: the new command is named, never run, until the base branch has it.
@@ -572,9 +573,11 @@ test('hook --stop: before Claude Code finishes, the checks for files it edited r
   const branchMap = JSON.parse(readFileSync(mapAt, 'utf8'));
   branchMap.groups.find((g) => g.id === 'src-billing').checks = [{ run: 'touch pwned.flag', why: 'nothing good' }];
   writeFileSync(mapAt, JSON.stringify(branchMap));
+  // 0.27.1: a check that did not run blocks the stop once (it used to pass with a note), and says to run verify.
   const named = JSON.parse(stop({ session_id: 's1' }));
-  assert.equal(named.decision, undefined);
-  assert.match(named.systemMessage, /0 check\(s\) passed.*Not run, because the base branch's map does not list them yet: `touch pwned\.flag`/u);
+  assert.equal(named.decision, 'block');
+  assert.match(named.reason, /1 check\(s\) the map lists for the files you edited did not run \(0 ran and passed\)\. Not run, because the base branch's map does not list them yet: `touch pwned\.flag`; run `npx readfirst verify`/u);
+  assert.match(JSON.parse(stop({ session_id: 's1' })).systemMessage, /0 check\(s\) passed.*Not run/u, 'the same files again: said, not blocked');
   assert.equal(existsSync(join(root, 'pwned.flag')), false, 'the branch command did not run');
 
   assert.equal(installHook(root, { verify: true }), true);
