@@ -387,7 +387,7 @@
           ]
         },
         {
-          "text": "Every file readfirst writes in a user's checkout goes through a check that the real path stays inside the repository: mustBeInside (src/cli.mjs: init, fix, export --cursor, verify --record, view) or outsideRepo (src/agents.mjs: setup, hook --install). A CLAUDE.md, .claude, .cursor or .github that is a symlink to a place outside would otherwise be written through, into the user's home or another project (setup until 0.26.4, readfirst#130; export, init, fix and view until 0.26.5, readfirst#132, security). A new write, or a new file setup or export touches, needs the same check and a test with a symlinked folder and a symlinked file.",
+          "text": "Every file readfirst writes in a user's checkout goes through a check that the real path stays inside the repository: mustBeInside (src/cli.mjs: init, fix, export --cursor, verify --record, view), outsideRepo (src/agents.mjs: setup, hook --install) or, for setup --git, the `ok` check in src/git-hooks.mjs, which resolves the real path of the hooks folder and of each hook file and allows only the repository and its git folder. A CLAUDE.md, .claude, .cursor or .github that is a symlink to a place outside would otherwise be written through, into the user's home or another project (setup until 0.26.4, readfirst#130; export, init, fix and view until 0.26.5, readfirst#132, security). A new write, or a new file setup or export touches, needs the same check and a test with a symlinked folder and a symlinked file.",
           "files": [
             "src/agents.mjs",
             "src/export.mjs",
@@ -682,8 +682,8 @@
     },
     {
       "id": "no-silent-cut",
-      "rule": "nothing readfirst finds is cut to look shorter: a list cut to a fixed size for output (slice(0, N), a count that stops a loop) names the rest or says where it is, in a `cut:` comment on that line or the one above",
-      "why": "the owner's rule (2026-11-09): no bug hidden, no check skipped; fourteen silent cuts were found in two days, each hiding files, tests, lines or findings",
+      "rule": "nothing readfirst finds is cut to look shorter: a list cut to a fixed size for output (slice(0, N), a slice from the end such as slice(-30), a count that stops a loop) names the rest or says where it is, in a `cut:` comment on that line or the one above",
+      "why": "the owner's rule (2026-11-09): no bug hidden, no check skipped; fourteen silent cuts were found in two days, each hiding files, tests, lines or findings; verify's last-30-lines cut said nothing of the earlier lines until 0.27.4",
       "files": [
         "src/**",
         "bin/**"
@@ -778,65 +778,80 @@
     {
       "file": "src/cli.mjs",
       "symbol": "git",
-      "line": 101,
+      "line": 121,
       "labels": [
         "exec"
       ],
       "rules": [
-        "only-init-and-fix-write",
-        "no-network-in-cli"
+        "no-network-in-cli",
+        "only-init-and-fix-write"
       ],
       "note": "Runs commands"
     },
     {
       "file": "src/cli.mjs",
       "symbol": "addLineTo",
-      "line": 145,
+      "line": 186,
       "labels": [
         "fs-write"
       ],
       "rules": [
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-silent-cut"
       ],
       "note": "Writes files"
     },
     {
       "file": "src/cli.mjs",
       "symbol": "verifyChecks",
-      "line": 195,
+      "line": 277,
       "labels": [
         "secrets",
         "exec"
       ],
       "rules": [
-        "only-init-and-fix-write",
-        "no-network-in-cli"
+        "no-network-in-cli",
+        "only-init-and-fix-write"
       ],
       "note": "Reads secrets or the environment, runs commands"
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "runHook",
-      "line": 278,
+      "symbol": "treeState",
+      "line": 686,
       "labels": [
-        "fs-write"
+        "crypto"
       ],
       "rules": [
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-silent-cut"
       ],
-      "note": "Writes files"
+      "note": "Hashes, signs or encrypts"
     },
     {
       "file": "src/cli.mjs",
       "symbol": "writeWorkflow",
-      "line": 430,
+      "line": 697,
       "labels": [
         "fs-write"
       ],
       "rules": [
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-silent-cut"
       ],
       "note": "Writes files"
+    },
+    {
+      "file": "src/git-hooks.mjs",
+      "symbol": "setupGitHooks",
+      "line": 33,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "no-silent-cut"
+      ],
+      "note": "Writes files; called from 1 other file read"
     }
   ]
 }
