@@ -38,8 +38,34 @@ const strings = (v, where, p, max = 500) => {
   return Array.isArray(v) ? v.filter((s) => text(s, max)) : [];
 };
 
+// An unknown field one plural or a letter or two away from a known one names it: `file` for `files` was reported only as
+// "unknown field", which on a first map read as the field being wrong rather than misspelled (owner's plan B,
+// 2026-11-09). "unknown field" stays first in the text, as before.
+const editDistance = (a, b) => {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    row = next;
+  }
+  return row[b.length];
+};
+export function nearField(key, keys) {
+  const k = String(key).toLowerCase();
+  const scored = keys.map((known) => {
+    const n = known.toLowerCase();
+    const plural = k === n || `${k}s` === n || k === `${n}s` || `${k}es` === n || k === `${n}es`;
+    return { known, d: plural ? 0 : editDistance(k, n) };
+  }).filter(({ known, d }) => d <= (known.length >= 5 ? 2 : 1)).sort((a, b) => a.d - b.d);
+  // Two known fields equally near: name neither rather than guess.
+  return scored.length && (scored.length === 1 || scored[0].d < scored[1].d) ? scored[0].known : null;
+}
 const only = (v, keys, where, p) => {
-  for (const k of Object.keys(v)) if (!keys.includes(k)) p.push(`${where}.${k}: unknown field`);
+  for (const k of Object.keys(v)) {
+    if (keys.includes(k)) continue;
+    const near = nearField(k, keys);
+    p.push(`${where}.${k}: unknown field${near ? `; did you mean \`${near}\`?` : ''}`);
+  }
 };
 
 const checkList = (v, where, p) => {
@@ -331,7 +357,9 @@ export function mapProblems(map, files, { placement = true } = {}) {
   const p = [];
   if (!isRecord(map)) return ['map: a JSON object'];
   only(map, ['format', 'groups', 'rules', 'ignore', 'hotspots', 'flows', 'models', 'vocabulary', 'requires', 'dependents'], 'map', p);
-  if (map.format !== MAP_FORMAT) p.push(`format: "${MAP_FORMAT}"`);
+  // `format` is required and has one value; the bare `format: "readfirst/map@1"` did not say which (plan B).
+  if (map.format === undefined) p.push(`format: required: add "format": "${MAP_FORMAT}" to the map`);
+  else if (map.format !== MAP_FORMAT) p.push(`format: must be "${MAP_FORMAT}", not ${JSON.stringify(map.format)}`);
   if (!Array.isArray(map.groups) || !map.groups.length) return [...p, 'groups: at least one group'];
   const ids = new Set();
   map.groups.forEach((g, i) => {
