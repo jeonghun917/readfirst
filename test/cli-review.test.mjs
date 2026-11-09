@@ -194,6 +194,17 @@ test('review 9: &> and &>> write their target', () => {
   assert.deepEqual(bashWrites('echo x >&2', '/r'), []);
 });
 
+test('hook: quotes inside $( ) open again, so code in them is not a redirect (2026-11-09)', () => {
+  // The call that was refused: a > in Python code inside "$(... "...")" read as a write to the file `=0`.
+  assert.deepEqual(bashWrites(`gh api x -f body="$(gh api y --jq .body | python3 -c "import sys;b=sys.stdin.read();i=b.rfind('x');print(b[:i] if i>=0 else b)")" --jq .body | tail -3`, '/r'), []);
+  assert.deepEqual(bashWrites('x="$(node -e "console.log(1 > 0)")"; echo "$x" > out.txt', '/r'), ['/r/out.txt']);
+  // A redirect inside $( ) is a real write, and its target ends at the ).
+  assert.deepEqual(bashWrites('y="$(sort a.txt > sorted.txt)"', '/r'), ['/r/sorted.txt']);
+  assert.deepEqual(bashWrites('echo "a > b" > real.txt', '/r'), ['/r/real.txt']);
+  assert.deepEqual(bashWrites("echo it\\'s > esc.txt", '/r'), ['/r/esc.txt']);
+  assert.deepEqual(bashWrites('echo "never closed > x.txt', '/r'), ['/r/x.txt'], 'a quote that never closes is a plain character, as before');
+});
+
 test('review 10: output cut short by a closed pipe is no crash', async () => {
   const r = await new Promise((done) => {
     const child = spawn('node', [BIN, '--help'], { stdio: ['ignore', 'pipe', 'pipe'] });
