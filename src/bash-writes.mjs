@@ -265,6 +265,30 @@ function withoutComments(text) {
   for (const m of b.matchAll(/(?<=^|[ \t;])#[^\n]*/gmu)) { out += text.slice(at, m.index); at = m.index + m[0].length; }
   return out + text.slice(at);
 }
+// How a command segment opens and closes subshells, given how many are open before it: `lead` ( at its start, `body`
+// the segment up to the first ) that closes one opened earlier, `closes` how many it closes, `tail` what follows the
+// last of them (a redirect of the subshell's output), `opened` the ( left open at its end (`x=$(cd d` continues in the
+// next segment). A ) with nothing open is not counted (a case pattern `a)`), and a pair that opens and closes inside
+// the segment ($( ), (( ))) changes nothing.
+function parens(segment, open) {
+  const b = blank(segment);
+  let i = 0;
+  while (i < b.length && (b[i] === '(' || /\s/u.test(b[i]))) i++;
+  const lead = (b.slice(0, i).match(/\(/gu) ?? []).length;
+  let depth = open + lead;
+  let local = 0;
+  let end = -1;
+  let tailAt = segment.length;
+  let closes = 0;
+  for (let k = i; k < b.length; k++) {
+    if (b[k] === '(') local++;
+    else if (b[k] === ')') {
+      if (local > 0) local--;
+      else if (depth > 0) { depth--; closes++; if (end < 0) end = k; tailAt = k + 1; }
+    }
+  }
+  return { lead, body: end < 0 ? segment : segment.slice(0, end), closes, tail: end < 0 ? '' : segment.slice(tailAt), opened: local };
+}
 const segments = (shell) => {
   const out = [];
   let at = 0;
@@ -296,10 +320,20 @@ export function bashWrites(command, cwd = process.cwd()) {
     if (isAbsolute(p)) found.add(p);
     else if (base != null) found.add(resolve(base, p));
   };
-  // Where relative paths start after the `cd`s in some shell text (here-documents already taken out of it).
+  // Where relative paths start after the `cd`s in some shell text (here-documents already taken out of it). A cd inside
+  // ( ) ends at its `)`.
   const cdIn = (text) => {
     let b = cwd;
-    for (const s of segments(text)) { const ws = opening(words(s)); const c = unquote(ws[0] ?? '').split('/').pop(); if (CD.test(c)) b = stepTo(b, c, ws[1] && unquote(ws[1])); }
+    const outer = [];
+    for (const s of segments(text)) {
+      const p = parens(s, outer.length);
+      for (let k = 0; k < p.lead; k++) outer.push(b);
+      const ws = opening(words(p.body));
+      const c = unquote(ws[0] ?? '').split('/').pop();
+      if (CD.test(c)) b = stepTo(b, c, ws[1] && unquote(ws[1]));
+      for (let k = 0; k < p.closes; k++) b = outer.pop();
+      for (let k = 0; k < p.opened; k++) outer.push(b);
+    }
     return b;
   };
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
@@ -324,21 +358,24 @@ export function bashWrites(command, cwd = process.cwd()) {
     return `${head} ${rest}`;
   });
   base = cwd; // the segments below follow the cds again themselves
-  for (const segment of segments(shell)) {
-    // Arithmetic and tests compare with > and <: `(( x > 0 ))`, `[[ a > b ]]` write nothing.
-    if (/^\s*(?:\(\(|\[\[)/u.test(segment)) continue;
-    const ws = unwrap(opening(words(segment)));
-    const cmd = unquote(ws[0] ?? '').split('/').pop();
-    if (CD.test(cmd)) { base = stepTo(base, cmd, ws[1] && unquote(ws[1])); continue; }
-    // Redirects anywhere in the segment, not 2> or >&, and not a > inside quotes (an arrow `=>` in node -e "..." code
-    // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself. &> and &>>
-    // (stdout and stderr to a file) write too; the & before them once kept &> out.
-    // 2> err.log, 1> out and >| write too (the digit and the | are part of the operator); 2>&1 and >&2 do not.
+  // Redirects anywhere in a segment, not 2> or >&, and not a > inside quotes (an arrow `=>` in node -e "..." code
+  // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself. &> and &>>
+  // (stdout and stderr to a file) write too; the & before them once kept &> out.
+  // 2> err.log, 1> out and >| write too (the digit and the | are part of the operator); 2>&1 and >&2 do not.
+  const redirects = (segment) => {
     for (const m of blank(segment).matchAll(/(?<![\w=-])\d*>>?\|?(?!\s*&)/gu)) {
       // A target ends at the ) that closes a $( ): `"$(sort a > b.txt)"` writes b.txt.
       const t = segment.slice(m.index + m[0].length).match(/^\s*('[^']+'|"[^"]+"|[^\s;&|)]+)/u);
       if (t) add(t[1]);
     }
+  };
+  const writesIn = (segment) => {
+    // Arithmetic and tests compare with > and <: `(( x > 0 ))`, `[[ a > b ]]` write nothing.
+    if (/^\s*(?:\(\(|\[\[)/u.test(segment)) return;
+    const ws = unwrap(opening(words(segment)));
+    const cmd = unquote(ws[0] ?? '').split('/').pop();
+    if (CD.test(cmd)) { base = stepTo(base, cmd, ws[1] && unquote(ws[1])); return; }
+    redirects(segment);
     const args = withoutRedirects(ws.slice(1)).map(unquote);
     const files = args.filter((w) => !w.startsWith('-'));
     const o = OPTIONS[cmd] ? options(args, OPTIONS[cmd]) : null;
@@ -367,6 +404,19 @@ export function bashWrites(command, cwd = process.cwd()) {
       const i = args.findIndex((w) => w === '-c' || w === '-e');
       codeTargets(args[i + 1] ?? '', { args: args.slice(i + 2).filter((w) => !w.startsWith('-')), exists: here, glob }).forEach(add);
     }
+  };
+  // A cd inside ( ) ends at its `)`, and a redirect after the `)` is the outer shell's: in
+  // `cd a && (cd b && make) > log && echo x > f` log and f are in a. The cd once carried on past the `)`, so the hook
+  // showed another repository's notes for a write in this one, and the `)` stuck to the last word made `f.txt)` the
+  // file (2026-11-09).
+  const outer = []; // the folders the open subshells started in
+  for (const segment of segments(shell)) {
+    const p = parens(segment, outer.length);
+    for (let k = 0; k < p.lead; k++) outer.push(base);
+    writesIn(p.body);
+    for (let k = 0; k < p.closes; k++) base = outer.pop();
+    redirects(p.tail);
+    for (let k = 0; k < p.opened; k++) outer.push(base);
   }
   return [...found];
 }

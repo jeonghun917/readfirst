@@ -70,3 +70,24 @@ test('bashWrites: after a cd to a variable, relative paths are not named; absolu
   assert.deepEqual(w('cd $D && cd /known && echo x > d.md'), ['/known/d.md'], 'an absolute cd after it is known again');
   assert.deepEqual(w("cd ~/proj && echo x > e.md")[0].endsWith('/proj/e.md'), true);
 });
+
+// 2026-11-09: `cd readfirst-cloud && (cd ../readfirst && git archive ...) | tar ... && echo x > package.json` showed the
+// readfirst map's notes for readfirst-cloud's package.json: the cd inside ( ) carried on past its `)`. The `)` also stuck
+// to the last word (`sed -i ... f.txt)` named `f.txt)`), and a redirect after the `)` was put inside the subshell's folder.
+test('bashWrites: a cd inside ( ) ends at its ), and what follows the ) is the outer shell\'s', () => {
+  const w = (c) => bashWrites(c, '/r');
+  assert.deepEqual(w('cd /a && (cd /b && git archive HEAD src) | tar -x -C v && echo x > package.json'), ['/a/package.json']);
+  assert.deepEqual(w('cd /a && (cd /b && true) && echo x > f'), ['/a/f']);
+  assert.deepEqual(w('(cd /b && sed -i s/a/b/ f.txt)'), ['/b/f.txt'], 'the ) is not part of the file name');
+  assert.deepEqual(w('(cd /b && make) > log'), ['/r/log'], 'the subshell\'s output goes where the outer shell is');
+  assert.deepEqual(w('( (cd /b && true) ; echo z > i ) ; echo w > j'), ['/r/i', '/r/j'], 'nested');
+  assert.deepEqual(w('(cd /b && python3 - <<E\nopen("o.txt", "w").write("")\nE\n) && echo > after.txt'), ['/b/o.txt', '/r/after.txt'], 'a here-document inside');
+  assert.deepEqual(w('cd /a && (cd /b && cat > x.txt <<E\nhi\nE\n) && python3 - <<E\nopen("y.txt", "w").write("")\nE').sort(), ['/a/y.txt', '/b/x.txt'], 'the here-document after the ) starts in the outer folder');
+  // Look-alikes: a { } group runs in this shell, so its cd stays; parentheses that open and close in one command, and a
+  // case pattern's ), change nothing.
+  assert.deepEqual(w('{ cd /b && true; } && echo x > f'), ['/b/f'], 'a group is not a subshell');
+  assert.deepEqual(w('x=$(cd /b; pwd) && echo q > k'), ['/r/k'], 'a cd inside $( ) ends there too');
+  assert.deepEqual(w('(( x > 0 )) && echo a > g'), ['/r/g']);
+  assert.deepEqual(w('case $x in a) true ;; esac; echo y > h'), ['/r/h']);
+  assert.deepEqual(w('(cd /b && npm test)'), [], 'a subshell that only runs tests writes nothing');
+});

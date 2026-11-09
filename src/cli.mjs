@@ -252,8 +252,24 @@ function changedFiles(root, base) {
   return { ref, since, here, current, files: [...names].sort() };
 }
 
+// A check that fails because the dependencies are not installed reads as broken code (a fresh clone or a new worktree:
+// ERR_MODULE_NOT_FOUND, "Cannot find package", ModuleNotFoundError; owner's plan B, 2026-11-09). What the output shows,
+// said as what it looks like: a change that adds an import of a package not yet in the manifest fails the same way.
+export function dependencyHint(root, output = '') {
+  const pkg = output.match(/Cannot find package '([^']+)'/u)?.[1] ?? output.match(/Cannot find module '([^./][^']*)'/u)?.[1];
+  const py = output.match(/ModuleNotFoundError: No module named '([^']+)'/u)?.[1];
+  const file = output.match(/Cannot find module '([./][^']*)'/u)?.[1];
+  const noModules = existsSync(join(root, 'package.json')) && !existsSync(join(root, 'node_modules'));
+  if (pkg) return `the package ${pkg} is not installed${noModules ? ', and there is no node_modules here (a fresh clone or a new worktree?)' : ''}: install the dependencies (npm ci, or the project's own install step) and run it again; if this change added the import, add the package to package.json too`;
+  if (py) return `the Python module ${py} is not installed here (no virtualenv active, or a fresh clone?): install the dependencies and run it again; if this change added the import, add it to the requirements too`;
+  if (file) return `a file it imports is not there: ${file} (a wrong import path, or a build step that has not run)`;
+  if (noModules && /ERR_MODULE_NOT_FOUND/u.test(output)) return 'there is no node_modules here (a fresh clone or a new worktree?): install the dependencies and run it again';
+  return null;
+}
+
 // Runs each check with the shell in the repository root, one after another, and keeps the end of the output of the ones
 // that fail. readfirst writes nothing itself; the commands are the map's own and may write, as they would by hand.
+const OUTPUT_LINES = 30;
 export function verifyChecks(root, checks, { dryRun = false, timeout = 900, progress = () => {} } = {}) {
   const out = [];
   for (const c of checks) {
@@ -265,8 +281,14 @@ export function verifyChecks(root, checks, { dryRun = false, timeout = 900, prog
     const seconds = Math.round((Date.now() - started) / 100) / 10;
     const timedOut = r.error?.code === 'ETIMEDOUT';
     const status = timedOut ? 'timeout' : r.status === 0 ? 'pass' : 'fail';
-    const tail = status === 'pass' ? undefined : `${r.stdout ?? ''}${r.stderr ?? ''}${r.error && !timedOut ? r.error.message : ''}`.trimEnd().split('\n').slice(-30).join('\n');
-    out.push({ ...row, status, code: r.status, seconds, ...(tail !== undefined ? { output: tail } : {}) });
+    const all = status === 'pass' ? '' : `${r.stdout ?? ''}${r.stderr ?? ''}${r.error && !timedOut ? r.error.message : ''}`.trimEnd();
+    const lines = all.split('\n');
+    // The last OUTPUT_LINES lines of a failing check (readfirst watch on readfirst#139: it said only "last lines").
+    // cut: a line before them says how many came before and that running the command itself shows them all.
+    const shown = lines.length > OUTPUT_LINES ? [`(${lines.length - OUTPUT_LINES} earlier lines not shown; run \`${c.run}\` to see them all)`, ...lines.slice(-OUTPUT_LINES)] : lines;
+    const tail = status === 'pass' ? undefined : shown.join('\n');
+    const hint = status === 'fail' ? dependencyHint(root, all) : null;
+    out.push({ ...row, status, code: r.status, seconds, ...(tail !== undefined ? { output: tail } : {}), ...(hint ? { hint } : {}) });
   }
   return out;
 }
@@ -280,7 +302,7 @@ function verifyText(report, dryRun) {
     const mark = { pass: 'pass', fail: 'FAIL', timeout: 'TIMEOUT' };
     s += `\nverify: ${report.checks.length} check(s) for ${report.files.length} changed file(s) since ${report.base}\n`;
     for (const c of report.checks) s += `${mark[c.status]}  ${c.run}  (${c.seconds}s)\n`;
-    for (const c of report.checks.filter((x) => x.status !== 'pass')) s += `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''}); last lines:\n${c.output}\n`;
+    for (const c of report.checks.filter((x) => x.status !== 'pass')) s += `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''}); last lines:\n${c.output}\n${c.hint ? `It looks like ${c.hint}.\n` : ''}`;
   }
   s += doneText(report);
   if (!dryRun) {
@@ -649,7 +671,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
       ...(failed.length ? [`readfirst verify${at}: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}${fromCommands}`] : []),
       ...(blockNotRun && !failed.length ? [`readfirst verify${at}: ${skipped.length} check(s) the map lists for the files you edited did not run (${result.length} ran and passed).${notRun} Run it, or say why they need not run, before you finish.${fromCommands}`] : []),
       ...missing.map((t) => `readfirst${at}: ${t.for.join(', ')} changed, but none of ${t.also.join(', ')} did. The map says they change together: ${t.why}. Change it too, or say why it does not apply, before you finish.`),
-      ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}`),
+      ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}${c.hint ? `\nIt looks like ${c.hint}.` : ''}`),
     ].join('\n') };
   } catch {
     return null;
