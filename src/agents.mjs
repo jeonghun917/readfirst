@@ -73,7 +73,9 @@ function codexConfig(root) {
   const away = outsideRepo(root, '.codex/config.toml');
   if (away) return `it is outside the repository, at ${away}`;
   const now = existsSync(at) ? readFileSync(at, 'utf8') : '';
-  if (/^\s*\[mcp_servers\.readfirst\]/mu.test(now)) return 'present';
+  // Also `[mcp_servers."readfirst"]`; an inline `mcp_servers = { ... }` table cannot take a second [mcp_servers.x].
+  if (/^\s*\[mcp_servers\.["']?readfirst["']?\]/mu.test(now)) return 'present';
+  if (/^\s*mcp_servers\s*=/mu.test(now)) return 'mcp_servers is an inline table';
   mkdirSync(dirname(at), { recursive: true });
   writeFileSync(at, `${now}${now && !now.endsWith('\n') ? '\n' : ''}${now ? '\n' : ''}${CODEX_BLOCK}`);
   return 'wrote';

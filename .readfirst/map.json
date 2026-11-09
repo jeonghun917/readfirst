@@ -219,7 +219,7 @@
           ]
         },
         {
-          "text": "imports are read with regexes: JS/TS and Python in imports.mjs, Go, Rust, Elixir, C#, Java/Kotlin, Ruby and PHP in langs.mjs. Only edges that resolve to a tracked file count (workspace packages and tsconfig paths aliases included), so packages from outside, aliases set up elsewhere (bundler config, tsconfig extends) and names the approximation misses (Rails constants used unqualified inside a module, C# types reached without a using) leave tests out of the read list",
+          "text": "imports are read with regexes: JS/TS and Python in imports.mjs, Go, Rust, Elixir, C#, Java/Kotlin, Ruby and PHP in langs.mjs. Only edges that resolve to a tracked file count (workspace packages, tsconfig paths aliases and baseUrl, package.json #imports, and Python roots at each folder with manage.py, pyproject.toml, setup.py or setup.cfg included), so packages from outside, aliases set up elsewhere (bundler config, tsconfig extends) and names the approximation misses (Rails constants used unqualified inside a module, C# types reached without a using) leave tests out of the read list",
           "files": [
             "src/imports.mjs",
             "src/langs.mjs"

@@ -141,3 +141,19 @@ test('find sees JS/TS class methods, exports.x =, wrapped arrows, generic arrows
   const body = 'export class Payments {\n  async retryPayment(id) {}\n  static refundOrder(order) {\n    if (order) {\n      return x;\n    }\n  }\n  private get total(): number {\n}\nexports.formatMoney = function (n) {};\nmodule.exports.chargeCard = (c) => c;\nconst slugify = memoize((s) => s);\nconst onSave = useCallback(async () => {});\nconst pick = <T,>(x: T) => x;\nexport abstract class Base {}\ndeclare function legacy(x: string): void;\n';
   assert.deepEqual(definitions('a.ts', body).map((d) => d.name), ['Payments', 'retryPayment', 'refundOrder', 'total', 'formatMoney', 'chargeCard', 'slugify', 'onSave', 'pick', 'Base', 'legacy']);
 });
+
+test('init drafts: no lint --fix, prettier --write or jest -u checks; poetry and uv run pytest; Makefile test:= is no rule; Codex quoted table is present', async () => {
+  const { draftChecks } = await import('../src/map.mjs');
+  const runs = (T) => draftChecks(Object.keys(T), (f) => T[f] ?? null).map((c) => c.run);
+  assert.deepEqual(runs({ 'package.json': JSON.stringify({ scripts: { test: 'vitest run', lint: 'eslint . --fix', typecheck: 'prettier --write .' } }) }), ['npm test']);
+  assert.deepEqual(runs({ 'package.json': JSON.stringify({ scripts: { test: 'jest -u' } }) }), []);
+  assert.deepEqual(runs({ 'pyproject.toml': '', 'poetry.lock': '', 'tests/test_a.py': '' }), ['poetry run pytest']);
+  assert.deepEqual(runs({ 'pyproject.toml': '', 'uv.lock': '', 'tests/test_a.py': '' }), ['uv run pytest']);
+  assert.deepEqual(runs({ Makefile: 'test:=1\nall:\n\techo\n' }), []);
+  assert.deepEqual(runs({ Makefile: 'test:\n\tgo test\n' }), ['make test']);
+  for (const toml of ['[mcp_servers."readfirst"]\ncommand = "npx"\n', 'mcp_servers = { other = { command = "x" } }\n']) {
+    const { root } = repo({ 'a.js': 'x\n', '.codex/config.toml': toml });
+    run(root, 'setup', '--for', 'codex');
+    assert.equal(readFileSync(join(root, '.codex/config.toml'), 'utf8'), toml, 'left as it was');
+  }
+});
