@@ -11,7 +11,7 @@ Do this:
    - "title": one line on what this part of the code does.
    - "checks": the commands that prove this part still works, e.g. {"run": "npm test -- auth", "why": "login and sessions"}.
      Use commands that exist in this repo (package.json scripts, Makefile, pytest...). Leave the list empty if there is none.
-   - "risks": things a newcomer would get wrong here, each {"text": "...", "files": ["optional/path/or/pattern/**"]}.
+   - "risks": things a newcomer would get wrong here, each {"text": "...", "files": ["optional/path/or/pattern/**"]}. A risk shows for the files it names, in any group, or for its whole group when it names none: put it on the file whose change would cause the mistake.
      Good risks are specific: hidden coupling, data that must stay compatible, money or auth paths, slow or paid calls,
      generated files that must not be edited by hand. Do not write generic advice ("be careful", "write tests").
 2. Split or merge groups when the folder split is wrong. Every tracked file must stay in exactly one group or in "ignore".

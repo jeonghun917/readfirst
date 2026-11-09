@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.27.1 read <file>` (and `jeonghun917/readfirst@v0.27.1` for
+exactly the version you reviewed, pin it: `npx readfirst@0.27.2 read <file>` (and `jeonghun917/readfirst@v0.27.2` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -358,7 +358,9 @@ runs. If your branch protection requires checks, pass a GitHub App or personal t
 - **files**: a path, `folder/**`, or a `*` glob inside one path segment (`src/*.js`, `**/*.md`).
 - **groups**: every tracked file belongs to exactly one group or to `ignore`. `readfirst check` fails otherwise, so the
   map can't quietly fall behind the code (run it in CI).
-- **risks**: what a newcomer would get wrong. Leave out `files` when the risk covers the whole group.
+- **risks**: what a newcomer would get wrong. Leave out `files` when the risk covers the whole group; with `files`, it
+  shows for those files, in any group, so put it on the file whose change would cause the mistake. `readfirst check`
+  lists risks about a file that does not show them (`--strict` fails on those) and risks that only mention one.
 - **rules**: promises the code must keep. A rule can span groups.
 - **hotspots** (optional, usually written by a tool): functions where risky code meets a rule, as
   `{ "file", "symbol", "line", "labels": ["db-write", "money"], "rules"?: [...], "note"? }`. `read` lists the ones in the

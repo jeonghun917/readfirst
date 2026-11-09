@@ -28,7 +28,7 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { importEdges } from './imports.mjs';
 import { scan, scanTextReport } from './scan.mjs';
-import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom } from './map.mjs';
+import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom, unshownRisks } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
 import { bashWrites } from './bash-writes.mjs';
@@ -830,12 +830,20 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const { settled } = settledMap;
     // The map must also pass the readfirst the repository's CI runs, which may be older than this one.
     const read = readText(root);
-    const problems = [...settledMap.problems, ...pinProblems(map, pinnedReadfirst(new Map(pinFiles(files).map((f) => [f, read(f)]))))];
-    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems, settled }, null, 2)}\n`);
+    // Risks that name a file which does not show them (0.27.2): those about it first, and with --strict a problem; those
+    // that only mention it after them. All are said.
+    const unshown = unshownRisks(map, files);
+    const line = (u) => `groups.${u.group}.risks[${u.index}] ${u.about ? 'is about' : 'mentions'} ${u.path}, but reading ${u.path} does not show it: add ${u.path} to its files (with the paths it should keep showing for), or write it where ${u.path} is`;
+    const about = unshown.filter((u) => u.about).map(line);
+    const mentions = unshown.filter((u) => !u.about).map(line);
+    const problems = [...settledMap.problems, ...pinProblems(map, pinnedReadfirst(new Map(pinFiles(files).map((f) => [f, read(f)])))), ...(args.strict ? about : [])];
+    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems, settled, unshown }, null, 2)}\n`);
     else {
       if (problems.length) io.out(`${MAP_PATH} has ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n`);
       else io.out(`${MAP_PATH} is good: ${files.length} files.\n`);
       if (settled.length) io.out(`settled without writing (\`readfirst fix\` writes it down):\n- ${settled.join('\n- ')}\n`);
+      if (about.length && !args.strict) io.out(`risks about a file that does not show them (it gets nothing when it is read; --strict fails on them):\n- ${about.join('\n- ')}\n`);
+      if (mentions.length) io.out(`risks that mention a file which does not show them (often a consequence; add the file to their files if whoever changes it should read them):\n- ${mentions.join('\n- ')}\n`);
     }
     return problems.length ? 1 : 0;
   }
