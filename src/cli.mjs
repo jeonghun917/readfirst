@@ -602,9 +602,18 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     let changed = [];
     let known = true;
     try { const c = changedFiles(root); changed = c.files; known = !c.here; } catch { known = false; }
-    let committed = new Set();
+    // git keeps whole seconds: `committed` (files that count as edited) takes the mark's own second too, so nothing the
+    // session committed is missed; `committedAfter` (files that satisfy a "change together") takes only commits from a
+    // later second, so a commit made before the session never stands in for a partner it left behind.
+    const committed = new Set();
+    const committedAfter = new Set();
     if (Number.isFinite(since)) {
-      try { committed = new Set(git(root, 'log', `--since=@${Math.floor(since / 1000)}`, '--format=', '--name-only', '-z', 'HEAD').split(/[\0\n]/u).filter(Boolean)); } catch { /* no commits */ }
+      try {
+        for (const block of git(root, 'log', `--since=@${Math.floor(since / 1000)}`, '--format=%x01%ct', '--name-only', '-z', 'HEAD').split('\x01').filter(Boolean)) {
+          const [ct, ...names] = block.split(/[\0\n]/u).filter(Boolean);
+          for (const n of names) { committed.add(n); if (Number(ct) * 1000 > since) committedAfter.add(n); }
+        }
+      } catch { /* no commits */ }
     }
     const targets = edited.filter((f) => dirty.has(f) || changed.includes(f) || committed.has(f)).sort();
     if (!targets.length) return null;
@@ -617,8 +626,10 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     if (map) try { list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets }); } catch { list = null; }
     const brokenLine = broken.length ? `readfirst${at}: ${brokenMapLine(broken)}${list ? '' : ' The checks for the files you edited were not run.'} Fix it before you finish.` : null;
     if (!list) return brokenLine ? { block: brokenLine } : null;
-    // Files left behind: what the map says changes together with an edited file, against everything changed so far.
-    const all = [...new Set([...dirty, ...changed])];
+    // Files left behind: what the map says changes together with an edited file, against everything changed so far,
+    // the session's own commits included: they make a file count as edited, so its partner in the same commits counts
+    // as changed too (a pair committed together was reported as left behind until 0.27.1).
+    const all = [...new Set([...dirty, ...changed, ...committedAfter])];
     const missing = list.together.filter((t) => !all.some(matcher(t.also)));
     if (!list.checks.length && !missing.length) return brokenLine ? { block: brokenLine } : null;
     const trusted = trustedRuns(root, since);

@@ -107,6 +107,12 @@
             "src/hook-cache.mjs",
             "src/imports.mjs"
           ]
+        },
+        {
+          "text": "the Stop hook counts files the session committed (git log since its first mark) as edited, and since 0.27.1 also as changed when it checks the map's `requires` (change together): `committed` takes the mark's own second (git keeps whole seconds) so no committed file goes unchecked, `committedAfter` only later seconds so a commit from before the session never stands in for a partner the session left out. Before, a pair committed together in the session (package.json and server.json) was reported as left behind.",
+          "files": [
+            "src/cli.mjs"
+          ]
         }
       ]
     },
