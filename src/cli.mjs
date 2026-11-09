@@ -1,6 +1,7 @@
 // readfirst: what to read and check before changing a file.
 //   readfirst init [--agent] [--ci] write a first .readfirst/map.json from the file tree (and, with --agent, what setup does; the Action)
 //   readfirst setup [--for a,b]    wire the agents this repository uses: the agent-notes line, the Claude Code hook, MCP configs
+//   readfirst setup --git          add `readfirst check` to the pre-commit hook and `readfirst verify` to pre-push
 //   readfirst prompt               the brief for a coding agent to fill in titles, checks, risks and rules
 //   readfirst prompt --labels <lang>  the brief for personal labels (a translation and plain notes) for the view
 //   readfirst check                the map covers every tracked file and is well formed
@@ -37,6 +38,7 @@ import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { find, findText } from './find.mjs';
 import { CURSOR_DIR, cursorPlan } from './export.mjs';
 import { AGENTS, detectAgents, outsideRepo, setupAgents } from './agents.mjs';
+import { gitHooksReport, setupGitHooks } from './git-hooks.mjs';
 import { HELD_PATH, heldInRun, parseHeld, recordHeld } from './held.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
@@ -51,6 +53,8 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst init [--agent] [--ci] write a first ${MAP_PATH} from the file tree
   readfirst setup [--for a,b]    wire the agents this repository uses: the read-first line, the Claude Code hook,
                                  the MCP server for Cursor, VS Code, Gemini CLI, Codex and OpenCode (project files only)
+  readfirst setup --git          git hooks every agent goes through: pre-commit runs check, pre-push runs verify
+                                 (one line added to the hooks there; --no-verify skips them once)
   readfirst prompt               brief for your coding agent to fill in the map
   readfirst check [--strict]     check the map covers every tracked file (new files beside placed ones pass; --strict fails on them)
   readfirst fix                  place new files, drop patterns for deleted ones
@@ -76,7 +80,7 @@ Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; de
 
 // The on/off flags (name -> key in args) and the options that take a value. Anything else that starts with `--` is an
 // error: an unknown option used to take the next word as its value, so `hook --new-flag --stop` quietly ran the wrong hook.
-const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', ci: 'ci', stop: 'stop', gate: 'gate', help: 'help', version: 'version' };
+const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', git: 'git', ci: 'ci', stop: 'stop', gate: 'gate', help: 'help', version: 'version' };
 const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels']);
 export function parse(argv) {
   const args = { _: [], json: false };
@@ -880,6 +884,13 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     } catch { return ''; }
   };
   if (cmd === 'setup') {
+    // --git: only the git hooks (opt-in); the agents are wired by setup without it. Without a map the hooks would fail
+    // every commit, so it stops before writing them.
+    if (args.git) {
+      if (!existsSync(join(root, MAP_PATH))) throw new Error(`no ${MAP_PATH} here: the hooks would fail every commit; \`readfirst init\` writes a first map, then run setup --git again`);
+      io.out(gitHooksReport(setupGitHooks(root, (...a) => git(root, ...a))));
+      return 0;
+    }
     io.out(setupReport(setup(root, args.for)) + placeHint());
     return 0;
   }
