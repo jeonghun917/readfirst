@@ -10,6 +10,9 @@ import { MAP_PATH, settleMap, unBom } from './map.mjs';
 import { brokeSection, readList, toMarkdown } from './readlist.mjs';
 
 export const MARKER = '<!-- readfirst:pr-comment -->';
+// A read list longer than one comment goes on in more comments, each found again by its own marker and edited in place
+// (GitHub takes 65,536 characters a comment). Before 0.27.1 it was cut at 60,000 characters, sometimes inside <details>.
+export const partMarker = (n) => `<!-- readfirst:pr-comment:${n} -->`;
 const MAX_COMMENT = 60000;
 
 async function api(fetchImpl, env, method, path, body) {
@@ -38,21 +41,51 @@ export function commentBody({ list, problems, removed, commit, fixes = [], settl
   const parts = [MARKER, '## readfirst', ''];
   if (problems.length) {
     parts.push(`> [!WARNING]\n> \`${MAP_PATH}\` no longer matches the code (${problems.length} problem${problems.length > 1 ? 's' : ''}). Run \`npx readfirst check\` and fix the map in this PR.`, '');
-    parts.push(...problems.slice(0, 20).map((p) => `- ${p}`), ...(problems.length > 20 ? [`- …and ${problems.length - 20} more`] : []), '');
-    if (fixes.length) parts.push('`npx readfirst fix` would make these changes:', ...fixes.slice(0, 10).map((f) => `- ${f}`), ...(fixes.length > 10 ? [`- …and ${fixes.length - 10} more`] : []), '');
+    parts.push(...problems.map((p) => `- ${p}`), '');
+    if (fixes.length) parts.push('`npx readfirst fix` would make these changes:', ...fixes.map((f) => `- ${f}`), '');
   } else if (committed) {
-    parts.push(`<details><summary>readfirst placed ${settled.length} new file(s) in the map and committed it to this branch (${committed.slice(0, 7)})</summary>`, '', ...settled.slice(0, 20).map((f) => `- ${f}`), ...(settled.length > 20 ? [`- …and ${settled.length - 20} more`] : []), '', 'Pull before your next push.', '</details>', '');
+    parts.push(`<details><summary>readfirst placed ${settled.length} new file(s) in the map and committed it to this branch (${committed.slice(0, 7)})</summary>`, '', ...settled.map((f) => `- ${f}`), '', 'Pull before your next push.', '</details>', '');
   } else if (settled.length) {
-    parts.push(`<details><summary>New files placed by their neighbours (${settled.length})</summary>`, '', ...settled.slice(0, 20).map((f) => `- ${f}`), ...(settled.length > 20 ? [`- …and ${settled.length - 20} more`] : []), '', '`npx readfirst fix` writes this into the map; nothing to do for this PR.', '</details>', '');
+    parts.push(`<details><summary>New files placed by their neighbours (${settled.length})</summary>`, '', ...settled.map((f) => `- ${f}`), '', '`npx readfirst fix` writes this into the map; nothing to do for this PR.', '</details>', '');
   }
   if (list) parts.push(toMarkdown(list, { checklist: true, heading: null, broke: false, fold: true }));
   else if (!problems.length && !broke.length) parts.push('No changed files to look up.', '');
   parts.push(...brokeSection(broke, { title: 'Files in this PR that broke before', hint: FETCH_DEPTH_HINT }));
   if (removed.length) parts.push(`Removed in this PR: ${removed.map((f) => `\`${f}\``).join(', ')}`, '');
   parts.push(`<sub>From \`${MAP_PATH}\`${commit ? ` at ${commit.slice(0, 7)}` : ''}. Tick each check once it has run.</sub>`);
-  let body = parts.join('\n');
-  if (body.length > MAX_COMMENT) body = `${body.slice(0, MAX_COMMENT)}\n\n…cut here: run \`npx readfirst diff\` for the whole list.`;
-  return body;
+  return parts.join('\n');
+}
+
+// The comment body in pieces of at most `max` characters, cut only between top-level blocks; a <details> block too long
+// for one piece is closed and opened again in the next with "(continued)", and a single line longer than a piece (none
+// is in practice) is split where it must be. Nothing is left out: the pieces joined hold every line of the body.
+export function splitComment(body, max = MAX_COMMENT) {
+  if (body.length <= max) return [body];
+  const room = max - 400; // the part heading and the "continued" lines
+  const pieces = [];
+  let cur = [];
+  let size = 0;
+  let open = null; // the <details> line of a block still open in `cur`
+  const flush = () => {
+    if (open) cur.push('', '</details>');
+    pieces.push(cur.join('\n'));
+    cur = open ? [open.replace(/<\/summary>$/u, ' (continued)</summary>'), ''] : [];
+    size = cur.reduce((n, l) => n + l.length + 1, 0);
+  };
+  for (const line of body.split('\n')) {
+    const lines = line.length > room ? line.match(new RegExp(`[\\s\\S]{1,${room}}`, 'gu')) : [line];
+    for (const l of lines) {
+      if (size + l.length + 1 > room && cur.length) flush();
+      cur.push(l);
+      size += l.length + 1;
+      if (/^<details>/u.test(l)) open = l;
+      if (l === '</details>') open = null;
+    }
+  }
+  if (cur.length) pieces.push(cur.join('\n'));
+  return pieces.map((p, i) => (i === 0
+    ? `${p}\n\n<sub>Continued in the next comment (part 2 of ${pieces.length}).</sub>`
+    : `${partMarker(i + 1)}\n## readfirst, part ${i + 1} of ${pieces.length}\n\n${p}${i + 1 < pieces.length ? `\n\n<sub>Continued in the next comment (part ${i + 2} of ${pieces.length}).</sub>` : ''}`));
 }
 
 export async function runAction({ env = process.env, fetchImpl = fetch, root = env.GITHUB_WORKSPACE ?? process.cwd(), log = (s) => process.stdout.write(`${s}\n`) } = {}) {
@@ -78,6 +111,13 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
     return { ok: !(problems.length && failOnProblems), problems };
   }
   const repo = env.GITHUB_REPOSITORY;
+  // `limit`: how many tests and users per section; empty (the default) lists all. A value that is not a whole number
+  // above 0 lists all too, with a warning, rather than none.
+  let limit = Infinity;
+  if ((env.INPUT_LIMIT ?? '') !== '') {
+    limit = Number(env.INPUT_LIMIT);
+    if (!Number.isInteger(limit) || limit < 1) { log(`::warning::readfirst: limit "${env.INPUT_LIMIT}" is not a whole number above 0; listing every test and user.`); limit = Infinity; }
+  }
   const changed = await pages(fetchImpl, env, `/repos/${repo}/pulls/${pr.number}/files`);
   const committed = (env['INPUT_AUTO-FIX'] ?? env.INPUT_AUTO_FIX ?? 'false') === 'true' && settled.length
     ? await commitFix({ fetchImpl, env, repo, pr, raw, fixed: map, settled, log })
@@ -89,7 +129,7 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   // A renamed file's old path is looked up as well: its old group's checks, and files that still import the old path.
   const paths = [...new Set(changed.flatMap((f) => (f.status === 'renamed' && f.previous_filename ? [f.filename, f.previous_filename] : [f.filename])))];
   const list = changed.length && !problems.length
-    ? readList({ map, files, imports: edgesWith(files, paths, readText(root)), targets: paths, before: raw, commit: pr.head?.sha ?? null, limit: Number(env.INPUT_LIMIT || 30), read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
+    ? readList({ map, files, imports: edgesWith(files, paths, readText(root)), targets: paths, before: raw, commit: pr.head?.sha ?? null, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
     : null;
   // From the checkout's git log at the PR's base (not the PR's own commits), whatever the map says. A checkout fetched at depth 1 has none: that is said, not hidden.
   const found = brokeBefore(root, targets, new Set(files), baseRevision(root, pr.base?.sha));
@@ -104,16 +144,29 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
     // for good (2026-11-09).
     // Each marked comment is tried in turn, bots' first, then newest first, and a new one is posted only when none can be
     // edited: with a personal token our comment is a user's too, and posting at every push would break one-pr-comment.
-    const marked = comments.filter((c) => typeof c.body === 'string' && c.body.startsWith(MARKER));
-    const order = [...marked.filter((c) => c.user?.type === 'Bot'), ...marked.filter((c) => c.user?.type !== 'Bot').reverse()];
-    const post = () => api(fetchImpl, env, 'POST', `/repos/${repo}/issues/${pr.number}/comments`, { body });
-    try {
-      let updated = false;
+    // A long read list is several comments (splitComment), each found by its own marker; parts a longer list left from
+    // an earlier push are emptied with a line saying so, never deleted.
+    const pieces = splitComment(body);
+    const markerOf = (n) => (n === 1 ? MARKER : partMarker(n));
+    const markedWith = (m) => comments.filter((c) => typeof c.body === 'string' && c.body.startsWith(m));
+    const stale = [];
+    for (let n = pieces.length + 1; markedWith(markerOf(n)).length; n++) stale.push(n);
+    const write = async (n, text) => {
+      const marked = markedWith(markerOf(n));
+      const order = [...marked.filter((c) => c.user?.type === 'Bot'), ...marked.filter((c) => c.user?.type !== 'Bot').reverse()];
       for (const c of order) {
-        try { await api(fetchImpl, env, 'PATCH', `/repos/${repo}/issues/comments/${c.id}`, { body }); updated = true; break; } catch (e) { if (!/: 40[34] /u.test(e.message)) throw e; }
+        try { await api(fetchImpl, env, 'PATCH', `/repos/${repo}/issues/comments/${c.id}`, { body: text }); return true; } catch (e) { if (!/: 40[34] /u.test(e.message)) throw e; }
       }
-      if (!updated) await post();
-      log(`${updated ? 'updated' : 'posted'} the readfirst comment on #${pr.number}`);
+      return false;
+    };
+    try {
+      let posted = 0;
+      for (const [i, text] of pieces.entries()) {
+        if (!(await write(i + 1, text)) && text) { await api(fetchImpl, env, 'POST', `/repos/${repo}/issues/${pr.number}/comments`, { body: text }); posted++; }
+      }
+      for (const n of stale) await write(n, `${partMarker(n)}\n## readfirst, part ${n}\n\nNothing here since ${pr.head?.sha?.slice(0, 7) ?? 'the latest push'}: the read list fits in the first comment${pieces.length > 1 ? `s (${pieces.length})` : ''} now.`);
+      const updated = posted === 0;
+      log(`${updated ? 'updated' : 'posted'} the readfirst comment${pieces.length > 1 ? `s (${pieces.length})` : ''} on #${pr.number}`);
     } catch (e) {
       // A PR from a fork gets a read-only token: the read list stays in the job summary.
       if (!/: 403 /u.test(e.message)) throw e;

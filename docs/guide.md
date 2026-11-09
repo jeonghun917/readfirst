@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.27.0 read <file>` (and `jeonghun917/readfirst@v0.27.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.27.1 read <file>` (and `jeonghun917/readfirst@v0.27.1` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -113,9 +113,15 @@ npx readfirst hook --install
 
 adds a hook to `.claude/settings.json`. Before each Edit or Write, and before a Bash command that writes files (a
 redirect, `sed -i`, `tee`, `cp` or `mv` into the repository, a script that writes), Claude Code gets the rules, risks and
-checks for those files as context, once per file per session. Nothing to remember, and the edit is never blocked. If
+checks for those files as context, once per file per session: every file the command writes and every line, nothing
+cut (a line that holds for only some of the files names them). Nothing to remember, and the edit is never blocked. If
 `.readfirst/map.json` is broken (a rule naming a file you renamed), the notes say so first. If the hook command itself is
 wrong (an option this readfirst does not know), it warns and lets the call through instead of refusing it.
+
+In a large repository the first look-up builds the import graph (about 3 s at 22,000 files); later calls reuse it from
+the temp folder until a commit or a new file (about 0.1 s). If a call writes more files than the hook can look up in its
+time, the notes name the files it skipped, the Stop hook still checks them, and the next call that writes them gets
+their notes.
 
 Want it read for sure, not just offered? Change the command to `npx --yes readfirst hook --gate`: the first call that
 touches a file whose notes Claude Code has not seen is refused with the notes as the reason, and the same call goes
@@ -131,7 +137,10 @@ also adds a Stop hook: before Claude Code finishes its turn, it runs the map's c
 session. If one fails, Claude Code cannot finish yet and gets the failure to fix. It gets one try per turn, so a check
 it cannot fix never traps the session. It runs only check commands that the map on your main branch already lists: a
 command someone's branch adds or changes is named, not run, until it is merged (`npx readfirst verify` runs it when you
-choose to). On main itself with no `origin/main`, files committed during the session count as edited too.
+choose to). If any of the checks did not run, the stop is blocked once with the commands that did not run, and Claude
+Code is asked to run `npx readfirst verify` or say why they need not run; the same files at the same state are not
+blocked again. On main itself with no `origin/main`, files committed during the session count as edited too, and files
+changed during the session by a command readfirst cannot read (a script, a generator) are checked and named.
 
 A session started in a folder above your repositories works too: each edited file belongs to the repository that holds
 it, and the Stop hook runs each repository's checks. Put the hook in that folder's `.claude/settings.json` with the
@@ -264,7 +273,8 @@ jobs:
       - uses: jeonghun917/readfirst@v0
 ```
 
-Each PR gets one comment, updated on every push, that lists:
+Each PR gets one comment, updated on every push (a read list longer than one comment goes on in a second, also updated
+in place; nothing is cut), that lists:
 - the rules, risks and checks for the files the PR changes, with the checks as boxes to tick; risks written for a
   changed file stay open, and those that only share its group are folded under a summary with their count;
 - the tests that reach the changed code, the files that use it and its hot spots, folded the same way;
@@ -284,7 +294,7 @@ lists what `npx readfirst fix` would change.
 | `strict` | `false` | `true` also fails on new files that are only placed by their neighbours |
 | `comment` | `true` | `false` writes only the job summary |
 | `auto-fix` | `false` | `true` commits what `readfirst fix` settles (new files placed by their neighbours) to the PR branch |
-| `limit` | `30` | most tests and users listed per section |
+| `limit` | (all) | most tests and users listed per section; a cut list says how many it left out |
 
 On a PR from a fork, the token is read-only. The list then goes to the job summary instead of a comment.
 

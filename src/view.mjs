@@ -4,14 +4,15 @@ import { groupOf, matcher } from './map.mjs';
 import { readList } from './readlist.mjs';
 
 // What the page needs, per file: its group, its read list in short form, and its marks.
-export function viewData({ map, files, imports, name = 'repository', limit = 5 }) {
+export function viewData({ map, files, imports, name = 'repository' }) {
   const placed = files.filter((f) => groupOf(map, f));
   const byGroup = new Map(map.groups.map((g) => [g.id, []]));
   const fileRows = {};
   for (const f of placed) {
     const g = groupOf(map, f);
     byGroup.get(g.id).push(f);
-    const list = readList({ map, files, imports, targets: [f], limit });
+    // Every test and user: with a limit of 5 the page showed five tests as if they were all, and counted five users.
+    const list = readList({ map, files, imports, targets: [f] });
     fileRows[f] = {
       g: g.id,
       rules: list.rules.map((r) => [r.id, r.rule, r.why ?? '']),

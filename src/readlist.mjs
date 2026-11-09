@@ -73,7 +73,9 @@ export const emptyList = (commit = null) => ({ format: READ_LIST_FORMAT, commit,
 // entries and does not call files "not covered".
 // `before`: the map as written, when `map` is settled. Settling drops a pattern that matches no file any more, so the
 // last file moved out of a folder lost its group and that group's checks; a target that is gone is looked up there too.
-export function readList({ map: mapIn, files, imports, targets, commit = null, limit = 30, read = () => null, held = null, broke = {}, before = null }) {
+// limit: how many tests and direct users to list (`--limit`, the Action's `limit` input); none by default, and a cut list
+// says in `truncated` how many it left out. Before 0.27.1 it was 30 (10 in the hook, 5 in view) whether asked or not.
+export function readList({ map: mapIn, files, imports, targets, commit = null, limit = Infinity, read = () => null, held = null, broke = {}, before = null }) {
   if (!targets.length || targets.some((t) => !t.trim())) throw new Error('give at least one file path, none empty');
   const mapped = mapIn !== null && mapIn !== undefined;
   const map = mapped ? mapIn : { format: 'readfirst/map@1', groups: [] };
@@ -149,7 +151,7 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
       // A deleted or moved-away file that tracked files still import: the change breaks them unless they change too.
       const users = out.usedBy.filter((u) => u.for.includes(target)).map((u) => u.path);
       const nc = out.notCovered.find((n) => n.path === target);
-      if (users.length && nc) nc.why = `not a tracked file at this commit, but still imported by ${users.slice(0, 5).join(', ')}${users.length > 5 ? ` and ${users.length - 5} more` : ''}: change them too, or they break`;
+      if (users.length && nc) nc.why = `not a tracked file at this commit, but still imported by ${users.join(', ')}: change them too, or they break`;
       continue;
     }
     if (isTest(target)) note('tests', target, { path: target, via: null }, target);

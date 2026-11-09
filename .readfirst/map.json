@@ -9,7 +9,8 @@
         "src/cli.mjs",
         "src/prompt.mjs",
         "src/mcp.mjs",
-        "src/pending.mjs"
+        "src/pending.mjs",
+        "src/hook-cache.mjs"
       ],
       "checks": [
         {
@@ -53,7 +54,7 @@
           "text": "runHook swallows every error and returns null (exit 0, no output), so a bug in it looks the same as 'nothing to say' and the edit goes ahead; only a test with real map data would catch it. It also uses repoFiles, readMapFile and mapProblems, so changes there change the hook. A map broken in itself (a rule naming a renamed file, bad JSON) does not silence it: both hooks open with brokenMapLine and still give what the map gives (the Stop hook blocks once with it); before 0.26.4 they said nothing for the whole repository"
         },
         {
-          "text": "verify runs the map's check commands with the shell in the repository root; a map is repository content and its commands run with the user's rights, so verify stays an explicit command, never called from the PreToolUse hook or the Action. The one exception is the opt-in Stop hook (`hook --install --verify`), and it runs only commands the base branch's map already lists (trustedRuns): a command a branch adds or changes is named, never run, so checking out someone's branch cannot run their new command. On the base branch itself (main with no origin/main) trustedRuns reads the map at the last commit older than the session's first mark, never HEAD: in 0.26.4 a command the session committed to the map ran. Every file readfirst writes in the checkout (init, fix, export --cursor, verify --record, view's default page) goes through mustBeInside first, and setup through outsideRepo: a symlink that leads outside the repository stops the write",
+          "text": "verify runs the map's check commands with the shell in the repository root; a map is repository content and its commands run with the user's rights, so verify stays an explicit command, never called from the PreToolUse hook or the Action. The one exception is the opt-in Stop hook (`hook --install --verify`), and it runs only commands the base branch's map already lists (trustedRuns): a command a branch adds or changes is named, never run, so checking out someone's branch cannot run their new command. On the base branch itself (main with no origin/main) trustedRuns reads the map at the last commit older than the session's first mark, never HEAD: in 0.26.4 a command the session committed to the map ran. Every file readfirst writes in the checkout (init, fix, export --cursor, verify --record, view's default page) goes through mustBeInside first, and setup through outsideRepo: a symlink that leads outside the repository stops the write A check the Stop hook does not run blocks the stop once per state of the files (a `notrun:` mark in the hook state) and tells the agent to run `npx readfirst verify`; before 0.27.1 it passed with a note.",
           "files": [
             "src/cli.mjs"
           ]
@@ -86,6 +87,25 @@
           "files": [
             "src/pending.mjs",
             "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "hook state keys (src/cli.mjs): a file's absolute path (notes shown; checked at the stop), `touched:<path>` (no time left to look it up: checked at the stop, looked up on the next call), `start:<root>` (the session's first call in that repository that wrote nothing readfirst can name: the Stop hook then also checks every changed file whose mtime is newer, so a file a script wrote is not skipped), `pending:<root>` and `notrun:<root>:<state>` (the stop already blocked once for checks that did not run at this state of the files). runStopHook skips pending and notrun: a new kind of key must go into its tag list, or it is read as a file path.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "the PreToolUse hook gives every file a call writes its notes, each repository's lines once (a line for only some files names them) and every line, with nothing cut (0.27.1; before, the first 10 files and 12 lines a file, and files 11 and on were never checked at the stop). It has a budget (runHook's `budget`, 10 s of the 15 s Claude Code allows): files it had no time for are named in the notes, marked `touched:` for the Stop hook and looked up on the next call; with --gate the call is refused so it is made again. Speed comes from src/hook-cache.mjs, never from leaving files or lines out.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "src/hook-cache.mjs keeps the import graph and brokeBefore results per repository in the hook's state folder between calls (mode 600; a file another user owns is ignored), keyed by HEAD, the file list, the changed config files and the readfirst version. Edges from changed JS/TS/Python/JSON files are read again from the files; any other changed file (Go, C#, Java: their edges depend on other files' text) rebuilds the whole graph. A new file importEdges reads to resolve imports (beside package.json, tsconfig/jsconfig) must go into CONFIG there, or edits to it are served stale. sentry (22,494 files): 3.1 s cold, 85 ms warm, the same edges as a full rebuild.",
+          "files": [
+            "src/hook-cache.mjs",
+            "src/imports.mjs"
           ]
         }
       ]
@@ -159,6 +179,12 @@
           "text": "action.yml runs `node` itself (composite): a self-hosted runner without Node gets a clear ::error:: from the `command -v node` guard instead of 'command not found'; the Action does not set up Node, because actions/setup-node would change the Node of the user's later steps",
           "files": [
             "action.yml"
+          ]
+        },
+        {
+          "text": "a read list longer than one comment is split by splitComment (60,000 characters a part, cut only between top-level blocks; a <details> block is closed and reopened with '(continued)'); part N starts with partMarker(N), `<!-- readfirst:pr-comment:N -->`, and is found by it on the next push, as part 1 is by MARKER. Changing partMarker gives every open PR new parts; the job summary gets the whole body unsplit.",
+          "files": [
+            "src/action.mjs"
           ]
         }
       ]
@@ -285,6 +311,20 @@
           "text": "a target that is not tracked (deleted in the change, or new and not added) keeps status NOT_TRACKED and its 'not a tracked file' note, but readList still gives it its group's checks, risks and deprecation, and the rules, requires and dependents entries that match its path: verify, diff and the Action (which passes removed files too) rely on this so a change made only of deletions still runs its group's checks. It gets no tests or unseen entries; since 0.27.0 its users are listed, from import edges built over the tracked files plus the targets (edgesWith), with a 'still imported by' note, and a target that settling left in no group is looked up in the map as written (`before`). - src/readlist.mjs:102",
           "files": [
             "src/readlist.mjs"
+          ]
+        },
+        {
+          "text": "readList lists every test and direct user unless a limit is passed (`read --limit`, the Action's `limit` input), and `truncated` says how many a limit cut. No caller passes a limit of its own any more (the hook passed 10, view 5 and the Action 30 before 0.27.1, and view counted the five as all the users): a new caller that cuts a list must say what it cut.",
+          "files": [
+            "src/readlist.mjs",
+            "src/view.mjs"
+          ]
+        },
+        {
+          "text": "the hooks keep importEdges' result between calls (src/hook-cache.mjs): edges from a changed JS/TS/Python/JSON file are read again from that file alone, with the config files in its CONFIG (package.json, tsconfig/jsconfig, pyproject.toml, setup.py, setup.cfg). A resolver that starts reading another file, or edges of those languages that come to depend on other files' text, must be added there, or the hook serves stale edges until the next commit.",
+          "files": [
+            "src/imports.mjs",
+            "src/langs.mjs"
           ]
         }
       ]
@@ -480,8 +520,8 @@
     },
     {
       "id": "one-pr-comment",
-      "rule": "the Action keeps a single comment per PR and updates it in place on each push",
-      "why": "a new comment on every push floods the PR",
+      "rule": "the Action keeps one comment per PR, plus one more for each 60,000 characters a long read list needs, and edits them in place on each push; a part a longer list left behind is emptied with a line saying so, never deleted, and nothing in the comment is cut",
+      "why": "a new comment on every push floods the PR, and a comment cut short hides what the map says (it was cut at 60,000 characters until 0.27.1)",
       "files": [
         "src/action.mjs"
       ],
