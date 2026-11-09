@@ -449,7 +449,8 @@ export function unshownRisks(map, files) {
     for (const m of text.matchAll(PATH)) {
       const t = m[1].replace(/^\.\//u, '').replace(/\.+$/u, '');
       const path = tracked.has(t) ? t : !t.includes('/') && byName.get(t) ? byName.get(t) : null;
-      if (path) out.add(path);
+      // readfirst's own files (the map, held.json, the Cursor export) show no risks at all: naming them is no misplacement.
+      if (path && !isOwnFile(path)) out.add(path);
     }
     return out;
   };

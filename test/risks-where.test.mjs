@@ -33,6 +33,7 @@ const MAP = JSON.stringify({ format: MAP_FORMAT, groups: [
     { text: 'the hook reads shell commands through bashWrites: a syntax it misses is a write never checked', files: ['src/bash.mjs'] },
     { text: 'src/bash.mjs splits commands at ; && and |' },
     { text: 'runHook swallows errors, so a change here also changes src/bash.mjs callers' },
+    { text: '.readfirst/map.json is read by loadMap', files: ['src/cli.mjs'] },
   ] },
   { id: 'core', title: 'core', files: ['src/bash.mjs'] },
 ] });
@@ -56,7 +57,7 @@ test('check says which risks are about a file that does not show them, and which
   assert.match(plain.out, /risks about a file that does not show them[^\n]*:\n- groups\.cli\.risks\[2\] is about src\/bash\.mjs/u);
   assert.match(plain.out, /risks that mention a file which does not show them[^\n]*:\n- groups\.cli\.risks\[3\] mentions src\/bash\.mjs/u);
   const json = JSON.parse(run(root, 'check', '--json').out);
-  assert.deepEqual(json.unshown.map((u) => [u.index, u.about]), [[2, true], [3, false]]);
+  assert.deepEqual(json.unshown.map((u) => [u.index, u.about]), [[2, true], [3, false]], "readfirst's own files (the map) show no risks: naming one is no misplacement");
   const strict = run(root, 'check', '--strict');
   assert.equal(strict.code, 1);
   assert.match(strict.out, /groups\.cli\.risks\[2\] is about src\/bash\.mjs/u);
