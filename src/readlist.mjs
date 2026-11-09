@@ -169,7 +169,9 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
   out.usedByIndirectly = indirect.size;
   out.tests.sort((a, b) => Number(a.via !== null) - Number(b.via !== null) || a.path.localeCompare(b.path));
   out.truncated = { tests: Math.max(0, out.tests.length - limit), usedBy: Math.max(0, out.usedBy.length - limit) };
+  // cut: only when a limit was asked for; `truncated` counts the rest, said as "…and N more" (toMarkdown)
   out.tests = out.tests.slice(0, limit);
+  // cut: see above
   out.usedBy = out.usedBy.slice(0, limit);
   return out;
 }

@@ -68,6 +68,7 @@ export function scar(message) {
   let fix = labelled || listed || FIX_ELSEWHERE.test(bare) || /\bfix(?:es|ed)?\s+#\d+/iu.test(first);
   for (const c of parts) {
     if (ONLY_TESTS.test(c) || COSMETIC.test(c)) continue;
+    // cut: not a list for output: revert, rollback and hotfix count at the start of any clause; the rest are tried below
     for (const [weight, kind, re] of SIGNALS.slice(0, 3)) if (re.test(c)) return { weight, kind };
     const last = c.match(FIX_LAST);
     if (last?.[1]) return { weight: 2, kind: 'hotfix' };

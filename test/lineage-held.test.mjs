@@ -57,7 +57,15 @@ test('audit lists code being replaced that other code still imports', () => {
   const imports = [{ from: 'app/pay.js', to: 'legacy/charge.js', line: 1 }, { from: 'app/pay.test.js', to: 'legacy/charge.js', line: 1 }, { from: 'legacy/charge.js', to: 'billing/charge.js', line: 1 }];
   const a = audit({ map: MAP(), files: FILES, imports });
   assert.deepEqual(a.replacing.find((d) => d.group === 'legacy'), { group: 'legacy', use: 'billing', why: 'moving to billing/ by Q1', users: 1, files: ['app/pay.js'] });
-  assert.match(auditText(a), /## Code being replaced that is still used\n\n- group \*\*legacy\*\* \(use `billing`\): imported by 1 file\(s\) outside it, e\.g\. `app\/pay.js`/u);
+  assert.match(auditText(a), /## Code being replaced that is still used\n\n- group \*\*legacy\*\* \(use `billing`\): imported by 1 file\(s\) outside it: `app\/pay.js`/u);
+});
+
+test('audit names every file still importing code being replaced (it named five and counted the rest)', () => {
+  const users = Array.from({ length: 18 }, (_, i) => `app/u${String(i).padStart(2, '0')}.js`);
+  const a = audit({ map: MAP(), files: [...FILES, ...users], imports: users.map((from) => ({ from, to: 'legacy/charge.js', line: 1 })) });
+  const legacy = a.replacing.find((d) => d.group === 'legacy');
+  assert.equal(legacy.files.length, legacy.users, '--json lists them all');
+  assert.match(auditText(a), /imported by 18 file\(s\) outside it: `app\/u00\.js`[^\n]*, and 3 more: `app\/u15\.js`, `app\/u16\.js`, `app\/u17\.js`/u);
 });
 
 test('held: a rule holds when every check of it passed; the record keeps the commit and drops rules the map lost', () => {

@@ -469,6 +469,12 @@
         },
         {
           "text": "the hook test calls main(['hook']) without a stateDir, so it writes to the real temp folder and relies on a unique session_id; reusing a fixed id would make the hook print nothing on later runs"
+        },
+        {
+          "text": "test/silent-cuts.test.mjs finds cuts by their shape, not by meaning: a slice to a number, an UPPER_CASE constant or max/limit/count, a push under such a bound, a loop stopped at one. A cut of text is told apart by its receiver (sha, hash, title, subject, message, body, String(), a string method): a list named like one of those, or a cut to a bound of another name (k, at, end), is not looked at. When it misses one, widen the shapes; do not add a cut: note to pass it",
+          "files": [
+            "test/silent-cuts.test.mjs"
+          ]
         }
       ]
     },

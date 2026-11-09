@@ -156,7 +156,9 @@ export function find({ query, files, imports = [], read = () => null, map = null
     query,
     words: asked,
     searched: { files: code.length, definitions: defs, groups: map?.groups.length ?? 0, rules: map?.rules?.length ?? 0 },
+    // cut: `more` counts the rest of both lists, said as "…and N more (--limit)"
     code: codeHits.slice(0, limit).map(({ it, matched, exact, inDoc }) => ({ kind: it.kind, ...(it.name ? { name: it.name } : {}), file: it.file, ...(it.line ? { line: it.line } : {}), group: group(it.file), usedBy: users.get(it.file) ?? 0, test: it.test, matched, exact, ...(inDoc.length ? { inComment: inDoc } : {}), ...(replaced(it.file) ? { deprecated: { use: replaced(it.file).use ?? null } } : {}) })),
+    // cut: see above
     map: mapHits.slice(0, limit).map(({ it, matched }) => ({ kind: it.kind, ...(it.id ? { id: it.id } : {}), ...(it.group ? { group: it.group } : {}), text: it.text, matched })),
     more: { code: Math.max(0, codeHits.length - limit), map: Math.max(0, mapHits.length - limit) },
     notSearched: [...other].sort(),

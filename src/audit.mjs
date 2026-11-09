@@ -180,7 +180,7 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
   const replacing = map.groups.filter((g) => g.deprecated).map((g) => {
     const inside = matcher(g.files);
     const users = [...new Set(imports.filter((e) => inside(e.to) && !inside(e.from) && !isTest(e.from)).map((e) => e.from))].sort();
-    return { group: g.id, use: g.deprecated.use ?? null, why: g.deprecated.why, users: users.length, files: users.slice(0, 5) };
+    return { group: g.id, use: g.deprecated.use ?? null, why: g.deprecated.why, users: users.length, files: users };
   });
 
   // When rules last held (verify --record): never recorded, or their files changed in commits after that.
@@ -266,7 +266,8 @@ export function auditText(a) {
   section('Hot spots no longer at their line', a.hotspots.map((h) => `- \`${h.symbol}\` in \`${h.file}\`: map says line ${h.line}, ${h.status === 'MOVED' ? `now line ${h.now}` : 'not found in the file'}`));
   section('Hot spots nothing checks (no test reaches their file, and no check of their own in the map)', firstThenNamed(a.unguarded, (h) =>
     `- \`${h.symbol}\` in \`${h.file}:${h.line}\`: ${h.labels.join(', ')}`, (h) => `\`${h.symbol}\` (\`${h.file}:${h.line}\`)`));
-  section('Code being replaced that is still used', a.replacing.filter((d) => d.users).map((d) => `- group **${d.group}**${d.use ? ` (use \`${d.use}\`)` : ''}: imported by ${d.users} file(s) outside it, e.g. ${d.files.map((f) => `\`${f}\``).join(', ')}`));
+  // cut: the files past TOP are named on the same line
+  section('Code being replaced that is still used', a.replacing.filter((d) => d.users).map((d) => `- group **${d.group}**${d.use ? ` (use \`${d.use}\`)` : ''}: imported by ${d.users} file(s) outside it: ${d.files.slice(0, TOP).map((f) => `\`${f}\``).join(', ')}${d.files.length > TOP ? `, and ${d.files.length - TOP} more: ${d.files.slice(TOP).map((f) => `\`${f}\``).join(', ')}` : ''}`));
   if (a.held) section('When rules last held (.readfirst/held.json)', [
     ...firstThenNamed(a.held.changed, (h) => `- rule **${h.id}**: held at ${h.commit} on ${h.date}; ${h.commits} commit(s) changed its files since. Run \`readfirst verify --record\` again.`, (h) => h.id, 'more rules changed since they held'),
     ...(a.held.never.length ? [`- never recorded as holding: ${a.held.never.join(', ')}`] : []),
