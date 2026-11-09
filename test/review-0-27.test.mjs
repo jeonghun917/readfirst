@@ -101,3 +101,22 @@ test('hook --gate whose state cannot be saved passes the notes as context instea
     assert.match(out.hookSpecificOutput.additionalContext, /npm test/u);
   }
 });
+
+test('Bash: numbered and >| redirects, subshell and pushd folders, globs and ~ are writes; arithmetic, comments, patch -p and remote rsync are not', async () => {
+  const { bashWrites } = await import('../src/bash-writes.mjs');
+  const { homedir } = await import('node:os');
+  const dir = mkdtempSync(join(tmpdir(), 'readfirst-27-bash-'));
+  mkdirSync(join(dir, 'src'));
+  mkdirSync(join(dir, 'd'));
+  for (const f of ['src/a.js', 'src/b.js', 'real.js']) writeFileSync(join(dir, f), '');
+  const at = (c) => bashWrites(c, dir).map((p) => (p.startsWith(`${dir}/`) ? p.slice(dir.length + 1) : p)).sort();
+  for (const [c, want] of [
+    ['npm test 2> err.log', ['err.log']], ['cmd > out.txt 2> err.txt', ['err.txt', 'out.txt']], ['exec 2> e.log', ['e.log']],
+    ['echo x >| a.txt', ['a.txt']], ['echo x |& tee t.txt', ['t.txt']],
+    ['(cd d && echo x > a.txt)', ['d/a.txt']], ['pushd d && echo x > p.txt', ['d/p.txt']], ['cd - && echo x > m.txt', []],
+    ['sed -i s/a/b/ src/*.js', ['src/a.js', 'src/b.js']], ['echo x > ~/x.txt', [join(homedir(), 'x.txt')]],
+    ['git -C d checkout -- f.js', ['d/f.js']], ['git -c core.x=1 checkout -- real.js', ['real.js']],
+    ['(( x > 0 ))', []], ['echo a # b > c.txt', []], ['cp a b.txt # c d', ['b.txt']], ['patch -p 1 < a.patch', []],
+    ['rsync -a a host:b', []], ['rsync -n a b', []], ['npm test 2>&1 | tail', []], ['echo x >&2', []], ['cmd 2>/dev/null', []],
+  ]) assert.deepEqual(at(c), want, c);
+});

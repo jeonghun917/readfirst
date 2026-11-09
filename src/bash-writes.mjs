@@ -29,6 +29,21 @@ const WRAPPERS = new Map([
   ['exec', /^-a$/u],
   ['time', null], ['nohup', null], ['command', null], ['stdbuf', null], ['chronic', null],
 ]);
+// A subshell or group opens with `(` or `{`: `(cd d && ...)` runs cd.
+function opening(ws) {
+  if (!ws.length) return ws;
+  const first = ws[0].replace(/^[({]+/u, '');
+  return first ? [first, ...ws.slice(1)] : ws.slice(1);
+}
+// The files patch writes: the positional file after its options; -p/-i/-d/-o and the rest take a value.
+function patchFiles(args) {
+  const out = [];
+  for (let i = 0; i < args.length; i++) {
+    if (/^-[pidoDrBFVYz]$/u.test(args[i])) { i++; continue; }
+    if (!args[i].startsWith('-')) out.push(args[i]);
+  }
+  return out.slice(0, 1);
+}
 function unwrap(ws) {
   let i = 0;
   for (;;) {
@@ -170,6 +185,10 @@ const words = (segment) => segment.match(/'[^']*'|"(?:\\.|[^"\\])*"|[^\s]+/gu) ?
 // Where `cd target` moves from `from`: null when that cannot be known (a variable: `cd $D`, `cd "$(dirname x)"`), and
 // relative paths after it are then not named at all rather than named under the wrong folder (2026-11-08: `cd $D`
 // made the hook show `$D/a.test.js`).
+// The folder after a cd-like word: pushd works as cd; `cd -`, a bare `cd`, `popd` and `pushd` with no folder leave
+// it unknown (null), so relative paths after them are not named rather than named in the wrong folder.
+const CD = /^(?:cd|pushd|popd)$/u;
+const stepTo = (from, cmd, arg) => (cmd === 'popd' || !arg || arg === '-' || arg.startsWith('+') || arg.startsWith('-') ? null : moveTo(from, arg));
 const moveTo = (from, target) => {
   const t = unquote(target);
   if (/[$`]/u.test(t)) return null;
@@ -237,11 +256,20 @@ function blank(s) {
 }
 // Command segments split at && || ; | and newlines outside quotes: node -e "a; fs.writeFileSync(...)" is one segment
 // (split inside the quotes, the write call never reached its -e argument, 2026-11-08).
+// An unquoted `#` at the start of a word begins a comment to the end of the line: `cp a b # c d` copies to b.
+function withoutComments(text) {
+  const b = blank(text);
+  let out = '';
+  let at = 0;
+  for (const m of b.matchAll(/(?<=^|[ \t;])#[^\n]*/gmu)) { out += text.slice(at, m.index); at = m.index + m[0].length; }
+  return out + text.slice(at);
+}
 const segments = (shell) => {
   const out = [];
   let at = 0;
   // No \s* before the separator: a blanked quote is all spaces and would be taken with it.
-  for (const m of blank(shell).matchAll(/&&|\|\||;|\||\n/gu)) { out.push(shell.slice(at, m.index).trim()); at = m.index + m[0].length; }
+  // `>|` is a redirect, not a pipe; `|&` pipes stderr too and is one operator (2026-11-09).
+  for (const m of blank(shell).matchAll(/&&|\|\||;|(?<!>)\|&?|\n/gu)) { out.push(shell.slice(at, m.index).trim()); at = m.index + m[0].length; }
   out.push(shell.slice(at).trim());
   return out;
 };
@@ -258,15 +286,19 @@ export function bashWrites(command, cwd = process.cwd()) {
     try { return readdirSync(resolve(base, dir)).filter((f) => f.startsWith(pre) && f.endsWith(post)).map((f) => (dir === '.' ? f : join(dir, f))); } catch { return []; }
   };
   const add = (w) => {
-    const p = unquote(String(w)).replace(/^file:\/\//u, '');
-    if (!p || p.startsWith('-') || p.startsWith('/dev/') || /^[a-z]+:\/\//u.test(p) || p.includes('$')) return;
+    let p = unquote(String(w)).replace(/^file:\/\//u, '');
+    if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1));
+    if (!p || p.startsWith('-') || p.startsWith('/dev/') || /^[a-z]+:\/\//u.test(p) || p.includes('$') || p.includes('`')) return;
+    // A glob writes the files it matches (`sed -i ... src/*.js`): one * in the last part is expanded, anything wider
+    // or a brace list is left out rather than named as a file called `*.js`.
+    if (/[*?[{]/u.test(p)) { if (!isAbsolute(p) && base != null) glob(p).forEach((f) => found.add(resolve(base, f))); return; }
     if (isAbsolute(p)) found.add(p);
     else if (base != null) found.add(resolve(base, p));
   };
   // Where relative paths start after the `cd`s in some shell text (here-documents already taken out of it).
   const cdIn = (text) => {
     let b = cwd;
-    for (const s of segments(text)) { const ws = words(s); if (unquote(ws[0] ?? '').split('/').pop() === 'cd' && ws[1]) b = moveTo(b, ws[1]); }
+    for (const s of segments(text)) { const ws = opening(words(s)); const c = unquote(ws[0] ?? '').split('/').pop(); if (CD.test(c)) b = stepTo(b, c, ws[1] && unquote(ws[1])); }
     return b;
   };
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
@@ -275,7 +307,7 @@ export function bashWrites(command, cwd = process.cwd()) {
   let kept = ''; // the shell text up to this here-document, earlier bodies taken out
   let last = 0;
   // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`).
-  const shell = String(command ?? '').replace(/\\\r?\n/gu, ' ').replace(/([^\n]*?)<<-?\s*['"]?(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\2(?=\s|$)/gu, (all, head, tag, rest, body, offset, text) => {
+  const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' ')).replace(/([^\n]*?)<<-?\s*['"]?(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\2(?=\s|$)/gu, (all, head, tag, rest, body, offset, text) => {
     kept += `${text.slice(last, offset)}${head}`;
     last = offset + all.length;
     base = cdIn(kept);
@@ -292,13 +324,16 @@ export function bashWrites(command, cwd = process.cwd()) {
   });
   base = cwd; // the segments below follow the cds again themselves
   for (const segment of segments(shell)) {
-    const ws = unwrap(words(segment));
+    // Arithmetic and tests compare with > and <: `(( x > 0 ))`, `[[ a > b ]]` write nothing.
+    if (/^\s*(?:\(\(|\[\[)/u.test(segment)) continue;
+    const ws = unwrap(opening(words(segment)));
     const cmd = unquote(ws[0] ?? '').split('/').pop();
-    if (cmd === 'cd' && ws[1]) { base = moveTo(base, ws[1]); continue; }
+    if (CD.test(cmd)) { base = stepTo(base, cmd, ws[1] && unquote(ws[1])); continue; }
     // Redirects anywhere in the segment, not 2> or >&, and not a > inside quotes (an arrow `=>` in node -e "..." code
     // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself. &> and &>>
     // (stdout and stderr to a file) write too; the & before them once kept &> out.
-    for (const m of blank(segment).matchAll(/(?<![0-9=-])>>?(?!\s*&)/gu)) {
+    // 2> err.log, 1> out and >| write too (the digit and the | are part of the operator); 2>&1 and >&2 do not.
+    for (const m of blank(segment).matchAll(/(?<![\w=-])\d*>>?\|?(?!\s*&)/gu)) {
       // A target ends at the ) that closes a $( ): `"$(sort a > b.txt)"` writes b.txt.
       const t = segment.slice(m.index + m[0].length).match(/^\s*('[^']+'|"[^"]+"|[^\s;&|)]+)/u);
       if (t) add(t[1]);
@@ -309,10 +344,19 @@ export function bashWrites(command, cwd = process.cwd()) {
     // sed and perl write only in place; the script is the first file argument unless -e/-f gave it.
     if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
     else if (cmd === 'tee' || cmd === 'truncate') o.files.forEach(add);
-    else if (cmd === 'patch') files.forEach(add);
+    else if (cmd === 'patch') patchFiles(args).forEach(add);
     else if (['cp', 'mv', 'install'].includes(cmd) && o.values.t) add(o.values.t.at(-1));
+    else if (cmd === 'rsync' && (args.some((w) => w === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/u.test(w)) || /^(?:[\w.@-]+:|rsync:\/\/)/u.test(o.files.at(-1) ?? ''))) { /* a dry run or a remote destination */ }
     else if (['cp', 'mv', 'install', 'rsync'].includes(cmd) && o.files.length >= 2) add(o.files.at(-1));
-    else if (cmd === 'git' && /^(?:checkout|restore)$/u.test(args[0] ?? '')) gitPaths(args, here).forEach(add);
+    else if (cmd === 'git') {
+      // git's own options before the subcommand: -C <dir> runs it in that folder, -c <k=v> and --no-pager change nothing.
+      let i = 0;
+      let dir = '.';
+      while (i < args.length && args[i].startsWith('-')) {
+        if (args[i] === '-C') { dir = join(dir, args[i + 1] ?? ''); i += 2; } else if (args[i] === '-c') i += 2; else i++;
+      }
+      if (/^(?:checkout|restore)$/u.test(args[i] ?? '')) gitPaths(args.slice(i), (w) => here(join(dir, w))).forEach((p) => add(join(dir, p)));
+    }
     // `bash -c '...'`, `sh -lc "..."`: the string is commands, read the same way.
     else if (SHELLS.test(cmd) && args.findIndex((w) => /^-[a-z]*c[a-z]*$/u.test(w)) >= 0) {
       const script = args[args.findIndex((w) => /^-[a-z]*c[a-z]*$/u.test(w)) + 1];
