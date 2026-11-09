@@ -219,12 +219,20 @@ export function toMarkdown(list, { checklist = false, heading, broke = true, fol
   };
   section('Being replaced', list.deprecated ?? [], (d) => `- group **${d.group}** is being replaced${d.use ? `: use \`${d.use}\` instead` : ''} — ${d.why}${forWhom(d)}`);
   const heldNote = (r) => (r.held ? ` _(held at ${r.held.commit.slice(0, 7)} on ${r.held.date})_` : r.held === null ? ' _(never recorded as holding)_' : '');
-  section('Rules that must keep holding', list.rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${heldNote(r)}${forWhom(r)}`);
-  const risk = (r) => `- ${r.text}${forWhom(r, `group ${r.group}`)}`;
+  // Triggered or not (0.28.0, src/trigger.mjs): a row judged against the change and not triggered goes to its own section,
+  // whole, with the reason; a triggered one says what of it the change touched. Rows never judged (read) show as before.
+  const off = (r) => r.trigger?.triggered === false;
+  const touched = (r) => (r.trigger?.by?.length ? ` _(the change touches ${r.trigger.by.join(', ')})_` : '');
+  const rules = list.rules.filter((r) => !off(r));
+  const risks = list.risks.filter((r) => !off(r));
+  section('Rules that must keep holding', rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${heldNote(r)}${touched(r)}${forWhom(r)}`);
+  const risk = (r) => `- ${r.text}${touched(r)}${forWhom(r, `group ${r.group}`)}`;
   if (fold) {
-    section('Watch out', list.risks.filter((r) => r.named), risk);
-    folded(list.risks.some((r) => r.named) ? 'More to watch out for in the groups of these files' : 'Watch out (the groups of these files)', list.risks.filter((r) => !r.named), risk);
-  } else section('Watch out', list.risks, risk);
+    section('Watch out', risks.filter((r) => r.named), risk);
+    folded(risks.some((r) => r.named) ? 'More to watch out for in the groups of these files' : 'Watch out (the groups of these files)', risks.filter((r) => !r.named), risk);
+  } else section('Watch out', risks, risk);
+  folded('Not triggered by this change', [...list.rules.filter(off).map((r) => ({ ...r, line: `**${r.id}**: ${r.rule}` })), ...list.risks.filter(off).map((r) => ({ ...r, line: r.text }))],
+    (r) => `- not triggered (${r.trigger.why}): ${r.line}${forWhom(r, r.group ? `group ${r.group}` : null)}`);
   if (broke) lines.push(...brokeSection(list.targets));
   folded('Hot spots in this code', list.hotspots ?? [], (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`);
   section('Outside input reaches this code', list.flows ?? [], (f) => `- **${f.entry}** (\`${f.file}:${f.line}\`) reaches ${f.reaches.map((r) => `\`${r.symbol}\` (\`${r.file}:${r.line}\`: ${r.labels.join(', ')}${r.tables?.length ? ` on ${r.tables.map((t) => `\`${t}\``).join(', ')}` : ''}${r.inputs?.length ? `, with input ${r.inputs.map((t) => `\`${t.replace(/`/gu, "'")}\``).join(', ')}` : ''})`).join(', ')}; ${f.checks.length ? `checked by ${f.checks.map((c) => `\`${c}\``).join(', ')}` : 'no check of who may do it found on the way'}${forWhom(f)}`);
