@@ -345,8 +345,7 @@
         "CLAUDE.md",
         ".agent-marketplace.json",
         ".claude-plugin/**",
-        "plugins/**",
-        ".githooks/**"
+        "plugins/**"
       ],
       "checks": [
         {
@@ -395,13 +394,6 @@
         },
         {
           "text": "README.md links to docs/guide.md by absolute GitHub URL because npm ships only README.md (package.json \"files\"); a relative link such as docs/guide.md or ../docs/... works on GitHub but is dead on the npm page, so keep links from the README to the guide absolute"
-        },
-        {
-          "text": ".claude/hooks/no-ai-signature.mjs blocks AI signatures (the attribution trailers, footers and session links CLAUDE.md lists; named there, not here, because a PR body that quotes this risk would trip the same check) in commits (.githooks/commit-msg, set by the SessionStart hook), Claude Code tool calls and CI; the owner forbids them (CLAUDE.md). A tool that adds them by default must be turned off, not worked around",
-          "files": [
-            ".claude/hooks/no-ai-signature.mjs",
-            ".githooks/**"
-          ]
         },
         {
           "text": "every release published on GitHub fires major-tag and mcp-registry, including the plugin's (readfirst@X.Y.Z); both jobs run only for v-tags (or by hand), or a plugin release on the same commit moves nothing and lists the same server.json version first, failing the CLI release as a duplicate (v0.23.0 with readfirst@0.2.0). mcp-registry treats 'cannot publish duplicate version' as done - .github/workflows/mcp-registry.yml:14"
