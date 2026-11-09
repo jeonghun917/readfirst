@@ -68,6 +68,7 @@ export function scar(message) {
   let fix = labelled || listed || FIX_ELSEWHERE.test(bare) || /\bfix(?:es|ed)?\s+#\d+/iu.test(first);
   for (const c of parts) {
     if (ONLY_TESTS.test(c) || COSMETIC.test(c)) continue;
+    // cut: not a list for output: revert, rollback and hotfix count at the start of any clause; the rest are tried below
     for (const [weight, kind, re] of SIGNALS.slice(0, 3)) if (re.test(c)) return { weight, kind };
     const last = c.match(FIX_LAST);
     if (last?.[1]) return { weight: 2, kind: 'hotfix' };
@@ -121,10 +122,13 @@ export function summarizeScars(path, commits) {
   const weight = scars.reduce((n, c) => n + c.weight, 0) * half;
   if (weight < MIN_WEIGHT) return undefined;
   // Strongest first, newest first within equal weight.
-  const top = [...scars].sort((a, b) => b.weight - a.weight || b.time - a.time).slice(0, TOP_SHOWN)
-    .map((c) => ({ sha: c.sha.slice(0, 7), date: day(c.time), kind: c.kind, subject: c.subject }));
+  // The strongest TOP_SHOWN in full; every other scar commit is named in `others` (sha, date, kind), so none is left out.
+  const ranked = [...scars].sort((a, b) => b.weight - a.weight || b.time - a.time);
+  const row = (c) => ({ sha: c.sha.slice(0, 7), date: day(c.time), kind: c.kind, subject: c.subject });
+  const top = ranked.slice(0, TOP_SHOWN).map(row); // cut: the rest are in `others`
+  const others = ranked.slice(TOP_SHOWN).map((c) => ({ sha: c.sha.slice(0, 7), date: day(c.time), kind: c.kind }));
   const last = scars.reduce((a, b) => (b.time > a.time ? b : a));
-  return { count: scars.length, weight, top, last: { sha: last.sha.slice(0, 7), date: day(last.time), kind: last.kind, subject: last.subject } };
+  return { count: scars.length, weight, top, ...(others.length ? { others } : {}), last: { sha: last.sha.slice(0, 7), date: day(last.time), kind: last.kind, subject: last.subject } };
 }
 
 // Never throws: not a git repository, git missing or any other failure gives null.

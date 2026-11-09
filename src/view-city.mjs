@@ -123,6 +123,7 @@ for(const g of groups){
   for(const [dir,fs] of [...byDir].sort((a,b)=>a[0].localeCompare(b[0]))){
     const sorted=fs.sort((a,b)=>(D.files[b].users+weight(D.files[b]))-(D.files[a].users+weight(D.files[a])));
     for(let i=0;i<sorted.length;i+=PER){const part=sorted.slice(i,i+PER);
+      // cut: not a cut, small folders share a block of the city drawing
       if(cur&&cur.files.length+part.length<=PER&&part.length<4){cur.files.push(...part);cur.dirs.push(dir);continue}
       cur={g:g.id,dirs:[dir],files:[...part]};blocks.push(cur)}}
 }

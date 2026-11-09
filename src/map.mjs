@@ -406,7 +406,7 @@ export function mapProblems(map, files, { placement = true } = {}) {
     if (owners.length > 1) p.push(`${f}: in more than one group (${owners.join(', ')})`);
     else if (!owners.length && !ignored(f)) unplaced.push(f);
   }
-  if (unplaced.length) p.push(`${unplaced.length} file(s) in no group and not ignored: ${unplaced.slice(0, 10).join(', ')}${unplaced.length > 10 ? ', ...' : ''}`);
+  if (unplaced.length) p.push(`${unplaced.length} file(s) in no group and not ignored: ${unplaced.join(', ')}`);
   for (const g of map.groups) for (const pat of g.files)
     if (!files.some(matcher([pat]))) p.push(`groups.${g.id}.files: ${pat} matches no tracked file`);
   return p;
