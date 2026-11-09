@@ -31,13 +31,13 @@
           ]
         },
         {
-          "text": "parse() treats every --option it does not list as an on/off flag as taking a value, so a new on/off flag (like --record, --cursor or --check) must be added to that list in parse() or it swallows the next argument",
+          "text": "parse() knows its options from two lists, FLAGS (on/off) and VALUES (take a value, also as --name=value); any other --option is an error, so a new option must go into one of them or every use of it fails with 'unknown option'. Before 0.26.4 an unknown option took the next word as its value (hook --new-flag --stop ran the wrong hook). A `hook` call (not --install) never fails on its own arguments or errors: main() answers with a systemMessage warning and exit 0, because exit 2 from a PreToolUse hook refuses the tool call (an older readfirst that did not know --gate stopped every Edit and Bash call of a session, 2026-11-08)",
           "files": [
             "src/cli.mjs"
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap and throws (exit 2 from bin) on any map problem. read, diff, view, verify and export --cursor use loadMapLenient (read and diff, and the PreToolUse hook and audit, also work with no map at all: they then show only where the code broke before, from git history, and `readList` gets a null map): they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
+          "text": "`check` reports map problems and exits 1. prompt goes through loadMap, which settles the map as check does (settleMap) and throws (exit 2 from bin) only on what check fails on. read, diff, view, verify and export --cursor use loadMapLenient (read and diff, and the PreToolUse hook and audit, also work with no map at all: they then show only where the code broke before, from git history, and `readList` gets a null map): they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -50,7 +50,7 @@
           ]
         },
         {
-          "text": "runHook swallows every error and returns null (exit 0, no output), so a bug in it looks the same as 'nothing to say' and the edit goes ahead; only a test with real map data would catch it. It also uses repoFiles, readMapFile and mapProblems, so changes there change the hook"
+          "text": "runHook swallows every error and returns null (exit 0, no output), so a bug in it looks the same as 'nothing to say' and the edit goes ahead; only a test with real map data would catch it. It also uses repoFiles, readMapFile and mapProblems, so changes there change the hook. A map broken in itself (a rule naming a renamed file, bad JSON) does not silence it: both hooks open with brokenMapLine and still give what the map gives (the Stop hook blocks once with it); before 0.26.4 they said nothing for the whole repository"
         },
         {
           "text": "verify runs the map's check commands with the shell in the repository root; a map is repository content and its commands run with the user's rights, so verify stays an explicit command, never called from the PreToolUse hook or the Action. The one exception is the opt-in Stop hook (`hook --install --verify`), and it runs only commands the base branch's map already lists (trustedRuns): a command a branch adds or changes is named, never run, so checking out someone's branch cannot run their new command",
@@ -383,6 +383,9 @@
         },
         {
           "text": "plugins/readfirst is listed twice: in .agent-marketplace.json (Paradev, with version) and .claude-plugin/marketplace.json (Claude Code). Its version lives in plugins/readfirst/plugin.json, plugins/readfirst/.claude-plugin/plugin.json and the .agent-marketplace.json entry; change all three together, and a Paradev release is the git tag readfirst@<version>, so bump the version instead of moving a tag - .agent-marketplace.json:18"
+        },
+        {
+          "text": "To try an older readfirst (to reproduce a report against a past commit), use a git worktree: `git worktree add <scratch dir> <commit>` and run `node <scratch dir>/bin/readfirst.mjs` there, then `git worktree remove` it. Never check out an old commit in this working checkout: its Claude Code hooks (.claude/settings.json, and a session's hooks above the repositories) run this checkout's bin/readfirst.mjs, so a commit that does not know an option the settings pass (--gate before 0.23.0) refused every Edit and Bash call, including the checkout that would have undone it (2026-11-08). From 0.26.4 a hook that fails on its own arguments warns and lets the call through, but older commits still refuse."
         },
         {
           "text": ".claude/settings.json and CLAUDE.md call this checkout's bin/readfirst.mjs (`node \"$CLAUDE_PROJECT_DIR/bin/readfirst.mjs\" hook` and `hook --stop`), because `npx readfirst` does not resolve inside its own package. Running `hook --install` here would overwrite them with `npx readfirst` commands that fail, and so would `setup` or `init --agent`, which now call the same installHook as soon as they see `.claude/` or CLAUDE.md. If bin/readfirst.mjs moves, or the hook, read, find or verify commands are renamed, update both files. - .claude/settings.json:9"

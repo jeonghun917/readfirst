@@ -192,8 +192,9 @@ export function bashWrites(command, cwd = process.cwd()) {
     const cmd = unquote(ws[0]).split('/').pop();
     if (cmd === 'cd' && ws[1]) { base = moveTo(base, ws[1]); continue; }
     // Redirects anywhere in the segment, not 2> or >&, and not a > inside quotes (an arrow `=>` in node -e "..." code
-    // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself.
-    for (const m of blank(segment).matchAll(/(?<![0-9&=-])>>?(?!\s*&)/gu)) {
+    // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself. &> and &>>
+    // (stdout and stderr to a file) write too; the & before them once kept &> out.
+    for (const m of blank(segment).matchAll(/(?<![0-9=-])>>?(?!\s*&)/gu)) {
       const t = segment.slice(m.index + m[0].length).match(/^\s*('[^']+'|"[^"]+"|[^\s;&|]+)/u);
       if (t) add(t[1]);
     }

@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.26.3 read <file>` (and `jeonghun917/readfirst@v0.26.3` for
+exactly the version you reviewed, pin it: `npx readfirst@0.26.4 read <file>` (and `jeonghun917/readfirst@v0.26.4` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -35,7 +35,8 @@ Commit `.readfirst/map.json`. From then on:
 npx readfirst read <file>...     # before changing files
 npx readfirst diff               # everything your branch changed since main
 npx readfirst diff --json        # the same, for tools and agents
-npx readfirst verify             # run the checks the map lists for everything your branch changed (exit 1 if one fails)
+npx readfirst verify             # run the checks the map lists for everything your branch changed (exit 1 if one fails;
+                                 # on main with no origin/main, pass --base <ref>: your commits cannot be told from main)
 npx readfirst fix                # after moving code: place new files, drop patterns for deleted ones
 ```
 
@@ -85,9 +86,10 @@ npx readfirst setup --for cursor,codex  # or name them
 It adds the line above to the agent notes, and readfirst's MCP server to each agent's own project config: the Claude
 Code hook in `.claude/settings.json`, `.cursor/mcp.json`, `.vscode/mcp.json` (Copilot), `.gemini/settings.json` (and
 `GEMINI.md`), `.codex/config.toml` and `opencode.json`. It keeps whatever is already in those files, does nothing the
-second time, and never writes outside the repository: a file it cannot parse (JSON with comments) and settings that live
-in your home folder (Windsurf) are printed for you to add by hand. Codex reads `.codex/config.toml` only in a project you
-have marked as trusted. `init --agent` runs it too.
+second time, and never writes outside the repository: a file it cannot parse (JSON with comments, `.claude/settings.json`
+too), a file or folder that is a symlink to somewhere outside the repository, and settings that live in your home folder
+(Windsurf) are printed for you to add by hand, and the rest is still set up. Codex reads `.codex/config.toml` only in a
+project you have marked as trusted. `init --agent` runs it too.
 
 ### As a plugin (Claude Code, Paradev)
 
@@ -110,7 +112,9 @@ npx readfirst hook --install
 
 adds a hook to `.claude/settings.json`. Before each Edit or Write, and before a Bash command that writes files (a
 redirect, `sed -i`, `tee`, `cp` or `mv` into the repository, a script that writes), Claude Code gets the rules, risks and
-checks for those files as context, once per file per session. Nothing to remember, and the edit is never blocked.
+checks for those files as context, once per file per session. Nothing to remember, and the edit is never blocked. If
+`.readfirst/map.json` is broken (a rule naming a file you renamed), the notes say so first. If the hook command itself is
+wrong (an option this readfirst does not know), it warns and lets the call through instead of refusing it.
 
 Want it read for sure, not just offered? Change the command to `npx --yes readfirst hook --gate`: the first call that
 touches a file whose notes Claude Code has not seen is refused with the notes as the reason, and the same call goes
@@ -126,7 +130,7 @@ also adds a Stop hook: before Claude Code finishes its turn, it runs the map's c
 session. If one fails, Claude Code cannot finish yet and gets the failure to fix. It gets one try per turn, so a check
 it cannot fix never traps the session. It runs only check commands that the map on your main branch already lists: a
 command someone's branch adds or changes is named, not run, until it is merged (`npx readfirst verify` runs it when you
-choose to).
+choose to). On main itself with no `origin/main`, files committed during the session count as edited too.
 
 A session started in a folder above your repositories works too: each edited file belongs to the repository that holds
 it, and the Stop hook runs each repository's checks. Put the hook in that folder's `.claude/settings.json` with the

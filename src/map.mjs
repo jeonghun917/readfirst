@@ -10,6 +10,9 @@ const OWN_FILES = new Set([MAP_PATH, '.readfirst/held.json']);
 const OWN_PATTERN = /^\.cursor\/rules\/readfirst-[a-z0-9-]+\.mdc$/u;
 export const isOwnFile = (path) => OWN_FILES.has(path) || OWN_PATTERN.test(path);
 const OWN = { has: isOwnFile };
+// Text without a leading UTF-8 byte order mark. Windows editors and PowerShell write one; JSON.parse refuses it, and npm
+// reads such a package.json without complaint, so every file readfirst parses goes through this first.
+export const unBom = (s) => (typeof s === 'string' && s.charCodeAt(0) === 0xfeff ? s.slice(1) : s);
 
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 const isRecord = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -470,7 +473,7 @@ export function draftMap(files, read = () => null) {
     const dir = g.files.length === 1 && /^(.+)\/\*\*$/u.exec(g.files[0])?.[1];
     if (!dir || !files.includes(`${dir}/package.json`)) continue;
     let pkg;
-    try { pkg = JSON.parse(read(`${dir}/package.json`) ?? ''); } catch { continue; }
+    try { pkg = JSON.parse(unBom(read(`${dir}/package.json`) ?? '')); } catch { continue; }
     const checks = workspaceChecks(files, dir, pkg);
     if (checks.length) g.checks = checks;
     const about = typeof pkg?.description === 'string' ? pkg.description.trim().replace(/\s+/gu, ' ') : '';
@@ -481,10 +484,15 @@ export function draftMap(files, read = () => null) {
 
 const packageManager = (has) => (has.has('pnpm-lock.yaml') ? 'pnpm' : has.has('yarn.lock') ? 'yarn' : has.has('bun.lockb') || has.has('bun.lock') ? 'bun' : 'npm');
 const PLACEHOLDER = /no test specified/u;
+// A script that keeps watching never exits: as a check it passes and then hangs until verify's timeout (900 s; the Stop
+// hook's 600 s, at every stop). `jest --watch`, `vitest watch`, `tsc -w`, nodemon; `--watchAll=false` runs once. Such a
+// script is not drafted as a check (verify sets CI=1, so a tool that watches only outside CI, like vitest, still counts).
+const WATCHES = /(?:^|\s)--watch(?:All)?(?!=false)(?:[=\s]|$)|\btsc\b[^&|;]*\s-w(?:\s|$)|\bnodemon\b|\bvitest\s+(?:watch|dev)\b/u;
+const runsOnce = (s) => typeof s === 'string' && !WATCHES.test(s);
 // The scripts worth running as checks, in order, with what each covers.
 const scriptChecks = (scripts, run) => [
-  ...(typeof scripts.test === 'string' && !PLACEHOLDER.test(scripts.test) ? [{ run: run('test'), why: 'the test suite' }] : []),
-  ...['typecheck', 'type-check', 'check-types', 'lint'].filter((n) => typeof scripts[n] === 'string').map((n) => ({ run: run(n), why: n === 'lint' ? 'lint rules' : 'types' })),
+  ...(runsOnce(scripts.test) && !PLACEHOLDER.test(scripts.test) ? [{ run: run('test'), why: 'the test suite' }] : []),
+  ...['typecheck', 'type-check', 'check-types', 'lint'].filter((n) => runsOnce(scripts[n])).map((n) => ({ run: run(n), why: n === 'lint' ? 'lint rules' : 'types' })),
 ];
 
 // One workspace package's own scripts, scoped to it: pnpm --filter, yarn workspace, bun --filter or npm -w.
@@ -614,7 +622,7 @@ export function draftChecks(files, read = () => null) {
   const add = (run, why) => { if (!out.some((c) => c.run === run)) out.push({ run, why }); };
   if (has.has('package.json')) {
     let scripts = {};
-    try { scripts = JSON.parse(read('package.json') ?? '{}').scripts ?? {}; } catch { scripts = {}; }
+    try { scripts = JSON.parse(unBom(read('package.json') ?? '{}')).scripts ?? {}; } catch { scripts = {}; }
     const pm = packageManager(has);
     const run = (name) => (pm === 'npm' ? (name === 'test' ? 'npm test' : `npm run ${name}`) : `${pm} ${name === 'test' && pm !== 'bun' ? 'test' : `run ${name}`}`);
     for (const c of scriptChecks(scripts, run)) add(c.run, c.why);
@@ -635,7 +643,7 @@ export function draftChecks(files, read = () => null) {
   }
   if (has.has('composer.json')) {
     let scripts = {};
-    try { scripts = JSON.parse(read('composer.json') ?? '{}').scripts ?? {}; } catch { scripts = {}; }
+    try { scripts = JSON.parse(unBom(read('composer.json') ?? '{}')).scripts ?? {}; } catch { scripts = {}; }
     if (scripts.test) add('composer test', 'the PHP tests');
     else if (has.has('phpunit.xml') || has.has('phpunit.xml.dist')) add('vendor/bin/phpunit', 'the PHP tests');
   }

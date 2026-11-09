@@ -434,7 +434,8 @@ test('verify: runs the checks for the changed files once each, reports pass, fai
 });
 
 test('verify: no changes means nothing to run', () => {
-  const { root } = repo({ 'a/x.js': '', '.readfirst/map.json': JSON.stringify({ format: MAP_FORMAT, groups: [{ id: 'a', title: 'a', files: ['a/**', '.readfirst/**'], checks: [{ run: 'exit 1' }] }] }) });
+  const { root, git } = repo({ 'a/x.js': '', '.readfirst/map.json': JSON.stringify({ format: MAP_FORMAT, groups: [{ id: 'a', title: 'a', files: ['a/**', '.readfirst/**'], checks: [{ run: 'exit 1' }] }] }) });
+  git('checkout', '-q', '-b', 'work'); // on main itself with no origin/main, "nothing changed" cannot be told (cli-review test)
   const r = run(root, 'verify');
   assert.equal(r.code, 0);
   assert.match(r.out, /nothing to verify/u);
@@ -553,7 +554,8 @@ test('hook --stop: before Claude Code finishes, the checks for files it edited r
   const stop = (over = {}) => runStopHook(JSON.stringify({ session_id: 's1', cwd: root, hook_event_name: 'Stop', stop_hook_active: false, ...over }), { stateDir, timeout: 30 });
 
   assert.equal(stop(), null, 'nothing edited in this session');
-  runHook(JSON.stringify({ session_id: 's1', cwd: root, tool_name: 'Edit', tool_input: { file_path: join(root, 'src/billing/charge.ts') } }), { stateDir });
+  // Marked a little after the map commit: on main with no remote, files committed since the first mark count as edited.
+  runHook(JSON.stringify({ session_id: 's1', cwd: root, tool_name: 'Edit', tool_input: { file_path: join(root, 'src/billing/charge.ts') } }), { stateDir, now: Date.now() + 1500 });
   assert.equal(stop(), null, 'seen but not changed');
   writeFileSync(join(root, 'src/billing/charge.ts'), `${readFileSync(join(root, 'src/billing/charge.ts'), 'utf8')}\n// edited\n`);
   const blocked = JSON.parse(stop());
