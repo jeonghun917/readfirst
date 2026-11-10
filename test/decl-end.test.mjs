@@ -1,7 +1,7 @@
 // A declaration whose value runs over several lines with no block of its own (a const set to a multi-line template, or
 // a call cut over lines) ended at the next block's closing brace: braceEnd looked for the first `{` it could find, and
-// found the next function's. A change to that function then read as touching the const (a risk about readfirst-cloud's
-// `ensureTable`, lines 8 to 12 of a file, read as touched by a change at line 20 of the function below it).
+// found the next function's. A change to that function then read as touching the const (a risk about a const holding
+// a create-table statement, lines 8 to 12 of a file, read as touched by a change at line 20 of the function below it).
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { judge } from '../src/trigger.mjs';

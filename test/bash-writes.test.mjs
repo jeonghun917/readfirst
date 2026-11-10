@@ -71,8 +71,8 @@ test('bashWrites: after a cd to a variable, relative paths are not named; absolu
   assert.deepEqual(w("cd ~/proj && echo x > e.md")[0].endsWith('/proj/e.md'), true);
 });
 
-// 2026-11-09: `cd readfirst-cloud && (cd ../readfirst && git archive ...) | tar ... && echo x > package.json` showed the
-// readfirst map's notes for readfirst-cloud's package.json: the cd inside ( ) carried on past its `)`. The `)` also stuck
+// 2026-11-09: `cd app && (cd ../cli && git archive ...) | tar ... && echo x > package.json` showed the cli map's
+// notes for app's package.json: the cd inside ( ) carried on past its `)`. The `)` also stuck
 // to the last word (`sed -i ... f.txt)` named `f.txt)`), and a redirect after the `)` was put inside the subshell's folder.
 test('bashWrites: a cd inside ( ) ends at its ), and what follows the ) is the outer shell\'s', () => {
   const w = (c) => bashWrites(c, '/r');
