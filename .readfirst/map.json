@@ -458,6 +458,12 @@
             "src/readlist.mjs",
             "src/action.mjs"
           ]
+        },
+        {
+          "text": "`subjectPaths` (src/trigger.mjs): a path in a risk's first clause, with or without an extension, is what the risk is about: a change to it triggers the risk unless the risk already names code in that file (`judge`), and readfirst's own files never count; `unmatchedItems` counts such a risk as judgeable. A file named only after the first clause judges nothing by itself (vendor/readfirst/VERSION read as not triggered until 0.32.0)",
+          "files": [
+            "src/trigger.mjs"
+          ]
         }
       ]
     },
