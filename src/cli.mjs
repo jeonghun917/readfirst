@@ -36,7 +36,7 @@ import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
 import { bashWrites } from './bash-writes.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
-import { find, findText } from './find.mjs';
+import { definitions, find, findText } from './find.mjs';
 import { CURSOR_DIR, cursorPlan } from './export.mjs';
 import { AGENTS, detectAgents, outsideRepo, setupAgents } from './agents.mjs';
 import { gitHooksReport, setupGitHooks } from './git-hooks.mjs';
@@ -424,6 +424,21 @@ function lastCall(seen) {
 }
 export const ACTED_LOG = 'readfirst-acted.jsonl';
 
+// `readfirst find` before new code (2026-11-10: CLAUDE.md asked for it, a session wrote seven new functions without it;
+// read was enforced by the gate, find only written). A Bash call that runs find marks find:<root>; an Edit, Write or
+// MultiEdit that declares a function or type its file did not have, in a repository with a map, before find ran there
+// is refused once by the gate (nofind:<sig>) with the names and the command, and goes through when made again; written
+// so, it is kept as nofindwrite:<sig> and counted by the Stop hook.
+const FIND_RUN = /(?:^|[\s;&|(])(?:npx\s+(?:--yes\s+|-y\s+)?)?(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)\s+find\b/u;
+function newCode(tool, input, abs) {
+  const names = (text) => new Set(definitions(abs, String(text ?? '')).map((d) => d.name));
+  const added = (after, before) => { const was = names(before); return [...names(after)].filter((n) => !was.has(n)); };
+  if (tool === 'Edit') return added(input?.new_string, input?.old_string);
+  if (tool === 'MultiEdit') return [...new Set((input?.edits ?? []).flatMap((e) => added(e?.new_string, e?.old_string)))];
+  if (tool === 'Write') { let old = ''; try { old = readFileSync(abs, 'utf8'); } catch { /* a new file */ } return added(input?.content, old); }
+  return [];
+}
+
 // Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file, or a Bash
 // command that writes files (src/bash-writes.mjs), prints the read list of the files as additionalContext, once per file
 // per session: every file the call writes, each repository's lines once, nothing cut (0.27.1; before, the first 10 files
@@ -449,6 +464,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const prev = lastCall(seen);
     if (prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]) seen[`resent:${sig}:${now}`] = now;
     seen[`call:${sig}`] = now;
+    if (tool === 'Bash' && FIND_RUN.test(String(event.tool_input?.command ?? ''))) { const root = repoOf(cwd); if (root) seen[`find:${root}`] = now; }
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
@@ -458,15 +474,22 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const deadline = Date.now() + budget;
     const { notes, late } = notesFor(targets, seen, now, { deadline, stateDir });
     const waiting = pendingNotes(targets, seen, now);
-    if (gate && notes.length) seen[`denied:${sig}`] = now;
+    const known = new Map();
+    const fresh = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => ({ abs, root: rootOf(abs, known), names: newCode(tool, event.tool_input, abs) }))
+      .filter((f) => f.names.length && f.root && !seen[`find:${f.root}`] && existsSync(join(f.root, MAP_PATH))) : [];
+    const askFind = fresh.length > 0 && !before[`nofind:${sig}`];
+    const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and \`readfirst find\` has not run in this session. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
+    if (fresh.length) seen[gate && askFind ? `nofind:${sig}` : `nofindwrite:${sig}`] = now;
+    if (gate && (notes.length || askFind)) seen[`denied:${sig}`] = now;
     const saved = save();
     const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
-    if (!notes.length && !waiting.length && !lateLine) return null;
-    // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes.
-    const text = [...notes, ...(lateLine ? [lateLine] : []), ...waiting].join('\n\n');
+    if (!notes.length && !waiting.length && !lateLine && !findLine) return null;
+    // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes and,
+    // once per call, for new code written before `readfirst find`.
+    const text = [...notes, ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...waiting].join('\n\n');
     // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
     // the notes as context instead.
-    if (gate && (notes.length || lateLine) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    if (gate && (notes.length || lateLine || askFind) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch {
     return null;
@@ -615,8 +638,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|nofind|nofindwrite):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|nofind|nofindwrite)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -645,7 +668,7 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     if (r?.block) blocks.push(r.block);
     if (r?.tally) { tally.asked += r.tally.asked; tally.acted += r.tally.acted; tally.notActed.push(...r.tally.notActed); }
   }
-  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length };
+  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length };
   const line = actedLine(record);
   if (line) { try { appendFileSync(join(stateDir, ACTED_LOG), `${JSON.stringify(record)}\n`); } catch { /* the line is still said */ } }
   if (blocks.length) return JSON.stringify({ decision: 'block', reason: [...blocks, ...(line ? [line] : [])].join('\n\n') });
@@ -655,11 +678,12 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
 
 // The Stop hook's last line (step 4): what the map asked for the files edited, what was done, what was not, and how
 // often a refused edit was made again at once. Every item not done is named.
-export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0 }) {
-  if (!asked && !resent) return null; // notes shown and nothing asked: the stop stays quiet, as before
+export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0, noFind = 0 }) {
+  if (!asked && !resent && !noFind) return null; // notes shown and nothing asked: the stop stays quiet, as before
   const not = notActed.length ? `, not done: ${notActed.join('; ')}` : '';
   const again = resent ? `; ${resent} refused edit(s) made again at once with nothing in between, so their notes were likely not read` : '';
-  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}.`;
+  const nofind = noFind ? `; ${noFind} edit(s) added new functions without \`readfirst find\` first` : '';
+  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}.`;
 }
 
 // `readfirst hook --report`: the Stop hook's lines of every session kept in ACTED_LOG (the last one of each session),
@@ -679,6 +703,7 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
     `- notes shown for ${sum('shown')} file(s)`,
     `- asked ${asked}, done ${sum('acted')}, not done ${asked - sum('acted')}`,
     `- refused edits made again at once with nothing in between: ${sum('resent')}, in ${rows.filter((r) => r.resent > 0).length} session(s)`,
+    `- edits that added new functions without \`readfirst find\` first: ${sum('noFind')}, in ${rows.filter((r) => r.noFind > 0).length} session(s)`,
     ...(counts.size ? ['Not done, most often first:', ...[...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
   ].join('\n');
 }
