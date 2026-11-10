@@ -12,6 +12,7 @@
 // Every part is computed from the checkout and its git history; nothing runs.
 import { MAP_PATH, matcher, groupOf, risksNaming } from './map.mjs';
 import { brokeMost, BROKE_MOST_MIN_COMMITS, BROKE_MOST_MIN_SCORE } from './history.mjs';
+import { unmatchedItems } from './trigger.mjs';
 import { isTest, OTHER_CODE, READS_IMPORTS, unseenIn } from './readlist.mjs';
 
 export const AUDIT_FORMAT = 'readfirst/audit@1';
@@ -214,6 +215,8 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
     stale,
     hotspots,
     unguarded,
+    // Risks and rules no change can ever judge (src/trigger.mjs): shown by file, unjudged, on every diff and PR.
+    unmatched: unmatchedItems(map, { files, read, imports }),
     replacing,
     held: lastHeld,
     placeholders,
@@ -264,6 +267,7 @@ export function auditText(a) {
   section(`Rules and risks that may be out of date (${STALE_COMMITS}+ commits changed their files since they were written)`, firstThenNamed(a.stale, (s) =>
     `- ${s.kind === 'rule' ? `rule **${s.id}**` : `risk in group ${s.group}`}: "${s.text.length > 100 ? `${s.text.slice(0, 100)}…` : s.text}" — written ${s.written.date} (${s.written.commit}); ${s.commits} commits changed ${s.files} of its files since${s.relied?.commits ? `, and ${s.relied.commits} changed ${s.relied.files} file${s.relied.files === 1 ? '' : 's'} they import` : ''}. Still true?`, (s) => (s.kind === 'rule' ? `rule ${s.id}` : `risk in ${s.group} "${s.text.length > 50 ? `${s.text.slice(0, 50)}…` : s.text}"`)));
   section('Hot spots no longer at their line', a.hotspots.map((h) => `- \`${h.symbol}\` in \`${h.file}\`: map says line ${h.line}, ${h.status === 'MOVED' ? `now line ${h.now}` : 'not found in the file'}`));
+  section('Rules and risks no change can judge (they name no function or file:line readfirst finds in their files, so diff and the PR comment show them unjudged; name the function in backticks or give file:line)', (a.unmatched ?? []).map((u) => `- ${u.where}${u.files ? ` (shown for ${u.files} file${u.files === 1 ? '' : 's'})` : ''}: ${u.text}`));
   section('Hot spots nothing checks (no test reaches their file, and no check of their own in the map)', firstThenNamed(a.unguarded, (h) =>
     `- \`${h.symbol}\` in \`${h.file}:${h.line}\`: ${h.labels.join(', ')}`, (h) => `\`${h.symbol}\` (\`${h.file}:${h.line}\`)`));
   // cut: the files past TOP are named on the same line

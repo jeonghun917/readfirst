@@ -138,8 +138,9 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   // Removed files are looked up too: their group's checks, rules and requires entries still apply to the change.
   // A renamed file's old path is looked up as well: its old group's checks, and files that still import the old path.
   const paths = [...new Set(changed.flatMap((f) => (f.status === 'renamed' && f.previous_filename ? [f.filename, f.previous_filename] : [f.filename])))];
+  const imports = changed.length && !problems.length ? edgesWith(files, paths, readText(root)) : [];
   const list = changed.length && !problems.length
-    ? readList({ map, files, imports: edgesWith(files, paths, readText(root)), targets: paths, before: raw, commit: pr.head?.sha ?? null, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
+    ? readList({ map, files, imports, targets: paths, before: raw, commit: pr.head?.sha ?? null, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
     : null;
   // Each risk and rule judged against the PR's own changes (src/trigger.mjs), from the patches the API gives, so any
   // checkout depth works. A file with no patch (binary, too large for GitHub to include), a removed file and a renamed
@@ -150,7 +151,7 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
       changes.set(f.filename, f.status !== 'removed' && typeof f.patch === 'string' ? parsePatch(f.patch) : { lines: new Set(), text: [], hunks: [], whole: true });
       if (f.status === 'renamed' && f.previous_filename) changes.set(f.previous_filename, { lines: new Set(), text: [], hunks: [], whole: true });
     }
-    judge(list, { changes, read: readText(root), files });
+    judge(list, { changes, read: readText(root), files, imports });
   }
   // From the checkout's git log at the PR's base (not the PR's own commits), whatever the map says. A checkout fetched at depth 1 has none: that is said, not hidden.
   const found = brokeBefore(root, targets, new Set(files), baseRevision(root, pr.base?.sha));

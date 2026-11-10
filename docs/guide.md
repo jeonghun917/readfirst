@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.29.1 read <file>` (and `jeonghun917/readfirst@v0.29.1` for
+exactly the version you reviewed, pin it: `npx readfirst@0.30.0 read <file>` (and `jeonghun917/readfirst@v0.30.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -49,9 +49,17 @@ only by the file. An item that names a function, a constant or a `file:line` is 
 names the change did not touch goes under **Not triggered by this change**, whole, with the reason ("the change does not
 touch `refund`"): nothing is dropped. An item that names nothing readfirst can find in the code is shown by its files, as
 before, so a risk written as `` `refund` must use the original card `` is judged and "watch out for refunds" is not.
-Names count in backticks, or without them when they look like code (`camelCase`, `snake_case`, `UPPER_CASE`); a plain
-lowercase word counts only as a function in the files the item is about. A file with no readable patch counts as changed
-all through. `read` is not a change, so it shows every item.
+Names count in backticks, or without them when they look like code (`camelCase`, `snake_case`, `UPPER_CASE`, a call
+such as `main()`, a capital constant such as `FLAGS`), wherever the item's files or the files they import declare them;
+a plain lowercase word, and a capital word without an underscore, count only in the files the item is about. A file with
+no readable patch counts as changed all through. `read` is not a change, so it shows every item.
+
+A `file:line` judges the item by the function that holds the line, so the line has to stay where the code is. `check`
+lists every one that lies outside everything its item names in that file (`--strict` fails on them), and `fix` moves the
+ones git shows moving with the code; one that was wrong from the start, or points elsewhere on purpose, is left for you.
+The verdict counts them under **Not checked**. `audit` lists the rules and risks no change can ever judge (they name no
+function or `file:line` readfirst finds), widest first: name the function in backticks, give a `file:line`, or narrow
+their `files`.
 
 ### The verdict first
 
@@ -225,6 +233,8 @@ It reads the checkout and its git history, runs nothing, changes nothing, and re
 
 - **rules and risks that may be out of date**: the line that holds one was written before 10 or more commits changed
   the files it covers (git blame on the map, git log on the files). Each says when it was written and how much moved since;
+- **rules and risks no change can judge**: they name no function or `file:line` readfirst finds in their files, so
+  `diff` and the PR comment show them unjudged every time; the widest first, in full;
 - **hot spots no longer at their line**, and where the function is now, and **hot spots nothing checks**: no test
   reaches their file and no check of their own covers them (a check most groups share, like the whole suite, does not count);
 - **what was never filled in**: groups still titled `TODO:` from `init`, rules no check verifies;
