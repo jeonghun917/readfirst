@@ -122,7 +122,7 @@ function braceEnd(path, lines, at) {
     }
     if (opened && depth <= 0) return i + 1;
     // A statement with no block of its own ends at its semicolon, on whichever line: a const set to a template or a
-    // call over several lines ran on to the next function's closing brace (readfirst-cloud's ensureTable, 0.30.0).
+    // call over several lines ran on to the next function's closing brace (until 0.30.1).
     if (!opened && /;\s*$/u.test(code)) return i + 1;
   }
   return null;
@@ -212,9 +212,9 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
   const changedText = [...changes].filter(([path]) => !NOT_CODE.test(path)).flatMap(([path, c]) => c.text.map((l) => ({ path, code: codeText(path, l) })));
   // in: only the changed lines of these files (a capital constant used in the item's own files, not a test's own MAP).
   const named = (name, inPaths = null) => { const re = new RegExp(`(?<![\\w$])${esc(name)}(?![\\w$])`, 'u'); return changedText.some((t) => (!inPaths || inPaths.has(t.path)) && re.test(t.code)); };
-  // A changed file of another group does not lend its names to a group's risk: vendor/readfirst/src/trigger.mjs, a copy
-  // with a NOT_CODE of its own, made a risk about the package's NOT_CODE read as touched (readfirst-cloud#233). Its own
-  // files, the files it names and what they import still count wherever they are.
+  // A changed file of another group does not lend its names to a group's risk: a vendored copy of this CLI, with a
+  // NOT_CODE of its own, made a risk about the package's NOT_CODE read as touched (until 0.31.0). Its own files, the
+  // files it names and what they import still count wherever they are.
   const groupOf = new Map((list.targets ?? []).map((t) => [t.path, t.group]));
   const judgeOne = (text, shownFor, group = null) => {
     const spans = spansOf(text);
