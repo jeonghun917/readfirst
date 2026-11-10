@@ -46,7 +46,7 @@
           ]
         },
         {
-          "text": "the pattern syntax in the agent brief must match what map.mjs accepts; if you change the pattern rules, update the brief as well",
+          "text": "the pattern syntax in the agent brief (`agentBrief`, src/prompt.mjs) must match what src/map.mjs accepts (`matcher`); if you change the pattern rules, update the brief as well",
           "files": [
             "src/prompt.mjs",
             "src/map.mjs"
@@ -62,7 +62,7 @@
           ]
         },
         {
-          "text": "the MCP server answers by calling main() again with --root for each tool call, so anything a command prints to stdout becomes the tool's text; stdout is also the JSON-RPC channel, so `mcp` itself must never write anything else to stdout. `mcp` is handled before main() looks up the repository (so it starts outside a git repository): it must not use root, files or the map itself, and the repository is looked up at each tool call (--root, or git rev-parse in the current directory), where a failure comes back as an isError result 'not inside a git repository'",
+          "text": "the MCP server (`mcpHandler`, `serveMcp`) answers by calling main() again with --root for each tool call, so anything a command prints to stdout becomes the tool's text; stdout is also the JSON-RPC channel, so `mcp` itself must never write anything else to stdout. `mcp` is handled before main() looks up the repository (so it starts outside a git repository): it must not use root, files or the map itself, and the repository is looked up at each tool call (--root, or git rev-parse in the current directory), where a failure comes back as an isError result 'not inside a git repository'",
           "files": [
             "src/mcp.mjs",
             "src/cli.mjs"
@@ -85,7 +85,7 @@
           ]
         },
         {
-          "text": "Bash commands in the hook (src/bash-writes.mjs, since 0.26.5): the command is the first word after leading NAME=value words and wrappers (unwrap: sudo, env, nice, timeout, nohup, time, command, exec, ionice, stdbuf), a backslash-newline joins the lines first, `bash|sh -c '...'` strings and here-documents fed to a shell are read as commands (recursively), and gitPaths decides git checkout/restore: after `--` every word, `restore` its words, `checkout` without `--` only words that are files here (a branch or tag with a dot is not), `restore --staged` without --worktree nothing - src/bash-writes.mjs:36",
+          "text": "Bash commands in the hook (src/bash-writes.mjs, since 0.26.5): the command is the first word after leading NAME=value words and wrappers (`unwrap`: sudo, env, nice, timeout, nohup, time, command, exec, ionice, stdbuf), a backslash-newline joins the lines first, `bash|sh -c '...'` strings and here-documents fed to a shell are read as commands (recursively), and `gitPaths` decides git checkout/restore: after `--` every word, `restore` its words, `checkout` without `--` only words that are files here (a branch or tag with a dot is not), `restore --staged` without --worktree nothing - src/bash-writes.mjs:48, src/bash-writes.mjs:67",
           "files": [
             "src/bash-writes.mjs"
           ]
@@ -117,7 +117,7 @@
           ]
         },
         {
-          "text": "the Stop hook counts files the session committed (git log since its first mark) as edited, and since 0.27.1 also as changed when it checks the map's `requires` (change together): `committed` takes the mark's own second (git keeps whole seconds) so no committed file goes unchecked, `committedAfter` only later seconds so a commit from before the session never stands in for a partner the session left out. Before, a pair committed together in the session (package.json and server.json) was reported as left behind.",
+          "text": "the Stop hook (`stopFor`) counts files the session committed (git log since its first mark) as edited, and since 0.27.1 also as changed when it checks the map's `requires` (change together): `committed` takes the mark's own second (git keeps whole seconds) so no committed file goes unchecked, `committedAfter` only later seconds so a commit from before the session never stands in for a partner the session left out. Before, a pair committed together in the session (package.json and server.json) was reported as left behind.",
           "files": [
             "src/cli.mjs"
           ]
@@ -148,7 +148,7 @@
           ]
         },
         {
-          "text": "bin/readfirst.mjs ends the process quietly when stdout or stderr is closed early (EPIPE: `readfirst read x | head -1`); until 0.26.4 (readfirst#130) that crashed with a stack trace and exit 1. The handler rethrows every other error, and nothing in src may install a handler that swallows them.",
+          "text": "bin/readfirst.mjs ends the process quietly when stdout or stderr is closed early (EPIPE: `readfirst read x | head -1`); until 0.26.4 (readfirst#130) that crashed with a stack trace and exit 1. The handler rethrows every other error, and nothing in src may install a handler that swallows them. - bin/readfirst.mjs:5",
           "files": [
             "bin/readfirst.mjs"
           ]
@@ -170,7 +170,7 @@
       ],
       "risks": [
         {
-          "text": "composite actions do not set INPUT_* env vars, so action.yml maps each input to an env var by hand; a new input needs a line in action.yml and a read in action.mjs",
+          "text": "composite actions do not set INPUT_* env vars, so action.yml maps each input to an env var by hand; a new input needs a line in action.yml and a read in src/action.mjs (`runAction`)",
           "files": [
             "action.yml",
             "src/action.mjs"
@@ -189,14 +189,14 @@
           ]
         },
         {
-          "text": "the script runs only when argv[1] ends with '/src/action.mjs', and action.yml calls it by that path; moving or renaming the file makes the Action exit successfully without doing anything",
+          "text": "the script runs only when argv[1] ends with '/src/action.mjs', and action.yml calls it by that path; moving or renaming the file makes the Action exit successfully without doing anything - src/action.mjs:234",
           "files": [
             "src/action.mjs",
             "action.yml"
           ]
         },
         {
-          "text": "when the map has problems the comment shows the problems but no read list, and the job fails unless fail-on-map-problems is 'false'",
+          "text": "when the map has problems the comment shows the problems but no read list (`commentBody`, called from `runAction`), and the job fails unless fail-on-map-problems is 'false'",
           "files": [
             "src/action.mjs"
           ]
@@ -221,7 +221,7 @@
           ]
         },
         {
-          "text": "action.yml runs `node` itself (composite): a self-hosted runner without Node gets a clear ::error:: from the `command -v node` guard instead of 'command not found'; the Action does not set up Node, because actions/setup-node would change the Node of the user's later steps",
+          "text": "action.yml runs `node` itself (composite): a self-hosted runner without Node gets a clear ::error:: from the `command -v node` guard instead of 'command not found'; the Action does not set up Node, because actions/setup-node would change the Node of the user's later steps - action.yml:35",
           "files": [
             "action.yml"
           ]
@@ -280,7 +280,7 @@
           ]
         },
         {
-          "text": "the read list object is the --json output and what the Action renders; keep its field names and the readfirst/read-list@1 format string",
+          "text": "the read list object (`readList`) is the --json output and what the Action renders; keep its field names and the readfirst/read-list@1 format string (`READ_LIST_FORMAT`)",
           "files": [
             "src/readlist.mjs"
           ]
@@ -299,7 +299,7 @@
           ]
         },
         {
-          "text": "imports are read with regexes: JS/TS and Python in imports.mjs, Go, Rust, Elixir, C#, Java/Kotlin, Ruby and PHP in langs.mjs. Only edges that resolve to a tracked file count (workspace packages, tsconfig paths aliases and baseUrl, package.json #imports, and Python roots at each folder with manage.py, pyproject.toml, setup.py or setup.cfg included), so packages from outside, aliases set up elsewhere (bundler config, tsconfig extends) and names the approximation misses (Rails constants used unqualified inside a module, C# types reached without a using) leave tests out of the read list",
+          "text": "imports are read with regexes: JS/TS and Python in src/imports.mjs (`importEdges`), Go, Rust, Elixir, C#, Java/Kotlin, Ruby and PHP in src/langs.mjs (`moreEdges`). Only edges that resolve to a tracked file count (workspace packages, tsconfig paths aliases and baseUrl, package.json #imports, and Python roots at each folder with manage.py, pyproject.toml, setup.py or setup.cfg included), so packages from outside, aliases set up elsewhere (bundler config, tsconfig extends) and names the approximation misses (Rails constants used unqualified inside a module, C# types reached without a using) leave tests out of the read list",
           "files": [
             "src/imports.mjs",
             "src/langs.mjs"
@@ -316,13 +316,18 @@
           ]
         },
         {
-          "text": "the view page loads three.js 0.160.0 from cdn.jsdelivr.net through an import map; without network it shows only the WebGL/connection notice",
+          "text": "the view page (`viewHtmlCity`) loads three.js 0.160.0 from cdn.jsdelivr.net (`THREE`) through an import map; without network it shows only the WebGL/connection notice",
           "files": [
             "src/view-city.mjs"
           ]
         },
         {
-          "text": "the view page only has interface strings for en and ko, and the language switch only toggles between them: a labels file for any other language (e.g. `prompt --labels ja`) is read and inlined but never shown, and the plain/technical switch appears only when the current language's file has \"plain\""
+          "text": "the view page (`viewHtmlCity`) only has interface strings for en and ko, and the language switch only toggles between them: a labels file for any other language (e.g. `prompt --labels ja`) is read and inlined but never shown, and the plain/technical switch appears only when the current language's file has \"plain\"",
+          "files": [
+            "src/view-city.mjs",
+            "src/view.mjs",
+            "src/labels.mjs"
+          ]
         },
         {
           "text": "check, read, diff, verify and the Action settle a map that is only behind the code the way fix would (settleMap) and pass; only what fix cannot place, broken rules and new top-level folders fail. Making them strict again breaks every PR that adds a file",
@@ -333,7 +338,7 @@
           ]
         },
         {
-          "text": "audit's 'hot spots nothing checks' counts a group check as a check of its own only if fewer than half the groups share the same `run` string (always, if the map has under two groups). Adding one command such as `npm test` to most groups, or writing the same check with different text, changes which hot spots are listed. A rule check only counts when the rule's files cover the hot spot's file. - src/audit.mjs:109"
+          "text": "`audit`'s 'hot spots nothing checks' (`ownCheck` inside it) counts a group check as a check of its own only if fewer than half the groups share the same `run` string (always, if the map has under two groups). Adding one command such as `npm test` to most groups, or writing the same check with different text, changes which hot spots are listed. A rule check only counts when the rule's files cover the hot spot's file. - src/audit.mjs:173"
         },
         {
           "text": "readfirst's own files (the map, .readfirst/held.json and the exported .cursor/rules/readfirst-*.mdc) belong to no group: isOwnFile in map.mjs (OWN_FILES and OWN_PATTERN) keeps them out of placement, and readlist.mjs reports them as status MAP. A new file readfirst writes into the checkout must be added there, or check fails with it as an unplaced file. The Cursor file name is matched twice (OWN_PATTERN in map.mjs and isCursorExport in export.mjs): change both together. The text export writes is compared byte for byte by `export --cursor --check`, so rewording it makes every user's CI fail until they re-export. - src/map.mjs:10"
@@ -342,7 +347,7 @@
           "text": "the agents setup knows are listed in several places: AGENTS, detectAgents, PLAN and SNIPPETS in src/agents.mjs, the notes-file list in addAgentLine (cli.mjs), the HELP text and the 'Wire every agent at once' section of docs/guide.md. A new agent must be added to all of them: without a PLAN entry setupAgents throws on it, and without a SNIPPETS entry the by-hand message for an unparsable file says only 'the readfirst MCP server'. Setup writes a file only when it parses as plain JSON (or, for Codex, when no [mcp_servers.readfirst] table exists), and a readfirst key that is already there is never compared or updated."
         },
         {
-          "text": "src/shapes.mjs and src/lex.mjs are copied from readfirst-cloud lib/discarded.mjs and lib/lex.mjs with only the published shapes kept (queryset, str-method, str-replace, js-string, js-replace, js-expect-promise); do not add the server's other shapes here, they stay hosted. js-expect-promise leaves out files on vitest or bun test (notIn: a *.vitest.* name or an import of vitest or bun:test), which fail such a test themselves; keep notIn the same on both sides",
+          "text": "src/shapes.mjs (`PATTERNS`, `candidates`) and src/lex.mjs (`blockLines`) are copied from readfirst-cloud lib/discarded.mjs and lib/lex.mjs with only the published shapes kept (queryset, str-method, str-replace, js-string, js-replace, js-expect-promise); do not add the server's other shapes here, they stay hosted. js-expect-promise leaves out files on vitest or bun test (notIn: a *.vitest.* name or an import of vitest or bun:test), which fail such a test themselves; keep notIn the same on both sides",
           "files": [
             "src/shapes.mjs",
             "src/lex.mjs"
@@ -383,7 +388,7 @@
           ]
         },
         {
-          "text": "bashWrites (src/bash-writes.mjs) is a hand-written shell reader, and every syntax it misses is a write the PreToolUse hook gives no notes for and, unless the file changed after the session's first mark, the Stop hook does not check; every syntax it misreads as a write puts notes on a command that only reads. Both have happened: &> and &>> (0.26.4); quotes not opening again inside $( ), so i>=0 in python -c became a write to =0 (0.26.4); NAME=val, sudo/env/nice/timeout wrappers, backslash-newline and bash -c strings (0.26.5, readfirst#132); a branch or tag with a dot and restore --staged read as writes (0.26.5); 2> and >|, (cd d && ...), pushd, globs and ~ missed, and (( x > 0 )), # comments, patch -p 1, remote or dry-run rsync read as writes (0.27.0, readfirst#133); a cd inside ( ) carried on past its ), so the hook showed another repository's notes, the ) stuck to the last word (`f.txt)`) and a redirect after the ) went into the subshell's folder (0.27.4: parens() in bash-writes.mjs; a { } group keeps its cd, as the shell does). Still missed (2026-11-09): a write inside an awk program (print ... > file). A new case needs a test of the written form and one of the look-alike that only reads.",
+          "text": "bashWrites (src/bash-writes.mjs) is a hand-written shell reader, and every syntax it misses is a write the PreToolUse hook gives no notes for and, unless the file changed after the session's first mark, the Stop hook does not check; every syntax it misreads as a write puts notes on a command that only reads. Both have happened: &> and &>> (0.26.4); quotes not opening again inside $( ), so i>=0 in python -c became a write to =0 (0.26.4); NAME=val, sudo/env/nice/timeout wrappers, backslash-newline and bash -c strings (0.26.5, readfirst#132); a branch or tag with a dot and restore --staged read as writes (0.26.5); 2> and >|, (cd d && ...), pushd, globs and ~ missed, and (( x > 0 )), # comments, patch -p 1, remote or dry-run rsync read as writes (0.27.0, readfirst#133); a cd inside ( ) carried on past its ), so the hook showed another repository's notes, the ) stuck to the last word (`f.txt)`) and a redirect after the ) went into the subshell's folder (0.27.4: parens() in bash-writes.mjs; a { } group keeps its cd, as the shell does). a $( ) or backtick argument was split into words, so `sed -i ... $(grep -rl x src docs)` named src and `docs)` as written (0.30.0: words() keeps it one word, and add() leaves it out). Still missed (2026-11-09): a write inside an awk program (print ... > file). A new case needs a test of the written form and one of the look-alike that only reads.",
           "files": [
             "src/bash-writes.mjs"
           ]
@@ -433,13 +438,13 @@
           ]
         },
         {
-          "text": "setup --git (src/git-hooks.mjs) writes the hooks git runs: `git rev-parse --git-path hooks` (.git/hooks, core.hooksPath, the main repository's .git/hooks for a worktree), and for husky (core.hooksPath .husky/_ or .husky) the user's .husky/<hook>, never husky's own _ folder. It adds one line and never replaces a hook; a hooks folder outside the repository and its git folder (a global core.hooksPath shared by every repository), a hook file that is a link out of them, a hook that hands over with exec (the pre-commit framework's: a line after it never runs) and one that is not a shell script are printed for adding by hand. The hooks call `npx --yes readfirst check` and `verify`, so they need the map (setup --git refuses without one) and npx at commit time; check reads the working tree, so an untracked file that is not ignored blocks a commit until the map places it. A new hook or a new hook manager needs a test of where it writes and of what it leaves alone (test/setup-git.test.mjs).",
+          "text": "setup --git (src/git-hooks.mjs, `setupGitHooks`) writes the hooks git runs: `git rev-parse --git-path hooks` (.git/hooks, core.hooksPath, the main repository's .git/hooks for a worktree), and for husky (core.hooksPath .husky/_ or .husky) the user's .husky/<hook>, never husky's own _ folder. It adds one line and never replaces a hook; a hooks folder outside the repository and its git folder (a global core.hooksPath shared by every repository), a hook file that is a link out of them, a hook that hands over with exec (the pre-commit framework's: a line after it never runs) and one that is not a shell script are printed for adding by hand. The hooks call `npx --yes readfirst check` and `verify`, so they need the map (setup --git refuses without one) and npx at commit time; check reads the working tree, so an untracked file that is not ignored blocks a commit until the map places it. A new hook or a new hook manager needs a test of where it writes and of what it leaves alone (test/setup-git.test.mjs).",
           "files": [
             "src/git-hooks.mjs"
           ]
         },
         {
-          "text": "src/trigger.mjs judges each risk and rule of a change's read list (judge, used by `diff` and the Action, not by `read`): what it is about is the backticked names and the code-looking names (camelCase, snake_case, UPPER_CASE with _) declared in the files it is shown for, the files its text names or the changed files, plus its path:line evidence, which is carried from the file before the change to where it is now (toNew, from the hunk headers). Triggered when a changed line falls in that declaration (to its own closing brace, or in Python its indent; else up to the next declaration less the blank and comment lines above it) or the name is in an added or removed line of code (not in docs, the map, config, comments or strings: on its own PR the map edit and trigger.mjs's comments named runHook and changedFiles); a plain lowercase word counts only as a function in the item's own files and never by appearing in the diff (a test's own `run` helper and the word `files` made risks read as touched on readfirst#139). An item naming nothing found is triggered by its files, as before, and a not-triggered one is listed with its reason, never dropped. Evidence that has drifted from its code (src/cli.mjs:266 pointed into verifyChecks for a risk about rootOf until 0.28.0) gives a wrong verdict: check the line when a risk reads as triggered or not for no reason.",
+          "text": "src/trigger.mjs judges each risk and rule of a change's read list (judge, used by `diff` and the Action, not by `read`): what it is about is the backticked names and the code-looking names (camelCase, snake_case, UPPER_CASE with _) declared in the files it is shown for, the files its text names or the changed files, plus its path:line evidence, which is carried from the file before the change to where it is now (toNew, from the hunk headers). Triggered when a changed line falls in that declaration (to its own closing brace, or in Python its indent; else up to the next declaration less the blank and comment lines above it) or the name is in an added or removed line of code (not in docs, the map, config, comments or strings: on its own PR the map edit and trigger.mjs's comments named runHook and changedFiles); a plain lowercase word counts only as a function in the item's own files and never by appearing in the diff (a test's own `run` helper and the word `files` made risks read as touched on readfirst#139). An item naming nothing found is triggered by its files, as before, and a not-triggered one is listed with its reason, never dropped. Evidence that has drifted from its code (line 266 of src/cli.mjs pointed into verifyChecks for a risk about rootOf until 0.28.0) gives a wrong verdict: since 0.30.0 a line outside everything its item names is marked as such in the verdict, `check` lists it (evidenceDrift; --strict fails) and `fix` moves it only where git shows the code moving (moveEvidence). Write an example line number in prose, not as path:line, or it is read as evidence.",
           "files": [
             "src/trigger.mjs",
             "src/readlist.mjs",
@@ -496,7 +501,7 @@
           "text": "the hook test calls main(['hook']) without a stateDir, so it writes to the real temp folder and relies on a unique session_id; reusing a fixed id would make the hook print nothing on later runs"
         },
         {
-          "text": "test/silent-cuts.test.mjs finds cuts by their shape, not by meaning: a slice to a number, an UPPER_CASE constant or max/limit/count, a slice from the end (.slice(-N), N of 3 or more or a constant; missed until 0.27.4, so verify's last-30-lines cut passed), a push under such a bound, a loop stopped at one. A cut of text is told apart by its receiver (sha, hash, title, subject, message, body, String(), a string method): a list named like one of those, or a cut to a bound of another name (k, at, end), is not looked at. When it misses one, widen the shapes; do not add a cut: note to pass it",
+          "text": "test/silent-cuts.test.mjs finds cuts by their shape (`CUT`, and `TEXT` for cuts of text), not by meaning: a slice to a number, an UPPER_CASE constant or max/limit/count, a slice from the end (.slice(-N), N of 3 or more or a constant; missed until 0.27.4, so verify's last-30-lines cut passed), a push under such a bound, a loop stopped at one. A cut of text is told apart by its receiver (sha, hash, title, subject, message, body, String(), a string method): a list named like one of those, or a cut to a bound of another name (k, at, end), is not looked at. When it misses one, widen the shapes; do not add a cut: note to pass it",
           "files": [
             "test/silent-cuts.test.mjs"
           ]
@@ -542,7 +547,7 @@
           ]
         },
         {
-          "text": "docs/guide.md repeats the command list, the Action inputs table and a sample read list, and README.md the three start commands; update them when cli.mjs HELP, action.yml inputs or toMarkdown output change",
+          "text": "docs/guide.md repeats the command list, the Action inputs table and a sample read list, and README.md the three start commands; update them when the HELP text in src/cli.mjs, action.yml inputs or the output of `toMarkdown` (src/readlist.mjs) change",
           "files": [
             "README.md",
             "docs/guide.md"
@@ -574,7 +579,11 @@
           "text": "plugins/readfirst calls the CLI by command name: SKILL.md runs `readfirst read`, `find`, `verify`, `check` and `init --agent`, and hooks/hooks.json runs `readfirst hook` through `npx --yes`. Renaming or removing one of these commands in cli.mjs breaks the plugin for every agent that installed it, so update SKILL.md and hooks.json together with HELP. - plugins/readfirst/skills/readfirst/SKILL.md:18"
         },
         {
-          "text": "README.md links to docs/guide.md by absolute GitHub URL because npm ships only README.md (package.json \"files\"); a relative link such as docs/guide.md or ../docs/... works on GitHub but is dead on the npm page, so keep links from the README to the guide absolute"
+          "text": "README.md links to docs/guide.md by absolute GitHub URL because npm ships only README.md (package.json \"files\"); a relative link such as docs/guide.md or ../docs/... works on GitHub but is dead on the npm page, so keep links from the README to the guide absolute",
+          "files": [
+            "README.md",
+            "docs/guide.md"
+          ]
         },
         {
           "text": "every release published on GitHub fires major-tag and mcp-registry, including the plugin's (readfirst@X.Y.Z); both jobs run only for v-tags (or by hand), or a plugin release on the same commit moves nothing and lists the same server.json version first, failing the CLI release as a duplicate (v0.23.0 with readfirst@0.2.0). mcp-registry treats 'cannot publish duplicate version' as done - .github/workflows/mcp-registry.yml:14"
@@ -634,7 +643,7 @@
     },
     {
       "id": "map-format-compatible",
-      "rule": "maps written for readfirst/map@1 keep passing: never rename or remove a map field or make an optional one required without a new format version",
+      "rule": "maps written for readfirst/map@1 (`MAP_FORMAT`) keep passing (`mapProblems`): never rename or remove a map field or make an optional one required without a new format version",
       "why": "map.json files live in users' repositories and CI fails on any map problem",
       "files": [
         "src/map.mjs"
@@ -642,7 +651,7 @@
     },
     {
       "id": "read-list-format-stable",
-      "rule": "the read list JSON keeps its field names under readfirst/read-list@1",
+      "rule": "the read list JSON (`readList`) keeps its field names under readfirst/read-list@1 (`READ_LIST_FORMAT`)",
       "why": "agents and tools read `readfirst read --json` and `diff --json`",
       "files": [
         "src/readlist.mjs"
@@ -658,7 +667,7 @@
     },
     {
       "id": "one-pr-comment",
-      "rule": "the Action keeps one comment per PR, plus one more for each 60,000 characters a long read list needs, and edits them in place on each push; a part a longer list left behind is emptied with a line saying so, never deleted, and nothing in the comment is cut",
+      "rule": "the Action keeps one comment per PR (`MARKER`, `partMarker`, `splitComment`), plus one more for each 60,000 characters a long read list needs, and edits them in place on each push; a part a longer list left behind is emptied with a line saying so, never deleted, and nothing in the comment is cut",
       "why": "a new comment on every push floods the PR, and a comment cut short hides what the map says (it was cut at 60,000 characters until 0.27.1)",
       "files": [
         "src/action.mjs"
@@ -671,7 +680,7 @@
     },
     {
       "id": "fork-pr-does-not-fail",
-      "rule": "a read-only token (PR from a fork) must not fail the Action: the read list goes to the job summary instead",
+      "rule": "a read-only token (PR from a fork) must not fail the Action (`runAction`): the read list goes to the job summary instead",
       "why": "contributors from forks would otherwise get a red check they cannot fix",
       "files": [
         "src/action.mjs"
@@ -684,7 +693,7 @@
     },
     {
       "id": "action-any-checkout-depth",
-      "rule": "the Action takes the PR's changed files from the GitHub API, not from git history",
+      "rule": "the Action takes the PR's changed files from the GitHub API (`pages` in `runAction`), not from git history",
       "why": "actions/checkout defaults to a shallow clone, so any checkout depth must work",
       "files": [
         "src/action.mjs"

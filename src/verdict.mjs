@@ -33,6 +33,7 @@ export const VERDICT_TEXT = {
     notRunDiff: 'diff runs none of these checks: `npx readfirst verify` runs them',
     noSymbol: (n) => `${plural(n, 'rule or risk', 'rules and risks')} ${n === 1 ? 'names' : 'name'} no symbol or line readfirst can match against the change: shown for their files, unjudged`,
     groupWide: (n) => `${plural(n, 'more group risk')} could not be judged either (folded below, whole)`,
+    drifted: (n) => `${plural(n, 'rule or risk', 'rules and risks')} ${n === 1 ? 'points' : 'point'} at a line outside what ${n === 1 ? 'it names' : 'they name'}: it may have moved with the code, so the line may judge the wrong code (\`readfirst check\` lists them, \`readfirst fix\` moves what git traces)`,
     notCovered: (paths) => `${plural(paths.length, 'changed file')} the map does not place: ${paths.map(code).join(', ')}`,
     unseen: (paths) => `${plural(paths.length, 'file')} readfirst cannot fully read (computed imports or a language it does not read), so an empty list for ${paths.length === 1 ? 'it' : 'them'} may mean unknown: ${paths.map(code).join(', ')}`,
     history: (n) => `whether ${n === 1 ? '1 file' : `${n} files`} broke before is unknown: the history was not fetched`,
@@ -60,6 +61,7 @@ export const VERDICT_TEXT = {
     notRunDiff: 'diff는 이 검사들을 실행하지 않습니다: `npx readfirst verify`가 실행합니다',
     noSymbol: (n) => `규칙·위험 ${n}개는 변경과 맞춰 볼 심볼이나 줄을 적지 않아, 판정 없이 파일 기준으로 보입니다`,
     groupWide: (n) => `그룹 위험 ${n}개도 판정하지 못했습니다(아래에 접혀 있음, 전문)`,
+    drifted: (n) => `규칙·위험 ${n}개는 증거 줄이 자기가 말하는 코드 밖을 가리킵니다: 코드가 옮겨 갔을 수 있어 그 줄로 한 판정이 틀릴 수 있습니다(\`readfirst check\`가 나열하고, \`readfirst fix\`가 git으로 추적되는 것은 옮깁니다)`,
     notCovered: (paths) => `지도가 자리를 정하지 않은 바뀐 파일 ${paths.length}개: ${paths.map(code).join(', ')}`,
     unseen: (paths) => `readfirst가 다 읽지 못하는 파일 ${paths.length}개(계산된 import 또는 읽지 않는 언어), 그래서 빈 목록은 "모름"일 수 있습니다: ${paths.map(code).join(', ')}`,
     history: (n) => `파일 ${n}개는 히스토리를 가져오지 않아 전에 깨진 적이 있는지 모릅니다`,
@@ -116,6 +118,8 @@ export function verdictLines(list, { lang: asked = 'en', where = 'pr', problems 
     if ((list.checks ?? []).length) notChecked.push(where === 'diff' ? t.notRunDiff : t.notRunPr);
     if (open.length) notChecked.push(t.noSymbol(open.length));
     if (groupWide.length) notChecked.push(t.groupWide(groupWide.length));
+    const drifted = [...(list.rules ?? []), ...(list.risks ?? [])].filter((r) => r.trigger?.drifted?.length).length;
+    if (drifted) notChecked.push(t.drifted(drifted));
     const notCovered = (list.notCovered ?? []).map((n) => n.path);
     if (notCovered.length) notChecked.push(t.notCovered(notCovered));
     const unseen = [...new Set((list.unseen ?? []).map((n) => n.path))];

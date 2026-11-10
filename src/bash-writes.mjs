@@ -182,7 +182,10 @@ function options(args, spec) {
   return { files, values, inPlace, script: Boolean(values.e || values.E || values.f) };
 }
 
-const words = (segment) => segment.match(/'[^']*'|"(?:\\.|[^"\\])*"|[^\s]+/gu) ?? [];
+// A word runs on through quotes, a $( ) (one level of parentheses inside it) and backticks: `sed -i ... $(grep -rl x src
+// docs)` was split inside the $( ), and its src and `docs)` were named as the files sed writes (2026-11-10). Such a word
+// holds a $ or a backtick, so add() leaves it out: what it expands to is not known here.
+const words = (segment) => segment.match(/(?:'[^']*'|"(?:\\.|[^"\\])*"|\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`|[^\s'"`])+/gu) ?? [];
 // Where `cd target` moves from `from`: null when that cannot be known (a variable: `cd $D`, `cd "$(dirname x)"`), and
 // relative paths after it are then not named at all rather than named under the wrong folder (2026-11-08: `cd $D`
 // made the hook show `$D/a.test.js`).

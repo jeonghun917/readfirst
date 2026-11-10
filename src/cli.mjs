@@ -5,7 +5,7 @@
 //   readfirst prompt               the brief for a coding agent to fill in titles, checks, risks and rules
 //   readfirst prompt --labels <lang>  the brief for personal labels (a translation and plain notes) for the view
 //   readfirst check                the map covers every tracked file and is well formed
-//   readfirst fix                  place new files and drop patterns for deleted ones, then check
+//   readfirst fix                  place new files and drop patterns for deleted ones, move evidence lines git traces
 //   readfirst export --cursor      the map as Cursor rules (.cursor/rules/readfirst-<group>.mdc); --check: fail if stale
 //   readfirst audit                the whole repository against the map, as a report: stale rules, moved hot spots,
 //                                  what was never filled in, code no test reaches, what readfirst could not see
@@ -40,7 +40,7 @@ import { find, findText } from './find.mjs';
 import { CURSOR_DIR, cursorPlan } from './export.mjs';
 import { AGENTS, detectAgents, outsideRepo, setupAgents } from './agents.mjs';
 import { gitHooksReport, setupGitHooks } from './git-hooks.mjs';
-import { judge, parseGitDiff } from './trigger.mjs';
+import { evidenceDrift, judge, moveEvidence, parseGitDiff } from './trigger.mjs';
 import { VERDICT_LANGS } from './verdict.mjs';
 import { HELD_PATH, heldInRun, parseHeld, recordHeld } from './held.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
@@ -60,8 +60,9 @@ const HELP = `readfirst — what to read and check before changing a file
                                  (one line added to the hooks there; --no-verify skips them once)
   readfirst prompt               brief for your coding agent to fill in the map
   readfirst check [--strict]     check the map covers every tracked file (new files beside placed ones pass; --strict fails on them)
-  readfirst fix                  place new files, drop patterns for deleted ones
-  readfirst audit                the whole repository against the map: stale rules, moved hot spots, code no test reaches
+  readfirst fix                  place new files, drop patterns for deleted ones, move evidence lines git traces
+  readfirst audit                the whole repository against the map: stale rules, risks no change can judge, moved hot
+                                 spots, code no test reaches
   readfirst export --cursor      write the map as Cursor rules, one .mdc per group (--check: fail if they are out of date)
   readfirst scan                 look for known bug shapes: results thrown away, test assertions nobody awaits (no map needed)
   readfirst find <words>...      before writing something new: what in the code may already do it
@@ -768,6 +769,18 @@ export function installHook(root, { verify = false } = {}) {
   return true;
 }
 
+// The changes to `path` since the commit that last wrote `ref` into the map (git log -S), to the working tree, for
+// evidenceDrift; null when git cannot tell (no history, a shallow clone, the reference never committed).
+function evidenceHistory(root) {
+  return (path, ref) => {
+    try {
+      const c = git(root, 'log', '-1', '--format=%H', `-S${ref}`, '--', MAP_PATH).trim();
+      if (!c) return null;
+      return parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', c, '--', path)).get(path) ?? { lines: new Set(), text: [], hunks: [], whole: false };
+    } catch { return null; }
+  };
+}
+
 export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }, stdin = () => readFileSync(0, 'utf8')) {
   // A hook that cannot read its own command line, or fails before it starts, warns and lets the call through: exit 2
   // from a PreToolUse hook refuses the tool call, so one option this readfirst did not know (an older one under a newer
@@ -885,14 +898,20 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const line = (u) => `groups.${u.group}.risks[${u.index}] ${u.about ? 'is about' : 'mentions'} ${u.path}, but reading ${u.path} does not show it: add ${u.path} to its files (with the paths it should keep showing for), or write it where ${u.path} is`;
     const about = unshown.filter((u) => u.about).map(line);
     const mentions = unshown.filter((u) => !u.about).map(line);
-    const problems = [...settledMap.problems, ...pinProblems(map, pinnedReadfirst(new Map(pinFiles(files).map((f) => [f, read(f)])))), ...(args.strict ? about : [])];
-    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems, settled, unshown }, null, 2)}\n`);
+    // Evidence lines outside what their item names (readfirst-cloud#228): the line judges the item against a change, so
+    // one the code moved away from judges by the wrong code. Listed, failed with --strict; `fix` moves those git traces.
+    const { drift, unanchored } = evidenceDrift(map, { files, read, history: evidenceHistory(root) });
+    const driftLine = (d) => `${d.where}: ${d.ref} is outside ${d.names.map((n, i) => `\`${n}\` (line ${d.lines[i]})`).join(', ')}${d.now ? `: it moved to ${d.path}:${d.now}, \`readfirst fix\` writes that` : ': git does not show it moving there, so check it by hand (wrong from the start, or pointing elsewhere on purpose)'}`;
+    const problems = [...settledMap.problems, ...pinProblems(map, pinnedReadfirst(new Map(pinFiles(files).map((f) => [f, read(f)])))), ...(args.strict ? [...about, ...drift.map(driftLine)] : [])];
+    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems, settled, unshown, drift, unanchored }, null, 2)}\n`);
     else {
       if (problems.length) io.out(`${MAP_PATH} has ${problems.length} problem(s):\n- ${problems.join('\n- ')}\n`);
       else io.out(`${MAP_PATH} is good: ${files.length} files.\n`);
       if (settled.length) io.out(`settled without writing (\`readfirst fix\` writes it down):\n- ${settled.join('\n- ')}\n`);
       if (about.length && !args.strict) io.out(`risks about a file that does not show them (it gets nothing when it is read; --strict fails on them):\n- ${about.join('\n- ')}\n`);
       if (mentions.length) io.out(`risks that mention a file which does not show them (often a consequence; add the file to their files if whoever changes it should read them):\n- ${mentions.join('\n- ')}\n`);
+      if (drift.length && !args.strict) io.out(`evidence lines outside what their risk or rule names (a change is judged by that line; --strict fails on them):\n- ${drift.map(driftLine).join('\n- ')}\n`);
+      if (unanchored.length) io.out(`evidence lines in a code file where their risk or rule names nothing declared, so a move cannot be seen (name the function in backticks):\n- ${unanchored.map((u) => `${u.where}: ${u.ref}`).join('\n- ')}\n`);
     }
     return problems.length ? 1 : 0;
   }
@@ -931,6 +950,15 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const fixed = fixMap(migrated.map, files);
     const { map, problems } = fixed;
     const changes = [...migrated.changes, ...fixed.changes];
+    // Evidence lines git shows moving with the code are written where they are now (readfirst-cloud#228).
+    for (const d of evidenceDrift(map, { files, read: readText(root), history: evidenceHistory(root) }).drift.filter((x) => x.now)) {
+      const [, gid, i] = d.where.match(/^groups\.(.+)\.risks\[(\d+)\]$/u) ?? [];
+      const item = gid !== undefined ? map.groups.find((g) => g.id === gid)?.risks?.[Number(i)] : map.rules?.find((r) => `rules.${r.id}` === d.where);
+      const key = gid !== undefined ? 'text' : 'rule';
+      if (!item || typeof item[key] !== 'string') continue;
+      item[key] = moveEvidence(item[key], d.ref, d.path, d.now);
+      changes.push(`${d.where}: ${d.ref} -> ${d.path}:${d.now} (\`${d.names[0]}\` moved)`);
+    }
     if (changes.length) { mustBeInside(root, MAP_PATH); writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`); }
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, changes, problems }, null, 2)}\n`);
     else {
@@ -1040,8 +1068,9 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const limit = args.limit === undefined ? Infinity : Number(args.limit);
     if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) throw new Error('--limit needs a whole number of 1 or more');
     const broke = brokeBefore(root, targets, new Set(files), rev);
-    const list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke, before: map && asWritten.get(map) });
-    if (changes) judge(list, { changes, read: readText(root), files });
+    const imports = edgesWith(files, targets, readText(root));
+    const list = readList({ map, files, imports, targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke, before: map && asWritten.get(map) });
+    if (changes) judge(list, { changes, read: readText(root), files, imports });
     // diff opens with the verdict (src/verdict.mjs) in --lang, else the one language of this clone's labels, else English.
     const verdict = changes ? { lang: diffLang(args.lang, () => Object.keys(readLabels(root, io.err))), where: 'diff' } : null;
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list, { verdict })}\n`);

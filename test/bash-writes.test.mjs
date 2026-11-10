@@ -91,3 +91,14 @@ test('bashWrites: a cd inside ( ) ends at its ), and what follows the ) is the o
   assert.deepEqual(w('case $x in a) true ;; esac; echo y > h'), ['/r/h']);
   assert.deepEqual(w('(cd /b && npm test)'), [], 'a subshell that only runs tests writes nothing');
 });
+
+// 2026-11-10: `sed -i ... $(grep -rln x src test docs)` was split inside the $( ), and src, test and `docs)` were named
+// as the files sed writes; the hook put readfirst's notes on paths like `0\.29\.2` and `docs)`.
+test('a $( ) or backtick argument is one word, and what it expands to is not named', () => {
+  const w = (c) => bashWrites(c, '/r');
+  assert.deepEqual(w('sed -i "s/a/b/g" $(grep -rln "x" src test docs)'), [], 'the files come from grep: not known here');
+  assert.deepEqual(w('sed -i "s/a/b/g" $(git ls-files src) README.md'), ['/r/README.md'], 'a literal file beside it still counts');
+  assert.deepEqual(w('sed -i s/a/b/ `ls src` x.txt'), ['/r/x.txt'], 'backticks the same way');
+  assert.deepEqual(w('sed -i "s/a/b/" $(find . -name "*.md" -newer (x)) y.txt'), ['/r/y.txt'], 'one level of brackets inside');
+  assert.deepEqual(w('echo "$(cat a b)" > out.txt'), ['/r/out.txt'], 'a redirect after it is still a write');
+});
