@@ -6,6 +6,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 import { edgesWith, readMapFile, readText, repoFiles } from './cli.mjs';
 import { HELD_PATH, parseHeld } from './held.mjs';
 import { baseRevision, brokeBefore } from './history.mjs';
+import { judge, parsePatch } from './trigger.mjs';
 import { MAP_PATH, settleMap, unBom } from './map.mjs';
 import { brokeSection, readList, toMarkdown } from './readlist.mjs';
 
@@ -131,6 +132,17 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const list = changed.length && !problems.length
     ? readList({ map, files, imports: edgesWith(files, paths, readText(root)), targets: paths, before: raw, commit: pr.head?.sha ?? null, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)) })
     : null;
+  // Each risk and rule judged against the PR's own changes (src/trigger.mjs), from the patches the API gives, so any
+  // checkout depth works. A file with no patch (binary, too large for GitHub to include), a removed file and a renamed
+  // file's old path count as changed all through.
+  if (list) {
+    const changes = new Map();
+    for (const f of changed) {
+      changes.set(f.filename, f.status !== 'removed' && typeof f.patch === 'string' ? parsePatch(f.patch) : { lines: new Set(), text: [], hunks: [], whole: true });
+      if (f.status === 'renamed' && f.previous_filename) changes.set(f.previous_filename, { lines: new Set(), text: [], hunks: [], whole: true });
+    }
+    judge(list, { changes, read: readText(root), files });
+  }
   // From the checkout's git log at the PR's base (not the PR's own commits), whatever the map says. A checkout fetched at depth 1 has none: that is said, not hidden.
   const found = brokeBefore(root, targets, new Set(files), baseRevision(root, pr.base?.sha));
   const broke = targets.filter((t) => found[t]).map((t) => ({ path: t, brokeBefore: found[t] }));

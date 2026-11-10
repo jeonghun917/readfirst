@@ -39,6 +39,7 @@ import { find, findText } from './find.mjs';
 import { CURSOR_DIR, cursorPlan } from './export.mjs';
 import { AGENTS, detectAgents, outsideRepo, setupAgents } from './agents.mjs';
 import { gitHooksReport, setupGitHooks } from './git-hooks.mjs';
+import { judge, parseGitDiff } from './trigger.mjs';
 import { HELD_PATH, heldInRun, parseHeld, recordHeld } from './held.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
@@ -63,7 +64,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst scan                 look for known bug shapes: results thrown away, test assertions nobody awaits (no map needed)
   readfirst find <words>...      before writing something new: what in the code may already do it
   readfirst read <file>...       read list for files you are about to change
-  readfirst diff [--base <ref>]  read list for files changed since <ref>
+  readfirst diff [--base <ref>]  read list for files changed since <ref>, each risk and rule judged against the change
   readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them;
                                  --record notes in .readfirst/held.json which rules held, at which commit)
   readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json;
@@ -998,11 +999,16 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     // read looks at HEAD; diff at the commit where the branch left its base, so the branch's own "fix: ..." commits are not
     // counted as the file having broken before.
     let rev = 'HEAD';
+    let changes = null;
     if (cmd === 'diff') {
       const changed = changedFiles(root, args.base);
       onBaseItself(changed, io);
       rev = changed.since;
       targets = changed.files;
+      // What each file's change is, for judging risks and rules against it (src/trigger.mjs): the commits since the base
+      // and what is not committed yet; a new file not added yet counts as changed all through.
+      changes = parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', changed.since));
+      for (const f of changed.files) if (!changes.has(f)) changes.set(f, { lines: new Set(), text: [], whole: true });
       if (!targets.length) {
         io.out(args.json ? `${JSON.stringify(emptyList(commit), null, 2)}\n` : `no files changed since ${changed.ref}.\n`);
         return 0;
@@ -1013,6 +1019,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     if (limit !== Infinity && (!Number.isInteger(limit) || limit < 1)) throw new Error('--limit needs a whole number of 1 or more');
     const broke = brokeBefore(root, targets, new Set(files), rev);
     const list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke, before: map && asWritten.get(map) });
+    if (changes) judge(list, { changes, read: readText(root), files });
     io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
     return 0;
   }

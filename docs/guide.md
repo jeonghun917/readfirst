@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.27.5 read <file>` (and `jeonghun917/readfirst@v0.27.5` for
+exactly the version you reviewed, pin it: `npx readfirst@0.28.0 read <file>` (and `jeonghun917/readfirst@v0.28.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -39,6 +39,18 @@ npx readfirst verify             # run the checks the map lists for everything y
                                  # on main with no origin/main, pass --base <ref>: your commits cannot be told from main)
 npx readfirst fix                # after moving code: place new files, drop patterns for deleted ones
 ```
+
+### Triggered or not
+
+`diff`, the MCP tool `changed_read_list` and the PR comment judge each risk and rule against the change itself, not
+only by the file. An item that names a function, a constant or a `file:line` is **triggered** when the change touches it
+(a changed line inside that function, or the name in an added or removed line), and says what it touched. One whose
+names the change did not touch goes under **Not triggered by this change**, whole, with the reason ("the change does not
+touch `refund`"): nothing is dropped. An item that names nothing readfirst can find in the code is shown by its files, as
+before, so a risk written as `` `refund` must use the original card `` is judged and "watch out for refunds" is not.
+Names count in backticks, or without them when they look like code (`camelCase`, `snake_case`, `UPPER_CASE`); a plain
+lowercase word counts only as a function in the files the item is about. A file with no readable patch counts as changed
+all through. `read` is not a change, so it shows every item.
 
 ### Where the code broke before
 
@@ -294,7 +306,9 @@ jobs:
 Each PR gets one comment, updated on every push (a read list longer than one comment goes on in a second, also updated
 in place; nothing is cut), that lists:
 - the rules, risks and checks for the files the PR changes, with the checks as boxes to tick; risks written for a
-  changed file stay open, and those that only share its group are folded under a summary with their count;
+  changed file stay open, and those that only share its group are folded under a summary with their count; rules and
+  risks the PR's change does not touch are folded under **Not triggered by this change**, each with its reason (see
+  [Triggered or not](#triggered-or-not));
 - the tests that reach the changed code, the files that use it and its hot spots, folded the same way;
 - **Files in this PR that broke before**, from the checkout's git log (see above). `actions/checkout` fetches only the
   last commit by default, so give it `fetch-depth: 200`; at depth 1 the section says "history not fetched (set
