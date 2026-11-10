@@ -197,6 +197,10 @@ A session started in a folder above your repositories works too: each edited fil
 it, and the Stop hook runs each repository's checks. Put the hook in that folder's `.claude/settings.json` with the
 command `npx readfirst hook` (and `npx readfirst hook --stop` for the Stop hook).
 
+The Stop hook gives each check 600 seconds and reports one that runs longer as failed (timeout). For a longer check,
+such as a full browser suite, pass `hook --stop --timeout <seconds>` and raise the hook's own `timeout` in the settings
+to cover all the checks together.
+
 ### See the map
 
 ```sh
