@@ -102,7 +102,12 @@ function declarations(path, body) {
     // `top`: the comment lines right above it, which describe it: evidence written at a function's comment is about it.
     let top = s.line;
     while (top > 1 && lines[top - 2].trim() && BLANK_OR_COMMENT.test(lines[top - 2])) top--;
-    return { ...s, top, end: own ?? end };
+    // Nothing runs past the next declaration that starts a line unindented: braceEnd can miss a statement's end (its
+    // semicolon inside a template line it cannot read) and find the next function's braces instead.
+    const next = starts.slice(k + 1).find((n) => /^\S/u.test(lines[n.line - 1]));
+    let limit = next ? next.line - 1 : lines.length;
+    if (next) while (limit > s.line && BLANK_OR_COMMENT.test(lines[limit - 1])) limit--;
+    return { ...s, top, end: Math.min(own ?? end, limit) };
   });
 }
 // The line of the brace that closes the block opened on or after line `at` (1-based), counting braces in code only;
@@ -116,7 +121,9 @@ function braceEnd(path, lines, at) {
       if (c === '{') { depth++; opened = true; } else if (c === '}') depth--;
     }
     if (opened && depth <= 0) return i + 1;
-    if (!opened && i === at - 1 && /;\s*$/u.test(code)) return i + 1;
+    // A statement with no block of its own ends at its semicolon, on whichever line: a const set to a template or a
+    // call over several lines ran on to the next function's closing brace (readfirst-cloud's ensureTable, 0.30.0).
+    if (!opened && /;\s*$/u.test(code)) return i + 1;
   }
   return null;
 }
