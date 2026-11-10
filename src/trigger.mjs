@@ -9,7 +9,7 @@
 // or removed line. An item that names nothing readfirst can find is triggered as before, by its files. When in doubt
 // (a file with no readable patch, a deleted file) everything in it counts as touched.
 import { definitions } from './find.mjs';
-import { groupOf, matcher } from './map.mjs';
+import { groupOf, isOwnFile, matcher } from './map.mjs';
 import { codeOnly } from './readlist.mjs';
 
 // The changed lines of one file from unified diff text: the new-side numbers of added lines and of the place a deletion
@@ -73,6 +73,13 @@ const IDENT = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/u;
 const FILE_LIKE = /\.(?:m?[jt]sx?|cjs|py|json|md|ya?ml|toml|lock|html|css|sh|txt)$/u;
 const PATH_LINE = /(?<![\w/.-])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z]\w*):(\d+)\b/gu;
 const PATH = /(?<![\w/.-])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z]\w*)(?![\w/-])/gu;
+// The files a risk is about: paths in its first clause (its subject, the way unshownRisks reads it), with or without an
+// extension (vendor/readfirst/VERSION), that the repository tracks or the change touches. A change to one triggers the
+// risk whatever names the text also holds: "vendor/readfirst/VERSION names the CLI commit ..." read as not triggered,
+// judged only by a const VERSION found in another file (until 0.32.0).
+const SUBJECT_PATH = /(?<![\w@/.-])((?:[\w.-]+\/)+[\w.-]*\w|[\w-][\w.-]*\.[A-Za-z]\w{0,9})(?![\w/-]|:\d)/gu; // path:line is evidence, judged by its line
+// readfirst's own files (the map) are left out, as in unshownRisks: a risk that quotes the map's path is not about it.
+const subjectPaths = (text, has) => [...new Set([...String(text).split(/[;,]|:\s|\.\s/u)[0].matchAll(SUBJECT_PATH)].map((m) => m[1]).filter((p) => has(p) && !isOwnFile(p)))];
 const CODE_NAME = /(?<![\w$.\/-])(?:[a-z]+[A-Z][\w$]*|[a-z]+_[a-z0-9_]+|[A-Z][A-Z0-9]*_[A-Z0-9_]+)(?![\w$\/-])/gu;
 const NOT_CODE = /(?:^|\/)\.readfirst\/|\.(?:md|mdx|markdown|txt|rst|json|jsonl|ya?ml|toml|lock|ini|cfg|html?|css|svg|csv)$/iu;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
@@ -225,9 +232,11 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
     const about = [];
     const by = [];
     const drifted = [];
+    const namedIn = new Set(); // files where a name the item gives is declared, or its evidence line sits
     for (const span of spans) {
       const found = declsOf(span, where, own, declIn);
       if (!found.length) continue;
+      for (const d of found) namedIn.add(d.path);
       about.push(`\`${span}\``);
       const name = span.split('.').pop();
       const lower = /^[a-z][a-z0-9]*$/u.test(name);
@@ -237,6 +246,7 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
     for (const m of String(text).matchAll(PATH_LINE)) {
       const [ref, path, at] = [m[0], m[1], Number(m[2])];
       if (!tracked.has(path) && !changes.has(path)) continue;
+      namedIn.add(path);
       const c = changes.get(path);
       // The evidence was written against the file before the change: find where that line is now.
       const now = c ? toNew(c, at) : at;
@@ -249,6 +259,13 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
       const d = declIn(path).filter((x) => x.line <= now).at(-1);
       const [from, to] = d && now <= d.end ? [d.line, d.end] : [now - 10, now + 10];
       if (touches(c, from, to)) by.push(ref);
+    }
+    // A subject path judges the item only where nothing it names is found: "ClassIndex in lib/flows.mjs" is about
+    // ClassIndex, not every change to lib/flows.mjs.
+    for (const path of subjectPaths(text, (p) => tracked.has(p) || changes.has(p))) {
+      if (about.includes(path) || namedIn.has(path)) continue;
+      about.push(path);
+      if (changes.has(path)) by.push(path);
     }
     const more = drifted.length ? { drifted } : {};
     if (!about.length) return { triggered: true, about, by, why: 'names no symbol or line readfirst can find: shown for its files', ...more };
@@ -325,7 +342,7 @@ export function unmatchedItems(map, { files = [], read = () => null, imports = [
     const own = new Set([...it.shown, ...mentioned]);
     const where = [...new Set([...own, ...importedBy(it.shown, imports)])];
     const named = spansOf(it.text).some((span) => declsOf(span, where, own, declIn).length);
-    const lined = [...it.text.matchAll(PATH_LINE)].some((m) => tracked.has(m[1]));
+    const lined = [...it.text.matchAll(PATH_LINE)].some((m) => tracked.has(m[1])) || subjectPaths(it.text, (p) => tracked.has(p)).length > 0;
     if (!named && !lined) out.push({ where: it.where, kind: it.kind, group: it.group ?? null, files: it.shown.length, text: it.text });
   }
   return out.sort((a, b) => b.files - a.files || a.where.localeCompare(b.where));
