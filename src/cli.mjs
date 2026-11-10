@@ -415,7 +415,7 @@ function physical(abs) {
 // command that writes files (src/bash-writes.mjs), prints the read list of the files as additionalContext, once per file
 // per session: every file the call writes, each repository's lines once, nothing cut (0.27.1; before, the first 10 files
 // and 12 lines per file). Never blocks by default; with --gate (`hook --gate`) the first call that touches a file it has
-// not shown is refused with the read list as the reason, and the same call goes through when made again, as welsmere's
+// not shown is refused with the read list as the reason, and the same call goes through when made again, as a
 // map gate does. Any problem means no output.
 // budget: how long it may spend looking up (the hook has 15 s). Files it had no time for are named, marked for the Stop
 // hook's checks, and looked up on the next call that writes them; with --gate the call is refused so it is made again.
@@ -798,7 +798,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   if (cmd === 'hook' && !args.install) {
     try {
       // --timeout (seconds per check) reaches the Stop hook too: it was accepted and ignored until 0.29.0, so a check
-      // longer than 600 s (welsmere's e2e chain, 1,065 s) was cut off and reported as failed. A bad value is said, not
+      // longer than 600 s (a browser test chain of 1,065 s) was cut off and reported as failed. A bad value is said, not
       // taken as the default.
       const timeout = args.timeout === undefined ? undefined : Number(args.timeout);
       if (timeout !== undefined && !(timeout > 0)) return letThrough(new Error('--timeout needs a number of seconds above 0'));
@@ -898,7 +898,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const line = (u) => `groups.${u.group}.risks[${u.index}] ${u.about ? 'is about' : 'mentions'} ${u.path}, but reading ${u.path} does not show it: add ${u.path} to its files (with the paths it should keep showing for), or write it where ${u.path} is`;
     const about = unshown.filter((u) => u.about).map(line);
     const mentions = unshown.filter((u) => !u.about).map(line);
-    // Evidence lines outside what their item names (readfirst-cloud#228): the line judges the item against a change, so
+    // Evidence lines outside what their item names (2026-11-10): the line judges the item against a change, so
     // one the code moved away from judges by the wrong code. Listed, failed with --strict; `fix` moves those git traces.
     const { drift, unanchored } = evidenceDrift(map, { files, read, history: evidenceHistory(root) });
     const driftLine = (d) => `${d.where}: ${d.ref} is outside ${d.names.map((n, i) => `\`${n}\` (line ${d.lines[i]})`).join(', ')}${d.now ? `: it moved to ${d.path}:${d.now}, \`readfirst fix\` writes that` : ': git does not show it moving there, so check it by hand (wrong from the start, or pointing elsewhere on purpose)'}`;
@@ -950,7 +950,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const fixed = fixMap(migrated.map, files);
     const { map, problems } = fixed;
     const changes = [...migrated.changes, ...fixed.changes];
-    // Evidence lines git shows moving with the code are written where they are now (readfirst-cloud#228).
+    // Evidence lines git shows moving with the code are written where they are now.
     for (const d of evidenceDrift(map, { files, read: readText(root), history: evidenceHistory(root) }).drift.filter((x) => x.now)) {
       const [, gid, i] = d.where.match(/^groups\.(.+)\.risks\[(\d+)\]$/u) ?? [];
       const item = gid !== undefined ? map.groups.find((g) => g.id === gid)?.risks?.[Number(i)] : map.rules?.find((r) => `rules.${r.id}` === d.where);

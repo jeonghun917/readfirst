@@ -702,7 +702,7 @@
     {
       "id": "no-paid-logic-in-free-code",
       "rule": "the public code holds no hosted-version logic: the prompts and steps that fill the map stay on the server",
-      "why": "the free code is MIT and public; the paid value is the server's judgement. The hosted design lives in the private readfirst-cloud repository.",
+      "why": "the free code is MIT and public; the paid value is the server's judgement.",
       "files": [
         "src/**"
       ]

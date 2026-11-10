@@ -1,4 +1,4 @@
-// Evidence lines that no longer point at what their risk names (readfirst-cloud#228, 2026-11-10): readfirst's own map
+// Evidence lines that no longer point at what their risk names (2026-11-10): readfirst's own map
 // had src/cli.mjs:108 in VERSION for a risk about loadMapLenient (now at 168), and src/bash-writes.mjs:36 in `opening`
 // for a risk about `unwrap` and `gitPaths`, and check passed. Since 0.28.0 the line judges a risk against a change, so a
 // drifted line judges by the wrong code. Now check lists them, fix moves the ones git shows moving, and the verdict

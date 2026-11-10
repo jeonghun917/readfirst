@@ -229,7 +229,7 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
       // The evidence was written against the file before the change: find where that line is now.
       const now = c ? toNew(c, at) : at;
       // A line outside everything the item names in that file may have moved with the code (src/cli.mjs:108 sat in
-      // VERSION, not loadMapLenient, until readfirst-cloud#228), or may point elsewhere on purpose. It still judges the
+      // VERSION, not loadMapLenient, until 0.30.0), or may point elsewhere on purpose. It still judges the
       // item (dropping it could hide a real hit), and the verdict and `check` say it may have moved.
       if (anchorOf(spans, path, now, declIn).state === 'drift') drifted.push(ref);
       about.push(ref);

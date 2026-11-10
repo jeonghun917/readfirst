@@ -192,7 +192,7 @@ test('every list of the read list has a place in the verdict layout, and a row o
     assert.ok(md.includes(shown), shown);
 });
 
-// welsmere, 2026-11-10: `hook --stop --timeout` was accepted and ignored, so its 1,065 s e2e chain was cut at the Stop
+// 2026-11-10: `hook --stop --timeout` was accepted and ignored, so a 1,065 s browser test chain was cut at the Stop
 // hook's 600 s and reported as failed while it passed. The value now reaches the Stop hook, through main.
 test('hook --stop --timeout reaches the Stop hook: a check longer than it is cut, the default lets it finish', async () => {
   const { runHook } = await import('../src/cli.mjs');
