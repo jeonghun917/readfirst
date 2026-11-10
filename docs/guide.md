@@ -209,6 +209,12 @@ The Stop hook gives each check 600 seconds and reports one that runs longer as f
 such as a full browser suite, pass `hook --stop --timeout <seconds>` and raise the hook's own `timeout` in the settings
 to cover all the checks together.
 
+Whether the notes were acted on: the Stop hook ends with one line for the session, what the map asked for the files
+you edited (checks to run, files that change together), what was done, every item that was not, and how many edits the
+gate refused were made again at once with no other edit or command in between (their notes were likely not read). It
+keeps that line in `readfirst-acted.jsonl` in the temp folder; `npx readfirst hook --report` adds up every session kept
+there and names each item not done, most often first. Nothing leaves the machine.
+
 ### See the map
 
 ```sh

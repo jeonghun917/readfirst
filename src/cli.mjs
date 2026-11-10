@@ -72,7 +72,8 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them;
                                  --record notes in .readfirst/held.json which rules held, at which commit)
   readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json;
-                                 --install --verify also runs the checks for edited files before Claude Code finishes)
+                                 --install --verify also runs the checks for edited files before Claude Code finishes;
+                                 --report: what each session was asked and did, from the Stop hook's lines)
   readfirst view [--out <file>]  the map as a city in one HTML page
   readfirst mcp                  MCP server on stdio for Cursor, Codex, Windsurf and other agents
   readfirst pending              map edits waiting on an unmerged upkeep branch (local refs, as of the last fetch)
@@ -85,7 +86,7 @@ Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; de
 
 // The on/off flags (name -> key in args) and the options that take a value. Anything else that starts with `--` is an
 // error: an unknown option used to take the next word as its value, so `hook --new-flag --stop` quietly ran the wrong hook.
-const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', git: 'git', ci: 'ci', stop: 'stop', gate: 'gate', help: 'help', version: 'version' };
+const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', git: 'git', ci: 'ci', stop: 'stop', gate: 'gate', report: 'report', help: 'help', version: 'version' };
 const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
 export function parse(argv) {
   const args = { _: [], json: false };
@@ -411,6 +412,18 @@ function physical(abs) {
   try { return join(realpathSync(dir), ...rest); } catch { return abs; }
 }
 
+// Step 4, whether the notes were acted on (2026-11-10): every call the hook sees is kept as call:<sig>, a refusal by the
+// gate as denied:<sig>, and the same call made again with no other edit or command in between as resent:<sig>:<time>
+// (the notes were likely not read: nothing was done between the refusal and the retry). The Stop hook counts them with
+// what the map asked and what was done (actedLine), and keeps one line per session in ACTED_LOG for `hook --report`.
+const callSig = (tool, targets) => createHash('sha1').update(`${tool}\0${targets.join('\0')}`).digest('hex').slice(0, 12);
+function lastCall(seen) {
+  let best = null;
+  for (const [k, at] of Object.entries(seen)) if (k.startsWith('call:') && (!best || at > best[1])) best = [k, at];
+  return best;
+}
+export const ACTED_LOG = 'readfirst-acted.jsonl';
+
 // Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file, or a Bash
 // command that writes files (src/bash-writes.mjs), prints the read list of the files as additionalContext, once per file
 // per session: every file the call writes, each repository's lines once, nothing cut (0.27.1; before, the first 10 files
@@ -432,14 +445,20 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const seen = readSeen(stateDir, event.session_id) ?? {};
     const before = { ...seen };
     const save = () => { try { addSeen(stateDir, event.session_id, before, seen); return true; } catch { return false; } };
+    const sig = callSig(tool, targets);
+    const prev = lastCall(seen);
+    if (prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]) seen[`resent:${sig}:${now}`] = now;
+    seen[`call:${sig}`] = now;
     if (!targets.length) {
       const root = repoOf(cwd);
-      if (root && !seen[`start:${root}`]) { seen[`start:${root}`] = now; save(); }
+      if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
+      save();
       return null;
     }
     const deadline = Date.now() + budget;
     const { notes, late } = notesFor(targets, seen, now, { deadline, stateDir });
     const waiting = pendingNotes(targets, seen, now);
+    if (gate && notes.length) seen[`denied:${sig}`] = now;
     const saved = save();
     const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
     if (!notes.length && !waiting.length && !lateLine) return null;
@@ -596,8 +615,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched):(.*)$/su);
-    if (tag && (tag[1] === 'pending' || tag[1] === 'notrun')) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -619,14 +638,49 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   // Checks that did not run block once for a state of the files: the mark says so to the next stop.
   const said = (key) => Boolean(seen[key]);
   const say = (key) => { try { addSeen(stateDir, event.session_id, {}, { [key]: Date.now() }); } catch { /* blocks again next time */ } };
+  const tally = { asked: 0, acted: 0, notActed: [] };
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
     const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say });
     if (r?.pass) passed.push(r.pass);
     if (r?.block) blocks.push(r.block);
+    if (r?.tally) { tally.asked += r.tally.asked; tally.acted += r.tally.acted; tally.notActed.push(...r.tally.notActed); }
   }
-  if (blocks.length) return JSON.stringify({ decision: 'block', reason: blocks.join('\n\n') });
-  if (passed.length) return JSON.stringify({ systemMessage: passed.join('\n') });
+  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length };
+  const line = actedLine(record);
+  if (line) { try { appendFileSync(join(stateDir, ACTED_LOG), `${JSON.stringify(record)}\n`); } catch { /* the line is still said */ } }
+  if (blocks.length) return JSON.stringify({ decision: 'block', reason: [...blocks, ...(line ? [line] : [])].join('\n\n') });
+  if (passed.length || line) return JSON.stringify({ systemMessage: [...passed, ...(line ? [line] : [])].join('\n') });
   return null;
+}
+
+// The Stop hook's last line (step 4): what the map asked for the files edited, what was done, what was not, and how
+// often a refused edit was made again at once. Every item not done is named.
+export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0 }) {
+  if (!asked && !resent) return null; // notes shown and nothing asked: the stop stays quiet, as before
+  const not = notActed.length ? `, not done: ${notActed.join('; ')}` : '';
+  const again = resent ? `; ${resent} refused edit(s) made again at once with nothing in between, so their notes were likely not read` : '';
+  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}.`;
+}
+
+// `readfirst hook --report`: the Stop hook's lines of every session kept in ACTED_LOG (the last one of each session),
+// added up, with every item not done and how often.
+export function hookReport({ stateDir = tmpdir() } = {}) {
+  let text = '';
+  try { text = readFileSync(join(stateDir, ACTED_LOG), 'utf8'); } catch { return 'readfirst hook --report: no session has been recorded yet (the Stop hook writes one line per session).'; }
+  const last = new Map();
+  for (const l of text.split('\n')) { try { const r = JSON.parse(l); if (r && typeof r.session === 'string') last.set(r.session, r); } catch { /* a line cut short */ } }
+  const rows = [...last.values()];
+  const sum = (k) => rows.reduce((n, r) => n + (Number(r[k]) || 0), 0);
+  const counts = new Map();
+  for (const r of rows) for (const x of r.notActed ?? []) counts.set(x, (counts.get(x) ?? 0) + 1);
+  const asked = sum('asked');
+  return [
+    `readfirst hook --report: ${rows.length} session(s)`,
+    `- notes shown for ${sum('shown')} file(s)`,
+    `- asked ${asked}, done ${sum('acted')}, not done ${asked - sum('acted')}`,
+    `- refused edits made again at once with nothing in between: ${sum('resent')}, in ${rows.filter((r) => r.resent > 0).length} session(s)`,
+    ...(counts.size ? ['Not done, most often first:', ...[...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
+  ].join('\n');
 }
 
 // The Stop hook for one repository: its map's checks for the files edited there that are still changed.
@@ -688,8 +742,13 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     const state = skipped.length ? `notrun:${root}:${treeState(root, dirty)}` : null;
     const blockNotRun = state && !said(state);
     if (blockNotRun) say(state);
-    if (!failed.length && !missing.length && !brokenLine && !blockNotRun) return { pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}${fromCommands}` };
-    return { block: [
+    const tally = {
+      asked: list.checks.length + list.together.length,
+      acted: result.length - failed.length + list.together.length - missing.length,
+      notActed: [...failed.map((c) => `\`${c.run}\` ${c.status}`), ...skipped.map((r) => `\`${r}\` not run`), ...missing.map((t) => `${t.also.join(', ')} not changed with ${t.for.join(', ')}`)],
+    };
+    if (!failed.length && !missing.length && !brokenLine && !blockNotRun) return { tally, pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}${fromCommands}` };
+    return { tally, block: [
       ...(brokenLine ? [brokenLine] : []),
       ...(failed.length ? [`readfirst verify${at}: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}${fromCommands}`] : []),
       ...(blockNotRun && !failed.length ? [`readfirst verify${at}: ${skipped.length} check(s) the map lists for the files you edited did not run (${result.length} ran and passed).${notRun} Run it, or say why they need not run, before you finish.${fromCommands}`] : []),
@@ -802,6 +861,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       // taken as the default.
       const timeout = args.timeout === undefined ? undefined : Number(args.timeout);
       if (timeout !== undefined && !(timeout > 0)) return letThrough(new Error('--timeout needs a number of seconds above 0'));
+      if (args.report) { io.out(`${hookReport()}\n`); return 0; }
       const out = args.stop ? runStopHook(stdin(), timeout ? { timeout } : {}) : runHook(stdin(), { gate: args.gate });
       if (out) io.out(`${out}\n`);
     } catch (e) { return letThrough(e); }
