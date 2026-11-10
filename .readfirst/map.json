@@ -464,6 +464,13 @@
           "files": [
             "src/trigger.mjs"
           ]
+        },
+        {
+          "text": "`braceEnd` (src/trigger.mjs) reads a declaration line by line, so it carries an open JavaScript template literal across lines (scanStack from src/shapes.mjs, backtickAt): a `${...}` placeholder inside a multi-line template is text, not a block. Without that, a const holding a prompt ended at its first placeholder and a change further down read as not touching it (test/template-span.test.mjs). A template inside a placeholder of a carried line is not followed",
+          "files": [
+            "src/trigger.mjs",
+            "src/shapes.mjs"
+          ]
         }
       ]
     },

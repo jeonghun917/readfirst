@@ -100,7 +100,7 @@ function depthChange(text, py) {
 // whose lines are statements again even inside a call: `items.forEach((x) => {`) and 'p' for ( [ and a brace that
 // opens an object literal or a type. A line is a statement start when the top of the stack is a block or empty. `tpl`
 // carries an open template literal over to the next line. Returns the new { stack, tpl }.
-function scanStack(state, text) {
+export function scanStack(state, text) {
   const stack = state.stack.slice();
   let q = state.tpl ? '`' : null;
   let last = state.last ?? ''; // the last significant character so far, carried over from the lines above

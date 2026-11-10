@@ -11,6 +11,7 @@
 import { definitions } from './find.mjs';
 import { groupOf, isOwnFile, matcher } from './map.mjs';
 import { codeOnly } from './readlist.mjs';
+import { scanStack } from './shapes.mjs';
 
 // The changed lines of one file from unified diff text: the new-side numbers of added lines and of the place a deletion
 // was made, and the text of every added and removed line. Works on `git diff -U0` and on a pull request file's `patch`
@@ -122,8 +123,20 @@ function declarations(path, body) {
 function braceEnd(path, lines, at) {
   let depth = 0;
   let opened = false;
+  // Inside a JavaScript template literal carried over from an earlier line: its text is not code. Read line by line,
+  // a `${OUT}` placeholder in a prompt's fourth line opened and closed a block there and ended the const (until 0.32.0).
+  let template = false;
+  const js = !/\.py$/u.test(path);
   for (let i = at - 1; i < lines.length; i++) {
-    const code = codeText(path, lines[i]);
+    let raw = lines[i];
+    if (js && template) {
+      const close = backtickAt(raw);
+      if (close < 0) continue;
+      raw = ' '.repeat(close + 1) + raw.slice(close + 1);
+      template = false;
+    }
+    if (js) template = scanStack({ stack: [], tpl: false }, raw).tpl;
+    const code = codeText(path, raw);
     for (const c of code) {
       if (c === '{') { depth++; opened = true; } else if (c === '}') depth--;
     }
@@ -133,6 +146,14 @@ function braceEnd(path, lines, at) {
     if (!opened && /;\s*$/u.test(code)) return i + 1;
   }
   return null;
+}
+// The index of the backtick that closes a template literal carried into this line, or -1 when the line does not close it.
+function backtickAt(line) {
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '\\') i++;
+    else if (line[i] === '`') return i;
+  }
+  return -1;
 }
 // Python: the last line before the next non-blank line indented no deeper than the declaration.
 function pyEnd(lines, at) {
