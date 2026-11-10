@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.29.0 read <file>` (and `jeonghun917/readfirst@v0.29.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.29.1 read <file>` (and `jeonghun917/readfirst@v0.29.1` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -196,6 +196,10 @@ changed during the session by a command readfirst cannot read (a script, a gener
 A session started in a folder above your repositories works too: each edited file belongs to the repository that holds
 it, and the Stop hook runs each repository's checks. Put the hook in that folder's `.claude/settings.json` with the
 command `npx readfirst hook` (and `npx readfirst hook --stop` for the Stop hook).
+
+The Stop hook gives each check 600 seconds and reports one that runs longer as failed (timeout). For a longer check,
+such as a full browser suite, pass `hook --stop --timeout <seconds>` and raise the hook's own `timeout` in the settings
+to cover all the checks together.
 
 ### See the map
 

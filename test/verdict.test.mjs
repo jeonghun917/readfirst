@@ -191,3 +191,19 @@ test('every list of the read list has a place in the verdict layout, and a row o
   for (const shown of ['src/pay.js', 'amounts are in cents', 'npm test', 'docs/pay.md', 'group **legacy** is being replaced', 'acme/shop', '`charge` (`src/pay.js:1`)', 'POST /pay', '`requireUser`', 'test/pay.test.js', 'src/shop.js:9', '`src/new.js`: in no group', 'line 3 loads a module by a computed name'])
     assert.ok(md.includes(shown), shown);
 });
+
+// welsmere, 2026-11-10: `hook --stop --timeout` was accepted and ignored, so its 1,065 s e2e chain was cut at the Stop
+// hook's 600 s and reported as failed while it passed. The value now reaches the Stop hook, through main.
+test('hook --stop --timeout reaches the Stop hook: a check longer than it is cut, the default lets it finish', async () => {
+  const { runHook } = await import('../src/cli.mjs');
+  const slowMap = { format: MAP_FORMAT, groups: [{ id: 'pay', title: 'Payments', files: ['src/**'], checks: [{ run: 'node -e "setTimeout(()=>{},3000)"', why: 'slow' }] }] };
+  const { root, git } = repo({ 'src/pay.js': PAY, '.readfirst/map.json': JSON.stringify(slowMap) });
+  git('checkout', '-q', '-b', 'work');
+  const session = `timeout-${process.pid}-${Date.now()}`;
+  runHook(JSON.stringify({ session_id: session, cwd: root, tool_name: 'Edit', tool_input: { file_path: join(root, 'src/pay.js') } }));
+  writeFileSync(join(root, 'src/pay.js'), `${PAY}// changed\n`);
+  const stop = (...flags) => { let out = ''; main(['hook', '--stop', ...flags], { out: (s) => { out += s; }, err: () => {} }, () => JSON.stringify({ session_id: session, cwd: root, stop_hook_active: false })); return out; };
+  assert.match(stop('--timeout', '1'), /"decision":"block".*timeout/su, 'cut at 1 s');
+  assert.doesNotMatch(stop(), /"decision":"block"/u, 'the default 600 s lets the 3 s check pass');
+  assert.match(stop('--timeout', 'x'), /--timeout needs a number of seconds above 0/u, 'a bad value is said');
+});

@@ -77,7 +77,7 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst pending              map edits waiting on an unmerged upkeep branch (local refs, as of the last fetch)
   readfirst prompt --labels <lang>  brief for your agent to write personal labels for the view (e.g. ko, en)
 
-Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; default 900), --force (init: replace the map),
+Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; default 900; hook --stop: default 600), --force (init: replace the map),
          --version; an option's value can also follow an = (--base=main),
          --agent (init: also run setup), --for (setup: the agents to wire, e.g. cursor,codex),
          --ci (init: add .github/workflows/readfirst.yml, the Action with auto-fix)`;
@@ -784,7 +784,12 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   if (args.help || !cmd) { io.out(`${HELP}\n`); return cmd || args.help ? 0 : 2; }
   if (cmd === 'hook' && !args.install) {
     try {
-      const out = args.stop ? runStopHook(stdin()) : runHook(stdin(), { gate: args.gate });
+      // --timeout (seconds per check) reaches the Stop hook too: it was accepted and ignored until 0.29.0, so a check
+      // longer than 600 s (welsmere's e2e chain, 1,065 s) was cut off and reported as failed. A bad value is said, not
+      // taken as the default.
+      const timeout = args.timeout === undefined ? undefined : Number(args.timeout);
+      if (timeout !== undefined && !(timeout > 0)) return letThrough(new Error('--timeout needs a number of seconds above 0'));
+      const out = args.stop ? runStopHook(stdin(), timeout ? { timeout } : {}) : runHook(stdin(), { gate: args.gate });
       if (out) io.out(`${out}\n`);
     } catch (e) { return letThrough(e); }
     return 0;
