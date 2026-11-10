@@ -39,7 +39,7 @@
           ]
         },
         {
-          "text": "`check` reports map problems and exits 1. prompt goes through loadMap, which settles the map as check does (settleMap) and throws (exit 2 from bin) only on what check fails on. read, diff, view, verify and export --cursor use loadMapLenient (read and diff, and the PreToolUse hook and audit, also work with no map at all: they then show only where the code broke before, from git history, and `readList` gets a null map): they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:108",
+          "text": "`check` reports map problems and exits 1. prompt goes through loadMap, which settles the map as check does (settleMap) and throws (exit 2 from bin) only on what check fails on. read, diff, view, verify and export --cursor use loadMapLenient (read and diff, and the PreToolUse hook and audit, also work with no map at all: they then show only where the code broke before, from git history, and `readList` gets a null map): they only note on stderr when the map is behind the code (files in no group, patterns for deleted files) and still throw when the map is broken in itself (mapProblems with placement: false) - src/cli.mjs:168",
           "files": [
             "src/cli.mjs",
             "bin/**"
@@ -76,7 +76,7 @@
           ]
         },
         {
-          "text": "runHook and runStopHook find the repository from each edited file, not from the session's folder: a session can start in a folder above several repositories, and the hook state keeps absolute paths (older state files with relative paths still read against the session's repository). The state is append-only (readfirst-hook-<session>.lines in the temp folder, one [key, time] JSON line per marked file, written in one append): hooks of one session run at the same time, and reading and rewriting one JSON object lost the files of all but the last writer. The older .json object file is still read (readSeen) and never written. Each path is resolved through symlinks first (physical(): the nearest existing folder through realpath), because git gives the physical top level: a file reached through a linked folder (/tmp/lnk -> /tmp/x/r, or macOS /var -> /private/var) would otherwise be outside its repository and the hook silent. Looking the root up from event.cwd again would make the hook silent in that setup (rootOf finds it per file) - src/cli.mjs:441"
+          "text": "runHook and runStopHook find the repository from each edited file, not from the session's folder: a session can start in a folder above several repositories, and the hook state keeps absolute paths (older state files with relative paths still read against the session's repository). The state is append-only (readfirst-hook-<session>.lines in the temp folder, one [key, time] JSON line per marked file, written in one append): hooks of one session run at the same time, and reading and rewriting one JSON object lost the files of all but the last writer. The older .json object file is still read (readSeen) and never written. Each path is resolved through symlinks first (physical(): the nearest existing folder through realpath), because git gives the physical top level: a file reached through a linked folder (/tmp/lnk -> /tmp/x/r, or macOS /var -> /private/var) would otherwise be outside its repository and the hook silent. Looking the root up from event.cwd again would make the hook silent in that setup (rootOf finds it per file) - src/cli.mjs:458"
         },
         {
           "text": "the PreToolUse hook reads Bash commands too: src/bash-writes.mjs names the files a command writes (redirects, sed -i / perl -i, tee, cp/mv destinations, git checkout of paths, code that writes run by python/node/sh from -c, -e or a here-document: only the targets of its write calls, resolved by codeTargets from a literal, an assigned variable, a parameter, a for-loop, a glob or the script's arguments, falling back to the files it names that exist) and only those; file arguments are read per command through OPTIONS/options() in bash-writes.mjs: < and 2> redirects and option values (truncate -s N, sed -e/-f SCRIPT, cp/mv/install -t DIR, which is then the destination) are dropped first, and only -i, -i<suffix>, --in-place or a flag cluster reaching i make sed/perl write (perl -M<module>, -I<dir> do not); a command whose options are not in OPTIONS gets no option values dropped; segments split at ; && | and newlines outside quotes only, so node -e \"a; fs.writeFileSync(f)\" stays one command, and a here-document belongs to the last command on its line and its paths start after the cds before it; after a cd to a variable (cd $D) relative paths are not named at all; a command that merely reads or runs tests must give none, or every Bash call would carry notes. The matcher in installHook and plugins/readfirst/hooks/hooks.json includes Bash; with --gate the first call on an unseen file is denied with the notes and the retry passes, because the notes mark the file as seen. Quotes are read by blank()/closeOf(): they open again inside $( ) (so a > in python3 -c \"...\" inside \"$(...)\" is code, not a redirect, and a redirect inside $( ) is a write ending at its ); a regex once read `i>=0` there as a write to `=0`), and a quote that never closes is a plain character",
@@ -214,7 +214,7 @@
           ]
         },
         {
-          "text": "the Action's PR comment renders the read list with toMarkdown(..., { fold: true }): risks whose own files name a changed file stay open, while group-wide risks, hot spots, tests and users go under <details> with their count (readfirst#118: 17,051 characters, 67% group-wide risks). A risk is `named` only when it has `files`; a map whose risks carry no files gets every risk folded. read, diff and --json are unfolded",
+          "text": "the Action's PR comment and `diff` render a judged read list with toMarkdown(..., { verdict }) (0.29.0): the verdict (src/verdict.mjs) first, then the rules and risks the change touches, then those it could not match (risks whose own files name a changed file open, group-wide ones folded), then the rest folded with their counts (not triggered, hot spots, flows, vocabulary, tests, users, broke before). The checks, change-together, being-replaced and other-repository rows are in the verdict and not listed again. toMarkdown returns before the plain layout when given a verdict, so a new section added to the plain layout is missing from diff and the PR comment unless verdictMarkdown shows it too (VERDICT_PLACES and its test catch a new list of the read list, not a new section of an old one). `read` and --json keep the plain layout. A risk is `named` only when it has `files`; a map whose risks carry no files gets every unmatched risk folded",
           "files": [
             "src/action.mjs",
             "src/readlist.mjs"
@@ -263,7 +263,8 @@
         "src/pins.mjs",
         "src/bash-writes.mjs",
         "src/git-hooks.mjs",
-        "src/trigger.mjs"
+        "src/trigger.mjs",
+        "src/verdict.mjs"
       ],
       "checks": [
         {
@@ -441,6 +442,14 @@
           "text": "src/trigger.mjs judges each risk and rule of a change's read list (judge, used by `diff` and the Action, not by `read`): what it is about is the backticked names and the code-looking names (camelCase, snake_case, UPPER_CASE with _) declared in the files it is shown for, the files its text names or the changed files, plus its path:line evidence, which is carried from the file before the change to where it is now (toNew, from the hunk headers). Triggered when a changed line falls in that declaration (to its own closing brace, or in Python its indent; else up to the next declaration less the blank and comment lines above it) or the name is in an added or removed line of code (not in docs, the map, config, comments or strings: on its own PR the map edit and trigger.mjs's comments named runHook and changedFiles); a plain lowercase word counts only as a function in the item's own files and never by appearing in the diff (a test's own `run` helper and the word `files` made risks read as touched on readfirst#139). An item naming nothing found is triggered by its files, as before, and a not-triggered one is listed with its reason, never dropped. Evidence that has drifted from its code (src/cli.mjs:266 pointed into verifyChecks for a risk about rootOf until 0.28.0) gives a wrong verdict: check the line when a risk reads as triggered or not for no reason.",
           "files": [
             "src/trigger.mjs",
+            "src/readlist.mjs",
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "src/verdict.mjs writes the verdict from the read list by template, in en or ko (VERDICT_TEXT): every count it gives must be of rows shown below it, and every line a reader must act on (blocked, to do) must come from a row, never from a guess. A new kind of row the verdict should count goes into sortRows or verdictLines and into every language of VERDICT_TEXT: a string in `en` alone would throw for `ko` at render time (t.x is not a function), and test/verdict.test.mjs fails on a language missing a key. The language is `diff --lang`, else the one verdict language among this clone's labels (diffLang in src/cli.mjs), else en; the Action reads the `language` input. An unknown code is said in the verdict and the job log, never silently English. Only the template is translated: the map's text is never machine-translated here (no-network-in-cli, no model)",
+          "files": [
+            "src/verdict.mjs",
             "src/readlist.mjs",
             "src/action.mjs"
           ]

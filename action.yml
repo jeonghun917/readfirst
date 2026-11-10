@@ -23,6 +23,9 @@ inputs:
   limit:
     description: Most tests and users listed per section; empty (the default) lists them all.
     default: ''
+  language:
+    description: 'Language of the verdict at the top of the comment: en (the default) or ko. The map''s rules and risks stay as the map writes them.'
+    default: 'en'
 runs:
   using: composite
   steps:
@@ -38,3 +41,4 @@ runs:
         INPUT_LIMIT: ${{ inputs.limit }}
         INPUT_STRICT: ${{ inputs.strict }}
         INPUT_AUTO_FIX: ${{ inputs.auto-fix }}
+        INPUT_LANGUAGE: ${{ inputs.language }}

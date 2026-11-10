@@ -308,7 +308,7 @@ test('the Action comment lists the PR\'s files that broke before, and says when 
   const { root } = history({ map: true });
   const changed = [{ filename: 'src/pay.js', status: 'modified' }, { filename: 'README.md', status: 'modified' }];
   const body = await send(root, changed);
-  assert.match(body, /## Files in this PR that broke before\n\n- `src\/pay\.js`: broke before: 3 fixes, last/u);
+  assert.match(body, /<details><summary>Files in this PR that broke before \(1\)<\/summary>\n\n- `src\/pay\.js`: broke before: 3 fixes, last/u, 'folded under the verdict, with the number of files');
   assert.ok(!body.includes('README.md`: broke before'));
   // The PR's own commits are not history: a hotfix on the branch does not make its file "broke before".
   const { root: prRoot, git: prGit } = history({ map: true });
@@ -326,7 +326,7 @@ test('the Action comment lists the PR\'s files that broke before, and says when 
   const shallow = mkdtempSync(join(tmpdir(), 'readfirst-action-shallow-'));
   execFileSync('git', ['clone', '-q', '--depth', '1', `file://${root}`, shallow]);
   const thin = await send(shallow, changed);
-  assert.match(thin, /## Files in this PR that broke before\n\n- history not fetched for `src\/pay\.js` \(set fetch-depth: 200 on actions\/checkout\)/u);
+  assert.match(thin, /<details><summary>Files in this PR that broke before \(1\)<\/summary>\n\n- history not fetched for `src\/pay\.js` \(set fetch-depth: 200 on actions\/checkout\)/u);
   assert.match(thin, /## readfirst/u);
   assert.match(thin, /amounts are in cents/u, 'the rest of the comment is unchanged');
   // No history to speak of (a repository with no commits): no section.

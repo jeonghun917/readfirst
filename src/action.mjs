@@ -9,6 +9,7 @@ import { baseRevision, brokeBefore } from './history.mjs';
 import { judge, parsePatch } from './trigger.mjs';
 import { MAP_PATH, settleMap, unBom } from './map.mjs';
 import { brokeSection, readList, toMarkdown } from './readlist.mjs';
+import { verdictLang, verdictLines } from './verdict.mjs';
 
 export const MARKER = '<!-- readfirst:pr-comment -->';
 // A read list longer than one comment goes on in more comments, each found again by its own marker and edited in place
@@ -38,8 +39,11 @@ async function pages(fetchImpl, env, path) {
 
 export const FETCH_DEPTH_HINT = ' (set fetch-depth: 200 on actions/checkout)';
 
-export function commentBody({ list, problems, removed, commit, fixes = [], settled = [], committed = null, broke = [] }) {
+// The verdict comes first (src/verdict.mjs, in `lang`): what to do, what is blocked, what was not checked, which other
+// repositories; then the map's problems or what was settled, then the read list in the verdict layout.
+export function commentBody({ list, problems, removed, commit, fixes = [], settled = [], committed = null, broke = [], lang = 'en' }) {
   const parts = [MARKER, '## readfirst', ''];
+  if (list || problems.length) parts.push(...verdictLines(list, { lang, where: 'pr', problems, broke, checklist: true }));
   if (problems.length) {
     parts.push(`> [!WARNING]\n> \`${MAP_PATH}\` no longer matches the code (${problems.length} problem${problems.length > 1 ? 's' : ''}). Run \`npx readfirst check\` and fix the map in this PR.`, '');
     parts.push(...problems.map((p) => `- ${p}`), '');
@@ -49,9 +53,11 @@ export function commentBody({ list, problems, removed, commit, fixes = [], settl
   } else if (settled.length) {
     parts.push(`<details><summary>New files placed by their neighbours (${settled.length})</summary>`, '', ...settled.map((f) => `- ${f}`), '', '`npx readfirst fix` writes this into the map; nothing to do for this PR.', '</details>', '');
   }
-  if (list) parts.push(toMarkdown(list, { checklist: true, heading: null, broke: false, fold: true }));
+  if (list) parts.push(toMarkdown(list, { checklist: true, heading: null, broke: false, fold: true, verdict: { lang, where: 'pr', top: false } }));
   else if (!problems.length && !broke.length) parts.push('No changed files to look up.', '');
-  parts.push(...brokeSection(broke, { title: 'Files in this PR that broke before', hint: FETCH_DEPTH_HINT }));
+  // Folded under the verdict like the rest, with the number of files, every line inside.
+  const scars = brokeSection(broke, { title: 'Files in this PR that broke before', hint: FETCH_DEPTH_HINT });
+  if (scars.length) parts.push(`<details><summary>Files in this PR that broke before (${broke.length})</summary>`, ...scars.filter((l) => !l.startsWith('## ')), '</details>', '');
   if (removed.length) parts.push(`Removed in this PR: ${removed.map((f) => `\`${f}\``).join(', ')}`, '');
   parts.push(`<sub>From \`${MAP_PATH}\`${commit ? ` at ${commit.slice(0, 7)}` : ''}. Tick each check once it has run.</sub>`);
   return parts.join('\n');
@@ -103,6 +109,9 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   const settled = problems.length ? [] : s.settled;
   const fixes = problems.length ? s.settled : [];
   const failOnProblems = (env['INPUT_FAIL-ON-MAP-PROBLEMS'] ?? env.INPUT_FAIL_ON_MAP_PROBLEMS ?? 'true') !== 'false';
+  // `language`: the verdict's language (en, ko); one readfirst has no words for is said in the verdict and the log.
+  const lang = (env.INPUT_LANGUAGE ?? '').trim() || 'en';
+  if (verdictLang(lang).note) log(`::warning::readfirst: no "${lang}" text for the verdict yet (en, ko); it is in English.`);
   const event = env.GITHUB_EVENT_PATH ? JSON.parse(readFileSync(env.GITHUB_EVENT_PATH, 'utf8')) : {};
   const pr = event.pull_request;
   const summary = (s) => { if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, `${s}\n`); };
@@ -146,7 +155,7 @@ export async function runAction({ env = process.env, fetchImpl = fetch, root = e
   // From the checkout's git log at the PR's base (not the PR's own commits), whatever the map says. A checkout fetched at depth 1 has none: that is said, not hidden.
   const found = brokeBefore(root, targets, new Set(files), baseRevision(root, pr.base?.sha));
   const broke = targets.filter((t) => found[t]).map((t) => ({ path: t, brokeBefore: found[t] }));
-  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled, committed, broke });
+  const body = commentBody({ list, problems, removed, commit: pr.head?.sha ?? null, fixes, settled, committed, broke, lang });
   summary(body);
 
   if ((env.INPUT_COMMENT ?? 'true') !== 'false') {
