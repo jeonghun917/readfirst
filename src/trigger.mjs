@@ -212,10 +212,15 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
   const changedText = [...changes].filter(([path]) => !NOT_CODE.test(path)).flatMap(([path, c]) => c.text.map((l) => ({ path, code: codeText(path, l) })));
   // in: only the changed lines of these files (a capital constant used in the item's own files, not a test's own MAP).
   const named = (name, inPaths = null) => { const re = new RegExp(`(?<![\\w$])${esc(name)}(?![\\w$])`, 'u'); return changedText.some((t) => (!inPaths || inPaths.has(t.path)) && re.test(t.code)); };
-  const judgeOne = (text, shownFor) => {
+  // A changed file of another group does not lend its names to a group's risk: vendor/readfirst/src/trigger.mjs, a copy
+  // with a NOT_CODE of its own, made a risk about the package's NOT_CODE read as touched (readfirst-cloud#233). Its own
+  // files, the files it names and what they import still count wherever they are.
+  const groupOf = new Map((list.targets ?? []).map((t) => [t.path, t.group]));
+  const judgeOne = (text, shownFor, group = null) => {
     const spans = spansOf(text);
     const mentioned = [...String(text).matchAll(PATH)].map((m) => m[1]).filter((p) => tracked.has(p));
-    const where = [...new Set([...shownFor, ...mentioned, ...changes.keys(), ...importedBy(shownFor, imports)])].filter((p) => tracked.has(p) || changes.has(p));
+    const changedHere = [...changes.keys()].filter((p) => !group || !groupOf.has(p) || groupOf.get(p) === group);
+    const where = [...new Set([...shownFor, ...mentioned, ...changedHere, ...importedBy(shownFor, imports)])].filter((p) => tracked.has(p) || changes.has(p));
     const own = new Set([...shownFor, ...mentioned]);
     const about = [];
     const by = [];
@@ -249,7 +254,7 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
     if (!about.length) return { triggered: true, about, by, why: 'names no symbol or line readfirst can find: shown for its files', ...more };
     return by.length ? { triggered: true, about, by, ...more } : { triggered: false, about, by, why: `the change does not touch ${about.join(', ')}`, ...more };
   };
-  for (const r of list.risks ?? []) r.trigger = judgeOne(r.text, r.for ?? []);
+  for (const r of list.risks ?? []) r.trigger = judgeOne(r.text, r.for ?? [], r.group ?? null);
   for (const r of list.rules ?? []) r.trigger = judgeOne(r.rule, r.for ?? []);
   return list;
 }
