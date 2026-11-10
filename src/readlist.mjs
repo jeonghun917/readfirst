@@ -1,6 +1,7 @@
 // The read list for files someone is about to change: the rules that cover them, the risks written for their group,
 // the checks to run (the group's commands, the rules' commands, and the tests that import them), and who uses them.
 import { evidenceFile, fixMap, groupOf, isOwnFile, matcher, modelName, risksNaming, vocabularyName } from './map.mjs';
+import { sortRows, verdictLines } from './verdict.mjs';
 
 export const READ_LIST_FORMAT = 'readfirst/read-list@1';
 // Test files by folder or name, across the languages imports.mjs reads: JS/TS, Python, Go, Rust (tests/), Elixir,
@@ -199,54 +200,129 @@ export function brokeSection(targets, { title = 'Broke before', hint = ' (this c
 // fold (the Action's PR comment): risks that name a changed file stay open; group-wide risks, hot spots, tests and users
 // go under <details> with their count, so a PR touching a big group is not a wall of text (readfirst#118: 17,051
 // characters, 67% of them group-wide risks). Nothing is dropped.
-export function toMarkdown(list, { checklist = false, heading, broke = true, fold = false } = {}) {
+// verdict (diff and the Action, a judged list): src/verdict.mjs's verdict first ({ lang, where, problems }), with the
+// checks, the files to change too, what is being replaced and the other repositories in it; then the rules and risks
+// the change touches, in full; then those readfirst could not match, in full (group-wide ones folded with fold); then
+// everything else, folded with fold. Nothing is dropped: each row is in exactly one place.
+export function toMarkdown(list, { checklist = false, heading, broke = true, fold = false, verdict = null } = {}) {
   const title = heading === undefined ? `# Read first: ${list.targets.map((t) => `\`${t.path}\``).join(', ')}` : heading;
   const lines = title === null ? [] : [title, ''];
-  const many = list.targets.length > 1;
-  const forWhom = (row, also = null) => {
-    const parts = [also, many ? row.for.join(', ') : null].filter(Boolean);
-    return parts.length ? ` _(${parts.join(' · ')})_` : '';
-  };
+  if (verdict) return verdictMarkdown(list, lines, { checklist, broke, fold, ...verdict });
+  const { section, folded } = writer(lines, fold);
+  const w = renderers(list, checklist);
+  section('Being replaced', list.deprecated ?? [], w.deprecated);
+  // Triggered or not (0.28.0, src/trigger.mjs): a row judged against the change and not triggered goes to its own section,
+  // whole, with the reason; a triggered one says what of it the change touched. Rows never judged (read) show as before.
+  const off = (r) => r.trigger?.triggered === false;
+  const rules = list.rules.filter((r) => !off(r));
+  const risks = list.risks.filter((r) => !off(r));
+  section('Rules that must keep holding', rules, w.rule);
+  if (fold) {
+    section('Watch out', risks.filter((r) => r.named), w.risk);
+    folded(risks.some((r) => r.named) ? 'More to watch out for in the groups of these files' : 'Watch out (the groups of these files)', risks.filter((r) => !r.named), w.risk);
+  } else section('Watch out', risks, w.risk);
+  folded('Not triggered by this change', [...list.rules.filter(off), ...list.risks.filter(off)], w.off);
+  if (broke) lines.push(...brokeSection(list.targets));
+  folded('Hot spots in this code', list.hotspots ?? [], w.hotspot);
+  section('Outside input reaches this code', list.flows ?? [], w.flow);
+  section('This repository\'s words', list.vocabulary ?? [], w.vocab);
+  section('Change these too', list.together ?? [], w.together);
+  section('Other repositories depend on this', list.dependents ?? [], w.dependent);
+  section('Run these checks', list.checks, w.check);
+  tail(list, lines, { folded, section, w, broke });
+  return lines.join('\n');
+}
+
+// section: a plain "## title" section; folded: the same rows under <details> with their count (fold only; otherwise a
+// plain section). Both push to `lines` and skip an empty list.
+function writer(lines, fold) {
   const section = (title, rows, render) => {
     if (!rows.length) return;
     lines.push(`## ${title}`, '', ...rows.map(render), '');
   };
-  // The same rows, folded under a summary with their count (fold only; otherwise a plain section).
   const folded = (title, rows, render, more = []) => {
     if (!rows.length) return;
     if (!fold) { lines.push(`## ${title}`, '', ...rows.map(render), ...more, ''); return; }
     lines.push(`<details><summary>${title} (${rows.length})</summary>`, '', ...rows.map(render), ...more, '', '</details>', '');
   };
-  section('Being replaced', list.deprecated ?? [], (d) => `- group **${d.group}** is being replaced${d.use ? `: use \`${d.use}\` instead` : ''} — ${d.why}${forWhom(d)}`);
+  return { section, folded };
+}
+
+// One line per row of each kind, the same in every layout of the read list.
+function renderers(list, checklist) {
+  const many = list.targets.length > 1;
+  const forWhom = (row, also = null) => {
+    const parts = [also, many ? row.for.join(', ') : null].filter(Boolean);
+    return parts.length ? ` _(${parts.join(' · ')})_` : '';
+  };
   const heldNote = (r) => (r.held ? ` _(held at ${r.held.commit.slice(0, 7)} on ${r.held.date})_` : r.held === null ? ' _(never recorded as holding)_' : '');
-  // Triggered or not (0.28.0, src/trigger.mjs): a row judged against the change and not triggered goes to its own section,
-  // whole, with the reason; a triggered one says what of it the change touched. Rows never judged (read) show as before.
-  const off = (r) => r.trigger?.triggered === false;
   const touched = (r) => (r.trigger?.by?.length ? ` _(the change touches ${r.trigger.by.join(', ')})_` : '');
-  const rules = list.rules.filter((r) => !off(r));
-  const risks = list.risks.filter((r) => !off(r));
-  section('Rules that must keep holding', rules, (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${heldNote(r)}${touched(r)}${forWhom(r)}`);
-  const risk = (r) => `- ${r.text}${touched(r)}${forWhom(r, `group ${r.group}`)}`;
-  if (fold) {
-    section('Watch out', risks.filter((r) => r.named), risk);
-    folded(risks.some((r) => r.named) ? 'More to watch out for in the groups of these files' : 'Watch out (the groups of these files)', risks.filter((r) => !r.named), risk);
-  } else section('Watch out', risks, risk);
-  folded('Not triggered by this change', [...list.rules.filter(off).map((r) => ({ ...r, line: `**${r.id}**: ${r.rule}` })), ...list.risks.filter(off).map((r) => ({ ...r, line: r.text }))],
-    (r) => `- not triggered (${r.trigger.why}): ${r.line}${forWhom(r, r.group ? `group ${r.group}` : null)}`);
-  if (broke) lines.push(...brokeSection(list.targets));
-  folded('Hot spots in this code', list.hotspots ?? [], (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`);
-  section('Outside input reaches this code', list.flows ?? [], (f) => `- **${f.entry}** (\`${f.file}:${f.line}\`) reaches ${f.reaches.map((r) => `\`${r.symbol}\` (\`${r.file}:${r.line}\`: ${r.labels.join(', ')}${r.tables?.length ? ` on ${r.tables.map((t) => `\`${t}\``).join(', ')}` : ''}${r.inputs?.length ? `, with input ${r.inputs.map((t) => `\`${t.replace(/`/gu, "'")}\``).join(', ')}` : ''})`).join(', ')}; ${f.checks.length ? `checked by ${f.checks.map((c) => `\`${c}\``).join(', ')}` : 'no check of who may do it found on the way'}${forWhom(f)}`);
   const said = { entry: 'is where outside input enters', check: 'decides who may do something', sink: 'does something that matters', neutral: 'looks like one but is none of these', checks: 'decides who may do something', sinks: 'does something that matters', notChecks: 'is not a check', entries: 'declares a route', checksIf: 'decides who may do something only where the code matches', notSinks: 'does not write or call out', once: 'keeps a job or webhook from running twice', sources: 'returns outside input' };
-  section('This repository\'s words', list.vocabulary ?? [], (v) => `- \`${v.name}\` (\`${v.evidence}\`) ${said[v.kind] ?? v.kind}${v.when ? ` \`${v.when.replace(/`/gu, "'")}\`` : ''}${v.within ? ` inside \`@${v.within}\`` : ''}${v.check ? `, checked by \`${v.check.replace(/`/gu, "'")}\`${v.unless ? ` unless \`${v.unless.replace(/`/gu, "'")}\`` : ''}` : ''}${v.label ? ` (${v.label})` : ''}${v.why ? `: ${v.why}` : ''}${forWhom(v)}`);
-  section('Change these too', list.together ?? [], (t) => `- ${t.also.map((a) => `\`${a}\``).join(' or ')}${t.changed ? ' (changed)' : ''} — ${t.why}${forWhom(t)}`);
-  section('Other repositories depend on this', list.dependents ?? [], (d) => `- **${d.repo}**${d.paths.length ? ` (${d.paths.map((x) => `\`${x}\``).join(', ')})` : ''} — ${d.why}${forWhom(d)}`);
-  section('Run these checks', list.checks, (c) => `- ${checklist ? '[ ] ' : ''}\`${c.run}\` — ${c.why}${forWhom(c)}`);
-  folded('Tests that reach this code', list.tests, (t) => `- \`${t.path}\`${t.via ? ` (through \`${t.via}\`)` : ''}${forWhom(t)}`, list.truncated?.tests ? [`- …and ${list.truncated.tests} more`] : []);
-  folded('Used by', list.usedBy, (u) => `- \`${u.path}:${u.line}\`${forWhom(u)}`, list.truncated?.usedBy ? [`- …and ${list.truncated.usedBy} more direct users`] : []);
+  const rule = (r) => `- **${r.id}**: ${r.rule}${r.why ? ` — why: ${r.why}` : ''}${heldNote(r)}${touched(r)}${forWhom(r)}`;
+  const risk = (r) => `- ${r.text}${touched(r)}${forWhom(r, `group ${r.group}`)}`;
+  return {
+    forWhom,
+    rule,
+    risk,
+    // A rule has an id, a risk a group: either kind, in the sections that hold both.
+    either: (r) => (r.id && r.rule !== undefined ? rule(r) : risk(r)),
+    off: (r) => `- not triggered (${r.trigger.why}): ${r.id && r.rule !== undefined ? `**${r.id}**: ${r.rule}` : r.text}${forWhom(r, r.group ? `group ${r.group}` : null)}`,
+    deprecated: (d) => `- group **${d.group}** is being replaced${d.use ? `: use \`${d.use}\` instead` : ''} — ${d.why}${forWhom(d)}`,
+    hotspot: (h) => `- \`${h.symbol}\` (\`${h.file}:${h.line}\`): ${h.labels.join(', ')}${h.rules.length ? `, under ${h.rules.map((r) => `**${r}**`).join(', ')}` : ''}${h.note ? `: ${h.note}` : ''}`,
+    flow: (f) => `- **${f.entry}** (\`${f.file}:${f.line}\`) reaches ${f.reaches.map((r) => `\`${r.symbol}\` (\`${r.file}:${r.line}\`: ${r.labels.join(', ')}${r.tables?.length ? ` on ${r.tables.map((t) => `\`${t}\``).join(', ')}` : ''}${r.inputs?.length ? `, with input ${r.inputs.map((t) => `\`${t.replace(/`/gu, "'")}\``).join(', ')}` : ''})`).join(', ')}; ${f.checks.length ? `checked by ${f.checks.map((c) => `\`${c}\``).join(', ')}` : 'no check of who may do it found on the way'}${forWhom(f)}`,
+    vocab: (v) => `- \`${v.name}\` (\`${v.evidence}\`) ${said[v.kind] ?? v.kind}${v.when ? ` \`${v.when.replace(/`/gu, "'")}\`` : ''}${v.within ? ` inside \`@${v.within}\`` : ''}${v.check ? `, checked by \`${v.check.replace(/`/gu, "'")}\`${v.unless ? ` unless \`${v.unless.replace(/`/gu, "'")}\`` : ''}` : ''}${v.label ? ` (${v.label})` : ''}${v.why ? `: ${v.why}` : ''}${forWhom(v)}`,
+    together: (t) => `- ${t.also.map((a) => `\`${a}\``).join(' or ')}${t.changed ? ' (changed)' : ''} — ${t.why}${forWhom(t)}`,
+    dependent: (d) => `- **${d.repo}**${d.paths.length ? ` (${d.paths.map((x) => `\`${x}\``).join(', ')})` : ''} — ${d.why}${forWhom(d)}`,
+    check: (c) => `- ${checklist ? '[ ] ' : ''}\`${c.run}\` — ${c.why}${forWhom(c)}`,
+    test: (t) => `- \`${t.path}\`${t.via ? ` (through \`${t.via}\`)` : ''}${forWhom(t)}`,
+    usedBy: (u) => `- \`${u.path}:${u.line}\`${forWhom(u)}`,
+    path: (n) => `- \`${n.path}\`: ${n.why}`,
+  };
+}
+
+// The sections every layout ends with: tests, users, what the map does not cover and what readfirst could not see, then
+// the line for a list with nothing in it.
+function tail(list, lines, { folded, section, w, broke }) {
+  folded('Tests that reach this code', list.tests, w.test, list.truncated?.tests ? [`- …and ${list.truncated.tests} more`] : []);
+  folded('Used by', list.usedBy, w.usedBy, list.truncated?.usedBy ? [`- …and ${list.truncated.usedBy} more direct users`] : []);
   if (list.usedByIndirectly) lines.push(`${list.usedByIndirectly} more file(s) use this code indirectly.`, '');
-  section('Not covered by the map', list.notCovered, (n) => `- \`${n.path}\`: ${n.why}`);
-  section('Not seen by readfirst (an empty list above may mean unknown here)', list.unseen ?? [], (n) => `- \`${n.path}\`: ${n.why}`);
+  section('Not covered by the map', list.notCovered, w.path);
+  section('Not seen by readfirst (an empty list above may mean unknown here)', list.unseen ?? [], w.path);
   if (!(broke && brokeSection(list.targets).length) && !list.rules.length && !list.risks.length && !(list.hotspots ?? []).length && !(list.flows ?? []).length && !(list.vocabulary ?? []).length && !list.checks.length && !list.tests.length && !list.usedBy.length && !list.notCovered.length && !(list.unseen ?? []).length && !(list.deprecated ?? []).length && !(list.together ?? []).length && !(list.dependents ?? []).length)
     lines.push('Nothing in the map is tied to these files.', '');
+}
+
+// Where the verdict layout shows each list of the read list. toMarkdown with a verdict returns before the plain layout,
+// so a list added to the read list needs a place here and in verdictMarkdown, or diff and the PR comment would leave it
+// out without a word (test/verdict.test.mjs fails on a list of emptyList() with no place).
+export const VERDICT_PLACES = { targets: 'the heading', rules: 'touched, not matched or not triggered', risks: 'touched, not matched or not triggered', checks: 'the verdict', together: 'the verdict', deprecated: 'the verdict', dependents: 'the verdict', hotspots: 'folded', flows: 'folded', vocabulary: 'folded', tests: 'folded', usedBy: 'folded', notCovered: 'open, and counted in the verdict', unseen: 'open, and counted in the verdict' };
+
+// The verdict layout (toMarkdown's `verdict`): the verdict, what the change touches, what could not be matched, then the
+// rest. The checks, the files to change too, what is being replaced and the other repositories are in the verdict, so
+// they are not listed again below it.
+// top: false when the caller has put the verdict at the top itself (the Action, above the map's problems).
+function verdictMarkdown(list, lines, { checklist, broke, fold, lang = 'en', where = 'pr', problems = [], brokeTargets = null, top = true }) {
+  if (top) lines.push(...verdictLines(list, { lang, where, problems, broke: brokeTargets, checklist }));
+  const { section, folded } = writer(lines, fold);
+  const w = renderers(list, checklist);
+  const { touched, off, open, groupWide } = sortRows(list);
+  const rows = (xs) => xs.map((x) => x.row);
+  section('Triggered by this change', rows(touched), w.either);
+  if (fold) {
+    section('Not matched against the change: shown for their files', rows(open), w.either);
+    folded('More in the groups of these files, not matched against the change', rows(groupWide), w.risk);
+  } else section('Not matched against the change: shown for their files', rows([...open, ...groupWide]), w.either);
+  folded('Not triggered by this change', rows(off), w.off);
+  if (broke) {
+    // Folded with the number of files it names; the section's own lines, every one, inside.
+    const b = brokeSection(list.targets);
+    const scarred = list.targets.filter((t) => t.brokeBefore).length;
+    if (b.length && fold) lines.push(`<details><summary>Broke before (${scarred} file${scarred === 1 ? '' : 's'})</summary>`, ...b.filter((l) => !l.startsWith('## ')), '</details>', '');
+    else lines.push(...b);
+  }
+  folded('Hot spots in this code', list.hotspots ?? [], w.hotspot);
+  folded('Outside input reaches this code', list.flows ?? [], w.flow);
+  folded('This repository\'s words', list.vocabulary ?? [], w.vocab);
+  tail(list, lines, { folded, section, w, broke });
   return lines.join('\n');
 }

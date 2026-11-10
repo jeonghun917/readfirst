@@ -150,13 +150,14 @@ function repo(files) {
 }
 const MAP = { format: MAP_FORMAT, groups: [{ id: 'pay', title: 'Payments', files: ['src/**'], risks: [{ text: 'refund must use the original card: `refund`', files: ['src/pay.js'] }, { text: 'charge rounding: `charge`', files: ['src/pay.js'] }] }] };
 
-test('diff judges the branch\'s change: only the risk about the function it changed is under Watch out', () => {
+test('diff judges the branch\'s change: only the risk about the function it changed is under Triggered', () => {
   const { root, git } = repo({ 'src/pay.js': PAY, '.readfirst/map.json': JSON.stringify(MAP) });
   git('checkout', '-q', '-b', 'work');
   writeFileSync(join(root, 'src/pay.js'), PAY.replace('return round(amount);', 'return round(amount, 2);'));
   let out = '';
   assert.equal(main(['--root', root, 'diff', '--base', 'main'], { out: (s) => { out += s; }, err: () => {} }), 0);
-  assert.match(out, /## Watch out\n\n- charge rounding: `charge` _\(the change touches `charge`\)_/u);
+  assert.match(out, /## Triggered by this change\n\n- charge rounding: `charge` _\(the change touches `charge`\)_/u);
+  assert.match(out, /^# Read first: `src\/pay\.js`\n\n\*\*1 to do\*\*, nothing blocked\.\n/u, 'the verdict comes first');
   assert.match(out, /## Not triggered by this change\n\n- not triggered \(the change does not touch `refund`\): refund must use the original card/u);
   let json = '';
   main(['--root', root, 'diff', '--base', 'main', '--json'], { out: (s) => { json += s; }, err: () => {} });

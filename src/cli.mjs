@@ -13,7 +13,8 @@
 //                                  expect(...).resolves nobody awaits); no map needed, no model, writes nothing
 //   readfirst find <words>...      before writing something new: functions, files and map entries that may already do it
 //   readfirst read <file>...       the read list for files you are about to change
-//   readfirst diff [--base <ref>]  the read list for the files changed since <ref> (default: origin/main, else main)
+//   readfirst diff [--base <ref>] [--lang <code>]  the read list for the files changed since <ref> (default: origin/main,
+//                                  else main), under a verdict in the language given (en, ko)
 //   readfirst verify [--base <ref>] run the checks the read list names for the changed files; exit 1 if one fails
 //                                  (--record: write the rules whose checks all passed to .readfirst/held.json, with the commit)
 //   readfirst hook [--install]     a Claude Code PreToolUse hook: the read list for the file an Edit or Write is about to change
@@ -40,6 +41,7 @@ import { CURSOR_DIR, cursorPlan } from './export.mjs';
 import { AGENTS, detectAgents, outsideRepo, setupAgents } from './agents.mjs';
 import { gitHooksReport, setupGitHooks } from './git-hooks.mjs';
 import { judge, parseGitDiff } from './trigger.mjs';
+import { VERDICT_LANGS } from './verdict.mjs';
 import { HELD_PATH, heldInRun, parseHeld, recordHeld } from './held.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
@@ -64,7 +66,8 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst scan                 look for known bug shapes: results thrown away, test assertions nobody awaits (no map needed)
   readfirst find <words>...      before writing something new: what in the code may already do it
   readfirst read <file>...       read list for files you are about to change
-  readfirst diff [--base <ref>]  read list for files changed since <ref>, each risk and rule judged against the change
+  readfirst diff [--base <ref>] [--lang <code>]  read list for files changed since <ref>, each risk and rule judged against
+                                 the change, under a verdict (to do, blocked, not checked) in en or ko
   readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them;
                                  --record notes in .readfirst/held.json which rules held, at which commit)
   readfirst hook [--install]     Claude Code hook: the read list before each edit (--install adds it to .claude/settings.json;
@@ -82,7 +85,7 @@ Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; de
 // The on/off flags (name -> key in args) and the options that take a value. Anything else that starts with `--` is an
 // error: an unknown option used to take the next word as its value, so `hook --new-flag --stop` quietly ran the wrong hook.
 const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', git: 'git', ci: 'ci', stop: 'stop', gate: 'gate', help: 'help', version: 'version' };
-const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels']);
+const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
 export function parse(argv) {
   const args = { _: [], json: false };
   for (let i = 0; i < argv.length; i++) {
@@ -334,8 +337,20 @@ function doneText(r) {
   return s;
 }
 
-// The read list as factual lines for an agent's context: what to do first (being replaced, change together, other
-// repositories, checks), then what to know (rules, risks, where it broke, tests, what readfirst could not see). Every
+// The language of diff's verdict: --lang (a language code; one readfirst has no words for is said in the verdict), else
+// the one language of this clone's personal labels (`prompt --labels ko`) that the verdict has words for, else English.
+export function diffLang(asked, labelLangs) {
+  if (asked !== undefined) {
+    if (!/^[a-z]{2,3}(-[A-Za-z0-9]+)?$/u.test(String(asked))) throw new Error('--lang needs a language code, e.g. ko or en');
+    return asked;
+  }
+  const known = [...new Set(labelLangs().map((l) => String(l).toLowerCase().split(/[-_]/u)[0]))].filter((l) => VERDICT_LANGS.includes(l) && l !== 'en');
+  return known.length === 1 ? known[0] : 'en';
+}
+
+// The read list as factual lines for an agent's context, in the PR comment's order (src/verdict.mjs): what to do first
+// (being replaced, change together, checks; a broken map, which blocks, is put before these by the caller), what
+// readfirst could not see or fetch, other repositories, then what to know (rules, risks, where it broke, tests). Every
 // line is given (0.27.1: no "N more"); with several files, a line for only some of them names them.
 export function brief(list) {
   const lines = [];
@@ -343,18 +358,20 @@ export function brief(list) {
   const forSome = (row) => (all > 1 && row.for && row.for.length < all ? ` [${row.for.join(', ')}]` : '');
   for (const d of list.deprecated ?? []) lines.push(`Being replaced: group ${d.group}${d.use ? `; use ${d.use} instead` : ''} (${d.why}). Do not add to it.${forSome(d)}`);
   for (const t of list.together ?? []) lines.push(`Change together: when this file changes, also change ${t.also.join(' or ')} (${t.why}). verify fails otherwise.${forSome(t)}`);
-  for (const d of list.dependents ?? []) lines.push(`Another repository depends on this: ${d.repo}${d.paths.length ? ` (${d.paths.join(', ')})` : ''} (${d.why}).${forSome(d)}`);
   for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}${forSome(c)}`);
-  for (const r of list.rules) lines.push(`Rule ${r.id}: ${r.rule}${r.why ? ` (why: ${r.why})` : ''}${forSome(r)}`);
-  for (const r of list.risks) lines.push(`Risk: ${r.text}${forSome(r)}`);
+  const known = [];
+  for (const r of list.rules) known.push(`Rule ${r.id}: ${r.rule}${r.why ? ` (why: ${r.why})` : ''}${forSome(r)}`);
+  for (const r of list.risks) known.push(`Risk: ${r.text}${forSome(r)}`);
   for (const t of list.targets ?? []) {
     const b = t.brokeBefore;
-    if (b && !b.notFetched) lines.push(`Broke before: ${b.count} fix${b.count === 1 ? '' : 'es'} in ${t.path}, last ${b.last.date} ${b.last.sha} "${b.last.subject}"`);
+    if (b && !b.notFetched) known.push(`Broke before: ${b.count} fix${b.count === 1 ? '' : 'es'} in ${t.path}, last ${b.last.date} ${b.last.sha} "${b.last.subject}"`);
     else if (b) lines.push(`Broke before: history not fetched for ${t.path} (shallow clone)`);
   }
-  if (list.tests.length) lines.push(`Tests that reach ${all > 1 ? 'these files' : 'this file'}: ${list.tests.map((t) => `${t.path}${forSome(t)}`).join(', ')}`);
-  if (lines.length) for (const u of list.unseen ?? []) lines.push(`Not seen by readfirst: ${u.why}`);
-  return lines;
+  if (list.tests.length) known.push(`Tests that reach ${all > 1 ? 'these files' : 'this file'}: ${list.tests.map((t) => `${t.path}${forSome(t)}`).join(', ')}`);
+  // What readfirst could not see is said only beside something it did say: alone it would be a note about nothing.
+  if (lines.length || known.length || (list.dependents ?? []).length) for (const u of list.unseen ?? []) lines.push(`Not seen by readfirst: ${u.why}`);
+  for (const d of list.dependents ?? []) lines.push(`Another repository depends on this: ${d.repo}${d.paths.length ? ` (${d.paths.join(', ')})` : ''} (${d.why}).${forSome(d)}`);
+  return [...lines, ...known];
 }
 
 // Which files the PreToolUse hook has seen in a session, by absolute path: the Stop hook verifies those. A session can
@@ -1020,7 +1037,9 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     const broke = brokeBefore(root, targets, new Set(files), rev);
     const list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets, commit, limit, read: readText(root), held: parseHeld(readText(root)(HELD_PATH)), broke, before: map && asWritten.get(map) });
     if (changes) judge(list, { changes, read: readText(root), files });
-    io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list)}\n`);
+    // diff opens with the verdict (src/verdict.mjs) in --lang, else the one language of this clone's labels, else English.
+    const verdict = changes ? { lang: diffLang(args.lang, () => Object.keys(readLabels(root, io.err))), where: 'diff' } : null;
+    io.out(args.json ? `${JSON.stringify(list, null, 2)}\n` : `${toMarkdown(list, { verdict })}\n`);
     return 0;
   }
   if (cmd === 'verify') {

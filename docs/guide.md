@@ -18,7 +18,7 @@ npx readfirst find payment retry   # before writing something new: what in the c
 ```
 
 Every release is published from GitHub Actions with npm provenance, and readfirst has no runtime dependencies. To run
-exactly the version you reviewed, pin it: `npx readfirst@0.28.0 read <file>` (and `jeonghun917/readfirst@v0.28.0` for
+exactly the version you reviewed, pin it: `npx readfirst@0.29.0 read <file>` (and `jeonghun917/readfirst@v0.29.0` for
 the Action).
 
 In a monorepo, each workspace package with its own `package.json` becomes a group with its own checks
@@ -33,8 +33,9 @@ Commit `.readfirst/map.json`. From then on:
 
 ```sh
 npx readfirst read <file>...     # before changing files
-npx readfirst diff               # everything your branch changed since main
-npx readfirst diff --json        # the same, for tools and agents
+npx readfirst diff               # everything your branch changed since main, under a verdict
+npx readfirst diff --lang ko     # the verdict in Korean (en, ko)
+npx readfirst diff --json        # the same read list, for tools and agents
 npx readfirst verify             # run the checks the map lists for everything your branch changed (exit 1 if one fails;
                                  # on main with no origin/main, pass --base <ref>: your commits cannot be told from main)
 npx readfirst fix                # after moving code: place new files, drop patterns for deleted ones
@@ -51,6 +52,26 @@ before, so a risk written as `` `refund` must use the original card `` is judged
 Names count in backticks, or without them when they look like code (`camelCase`, `snake_case`, `UPPER_CASE`); a plain
 lowercase word counts only as a function in the files the item is about. A file with no readable patch counts as changed
 all through. `read` is not a change, so it shows every item.
+
+### The verdict first
+
+`diff` and the PR comment open with a verdict, written from the read list by a template (no model), in English or
+Korean:
+- **Blocked**: the map no longer matches the code, or a file the map says changes together was left behind (verify
+  fails on it).
+- **To do**: the checks to run (boxes to tick in the PR), files to change too, groups being replaced, the rules the
+  change touches by name, and how many risks to read below.
+- **Not checked**: what readfirst did not or could not check: the checks themselves (`diff` and the Action run none;
+  `verify` does), items that name no symbol to match against the change, files the map does not place, files whose
+  imports it cannot read, history not fetched.
+- **Other repositories** that depend on the change, which readfirst cannot see from here.
+
+Below it come the rules and risks the change touches, in full; then those it could not match, in full; then the rest
+(not triggered, group-wide, hot spots, flows, tests, users, where the code broke before), folded with their counts in the
+PR comment. Each item is in one place, and nothing is left out. The language is `--lang` (`ko`, `en`), else the one
+language of your personal labels (`prompt --labels ko`), else English; the Action takes the `language` input. Only the
+verdict's own words change: the map's rules and risks are shown as the map writes them. The notes the hook gives an
+agent come in the same order: what to do, what was not seen, other repositories, then the rules and risks.
 
 ### Where the code broke before
 
@@ -305,15 +326,17 @@ jobs:
 
 Each PR gets one comment, updated on every push (a read list longer than one comment goes on in a second, also updated
 in place; nothing is cut), that lists:
-- the rules, risks and checks for the files the PR changes, with the checks as boxes to tick; risks written for a
-  changed file stay open, and those that only share its group are folded under a summary with their count; rules and
-  risks the PR's change does not touch are folded under **Not triggered by this change**, each with its reason (see
+- the verdict (see [The verdict first](#the-verdict-first)), with the checks for the changed files as boxes to tick;
+- the rules and risks the PR's change touches, in full, then those readfirst could not match against it (risks written
+  for a changed file open, those that only share its group folded under a summary with their count), then the rules
+  and risks the change does not touch, folded under **Not triggered by this change**, each with its reason (see
   [Triggered or not](#triggered-or-not));
-- the tests that reach the changed code, the files that use it and its hot spots, folded the same way;
-- **Files in this PR that broke before**, from the checkout's git log (see above). `actions/checkout` fetches only the
-  last commit by default, so give it `fetch-depth: 200`; at depth 1 the section says "history not fetched (set
-  fetch-depth: 200 on actions/checkout)". The changed files themselves come from the GitHub API at any depth, and
-  `init --ci` writes `fetch-depth: 200` into the workflow it creates.
+- the tests that reach the changed code, the files that use it, its hot spots and outside input that reaches it, folded
+  the same way;
+- **Files in this PR that broke before**, folded, from the checkout's git log (see above). `actions/checkout` fetches
+  only the last commit by default, so give it `fetch-depth: 200`; at depth 1 the section says "history not fetched (set
+  fetch-depth: 200 on actions/checkout)", and the verdict counts it as not checked. The changed files themselves come
+  from the GitHub API at any depth, and `init --ci` writes `fetch-depth: 200` into the workflow it creates.
 
 A new file next to files the map already places joins their group without anyone touching the map: the check passes
 and the comment notes where it went (`npx readfirst fix` writes it down whenever you like). The check fails only on what
@@ -327,6 +350,7 @@ lists what `npx readfirst fix` would change.
 | `comment` | `true` | `false` writes only the job summary |
 | `auto-fix` | `false` | `true` commits what `readfirst fix` settles (new files placed by their neighbours) to the PR branch |
 | `limit` | (all) | most tests and users listed per section; a cut list says how many it left out |
+| `language` | `en` | the verdict's language: `en` or `ko` (another code is said in the verdict, which stays in English) |
 
 On a PR from a fork, the token is read-only. The list then goes to the job summary instead of a comment.
 

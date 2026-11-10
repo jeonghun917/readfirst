@@ -15,7 +15,7 @@ const TOOLS = [
   },
   {
     name: 'changed_read_list',
-    description: 'The same read list for every file changed on this branch since the base (default origin/main, else main). Call it before finishing, then run the checks it lists.',
+    description: 'The same read list for every file changed on this branch since the base (default origin/main, else main), each rule and risk judged against the change, under a verdict: what to do, what is blocked, what was not checked, other repositories. Call it before finishing, then run the checks it lists.',
     inputSchema: { type: 'object', properties: { base: { type: 'string', description: 'git ref to compare against' } } },
     args: (a) => {
       if (typeof a.base === 'string' && a.base.startsWith('-')) throw new Error('base must be a git ref, not an option');
