@@ -138,8 +138,13 @@ test('imports: tsconfig baseUrl, package.json #imports, index.jsx/.cjs folders a
 
 test('find sees JS/TS class methods, exports.x =, wrapped arrows, generic arrows, abstract and declared names', async () => {
   const { definitions } = await import('../src/find.mjs');
-  const body = 'export class Payments {\n  async retryPayment(id) {}\n  static refundOrder(order) {\n    if (order) {\n      return x;\n    }\n  }\n  private get total(): number {\n}\nexports.formatMoney = function (n) {};\nmodule.exports.chargeCard = (c) => c;\nconst slugify = memoize((s) => s);\nconst onSave = useCallback(async () => {});\nconst pick = <T,>(x: T) => x;\nexport abstract class Base {}\ndeclare function legacy(x: string): void;\n';
+  const body = 'export class Payments {\n  async retryPayment(id) {}\n  static refundOrder(order) {\n    if (order) {\n      return x;\n    }\n  }\n  private get total(): number {\n    return 1;\n  }\n}\nexports.formatMoney = function (n) {};\nmodule.exports.chargeCard = (c) => c;\nconst slugify = memoize((s) => s);\nconst onSave = useCallback(async () => {});\nconst pick = <T,>(x: T) => x;\nexport abstract class Base {}\ndeclare function legacy(x: string): void;\n';
   assert.deepEqual(definitions('a.ts', body).map((d) => d.name), ['Payments', 'retryPayment', 'refundOrder', 'total', 'formatMoney', 'chargeCard', 'slugify', 'onSave', 'pick', 'Base', 'legacy']);
+  // The fixture is code a parser accepts: every bracket it opens is closed (its class was left open until the reader
+  // of src/code.mjs, which follows brackets, read the rest of the file as the class's body).
+  const { lex, tokens } = await import('../src/code.mjs');
+  const count = (v) => tokens(lex(body.split('\n'), 'js')).filter((t) => t.k === 'punct' && t.v === v).length;
+  assert.deepEqual([count('{'), count('('), count('[')], [count('}'), count(')'), count(']')]);
 });
 
 test('init drafts: no lint --fix, prettier --write or jest -u checks; poetry and uv run pytest; Makefile test:= is no rule; Codex quoted table is present', async () => {
