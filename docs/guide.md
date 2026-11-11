@@ -49,9 +49,12 @@ only by the file. An item that names a function, a constant or a `file:line` is 
 names the change did not touch goes under **Not triggered by this change**, whole, with the reason ("the change does not
 touch `refund`"): nothing is dropped. An item that names nothing readfirst can find in the code is shown by its files, as
 before, so a risk written as `` `refund` must use the original card `` is judged and "watch out for refunds" is not.
-Names count in backticks, or without them when they look like code (`camelCase`, `snake_case`, `UPPER_CASE`, a call
-such as `main()`, a capital constant such as `FLAGS`), wherever the item's files or the files they import declare them;
-a plain lowercase word, and a capital word without an underscore, count only in the files the item is about. A file with
+Backticks mark a code name. Without them a word counts as a name only when it has a shape only code has: `camelCase`,
+`snake_case`, `UPPER_CASE` with an underscore, or a call such as `main()`. A bare capital word with no underscore (CLI,
+API, URL, JSON, VERSION, FLAGS) is prose, so a risk about "the CLI version" is not touched by a constant called `CLI`;
+write `` `FLAGS` `` when you mean the constant. A name counts wherever the item's files or the files they import declare
+it; a plain lowercase word, and a capital word without an underscore, both in backticks, count only in the files the
+item is about. A file with
 no readable patch counts as changed all through. `read` is not a change, so it shows every item.
 
 A `file:line` judges the item by the function that holds the line, so the line has to stay where the code is. `check`

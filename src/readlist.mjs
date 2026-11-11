@@ -2,6 +2,7 @@
 // the checks to run (the group's commands, the rules' commands, and the tests that import them), and who uses them.
 import { evidenceFile, fixMap, groupOf, isOwnFile, matcher, modelName, risksNaming, vocabularyName } from './map.mjs';
 import { sortRows, verdictLines } from './verdict.mjs';
+import { codeRows, unfinished } from './code.mjs';
 
 export const READ_LIST_FORMAT = 'readfirst/read-list@1';
 // Test files by folder or name, across the languages imports.mjs reads: JS/TS, Python, Go, Rust (tests/), Elixir,
@@ -19,38 +20,6 @@ const COMPUTED_LOAD = {
   py: { test: /\.py$/u, re: /\b(?:importlib\.import_module|__import__|import_string)\(\s*(?!['"])(?=[^)\s])/u },
 };
 
-// A line with the insides of its string literals (and, in JavaScript, regex literals) blanked, so text that only
-// mentions `require(` or `import(` (a pattern, a message) is not taken for code that loads a module.
-export function codeOnly(line, js = true) {
-  let out = '';
-  let prev = '';
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (c === "'" || c === '"' || c === '`') {
-      let j = i + 1;
-      while (j < line.length && line[j] !== c) j += line[j] === '\\' ? 2 : 1;
-      out += c + c;
-      i = j;
-      prev = c;
-      continue;
-    }
-    if (js && c === '/' && line[i + 1] !== '/' && line[i + 1] !== '*' && (/^$|[(,=:[!&|?{};+\-*%<>~^]$/u.test(prev) || /\b(?:return|typeof|case|in|of)$/u.test(out.trimEnd()))) {
-      let j = i + 1;
-      let cls = false;
-      while (j < line.length && (cls || line[j] !== '/')) {
-        if (line[j] === '\\') j++;
-        else if (line[j] === '[') cls = true;
-        else if (line[j] === ']') cls = false;
-        j++;
-      }
-      if (j < line.length) { out += '/x/'; i = j; prev = '/'; continue; }
-    }
-    out += c;
-    if (!/\s/u.test(c)) prev = c;
-  }
-  return out;
-}
-
 // What readfirst could not see about one file: a language whose imports it does not read, or a module loaded by a
 // computed name. read(path) gives the file's text, or null.
 export function unseenIn(path, read = () => null) {
@@ -59,9 +28,15 @@ export function unseenIn(path, read = () => null) {
   if (!kind) return [];
   const body = read(path);
   if (!body) return [];
-  const lines = body.split('\n');
-  const at = lines.findIndex((l) => !/^\s*(?:\/\/|#|\*)/u.test(l) && kind.re.test(l) && kind.re.test(codeOnly(l, kind === COMPUTED_LOAD.js)));
-  return at < 0 ? [] : [{ path, line: at + 1, why: `line ${at + 1} loads a module by a computed name: what it loads is not followed` }];
+  // In code only: text that mentions `require(` or `import(` (a pattern, a message, a comment, a line of a template
+  // that began above it) is not code that loads a module.
+  const rows = codeRows(path, body);
+  const out = [];
+  const open = unfinished(rows);
+  if (open) out.push({ path, why: `the file ends inside ${open} for readfirst's reader: where its declarations start and end is unknown, so a change to it counts as touching every item about it` });
+  const at = rows.findIndex((r) => kind.re.test(r.code));
+  if (at >= 0) out.push({ path, line: at + 1, why: `line ${at + 1} loads a module by a computed name: what it loads is not followed` });
+  return out;
 }
 
 // The read list for no files, so `diff --json` is always JSON.

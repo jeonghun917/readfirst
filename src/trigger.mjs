@@ -8,18 +8,21 @@
 // them: a changed line inside the declaration (or the declaration that holds the evidence line), or the name in an added
 // or removed line. An item that names nothing readfirst can find is triggered as before, by its files. When in doubt
 // (a file with no readable patch, a deleted file) everything in it counts as touched.
-import { definitions } from './find.mjs';
+import { codeRows, declarations as readDeclarations, entryAt, lex, reads, scopeOf, unfinished } from './code.mjs';
+import { definitions, hasDefinitions } from './find.mjs';
 import { groupOf, isOwnFile, matcher } from './map.mjs';
-import { codeOnly } from './readlist.mjs';
 
 // The changed lines of one file from unified diff text: the new-side numbers of added lines and of the place a deletion
 // was made, and the text of every added and removed line. Works on `git diff -U0` and on a pull request file's `patch`
 // (which has context lines).
 // `hunks` keep both sides' starts and lengths, so a line number written against the file before the change (a risk's
 // evidence) can be carried to where that line is now (toNew).
+// `at`, one per line of `text`: the new-side number of an added line, or minus the number of the line a removed line
+// stood before, so each can be read as code in its place in the file (changedCode).
 export function parsePatch(patch) {
   const lines = new Set();
   const text = [];
+  const at = [];
   const hunks = [];
   let n = 0;
   let inHunk = false;
@@ -32,11 +35,11 @@ export function parsePatch(patch) {
       continue;
     }
     if (!inHunk || l.startsWith('\\')) continue;
-    if (l.startsWith('+')) { lines.add(n); text.push(l.slice(1)); n++; }
-    else if (l.startsWith('-')) { lines.add(Math.max(1, n)); text.push(l.slice(1)); }
+    if (l.startsWith('+')) { lines.add(n); text.push(l.slice(1)); at.push(n); n++; }
+    else if (l.startsWith('-')) { lines.add(Math.max(1, n)); text.push(l.slice(1)); at.push(-Math.max(1, n)); }
     else n++;
   }
-  return { lines, text, hunks, whole: false };
+  return { lines, text, at, hunks, whole: false };
 }
 
 // Where line `at` of the file before the change is now: shifted by every hunk wholly above it; a line inside a hunk
@@ -97,95 +100,84 @@ const filesWithoutNames = (files, declIn) => (Array.isArray(files) && files.leng
 const NOT_CODE = /(?:^|\/)\.readfirst\/|\.(?:md|mdx|markdown|txt|rst|json|jsonl|ya?ml|toml|lock|ini|cfg|html?|css|svg|csv)$/iu;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 
-// Where each name is declared in a file, with the lines it spans: up to the next declaration (the definitions reader in
-// find.mjs gives starts only), so a change anywhere in a function's body touches that function. The blank and comment
-// lines just above the next declaration belong to it, not to this one: a new function with its comment added after
-// changedFiles made changedFiles read as changed (found trying it on readfirst#139). `fn`: a function or type, as the
-// definitions reader found it; a top-level const or a Python CONSTANT is not one.
+// Where each name is declared in a file, with the lines it spans: `line` to `end`, and `top`, the first line of the
+// comment and decorators right above it. JavaScript, TypeScript, Python and the <script> blocks of .vue and .svelte
+// files are read by the one reader (src/code.mjs): starts, ends and nesting from the file's structure. `fn`: a
+// function, class or type, or a value set to a function; a plain constant is not one.
+// Any other language find has patterns for (Go, Rust, Ruby, PHP, Elixir, Java, Kotlin, C#) has no reader of its
+// structure here: a declaration starts where find's pattern matches a line and ends before the next one indented no
+// deeper (`approx: true`). That is the wide reading, so a mistake reads as touched, never as a false "not triggered".
 const BLANK_OR_COMMENT = /^\s*(?:$|\/\/|#(?!!)|\/?\*)/u;
+// A file whose declarations are read with approximate ends.
+export const approximateBounds = (path) => !reads(path) && hasDefinitions(path);
 function declarations(path, body) {
+  if (reads(path)) return readDeclarations(path, body).map((d) => ({ ...d, fn: d.fn || d.what !== 'var' }));
   const lines = body.split('\n');
+  const indent = (n) => lines[n - 1].match(/^\s*/u)[0].length;
   const starts = definitions(path, body).map((d) => ({ name: d.name, line: d.line, fn: true }));
   lines.forEach((l, i) => {
-    // Also a top-level function find leaves out on purpose (KEYWORDS: `main` is noise in a search, not in a risk about
-    // what main() does).
-    const m = l.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/u) ?? (/\.py$/u.test(path) ? l.match(/^([A-Z_][A-Z0-9_]*)\s*=/u) : l.match(/^(?:export\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)/u));
-    if (m && !starts.some((s) => s.line === i + 1)) starts.push({ name: m[1], line: i + 1, fn: /\bfunction\b/u.test(l) });
+    const m = l.match(/^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/u);
+    if (m && !starts.some((s) => s.line === i + 1)) starts.push({ name: m[1], line: i + 1, fn: false });
   });
   starts.sort((a, b) => a.line - b.line);
+  const open = [];
   return starts.map((s, k) => {
-    // Its own end when it can be found (the closing brace, or in Python the next line indented no deeper): an inner
-    // helper declared inside main() ran to the end of main, and runHook stopped at its inner save() (readfirst#142).
-    const own = /\.py$/u.test(path) ? pyEnd(lines, s.line) : braceEnd(path, lines, s.line);
-    let end = (starts[k + 1]?.line ?? lines.length + 1) - 1;
-    if (starts[k + 1]) while (end > s.line && BLANK_OR_COMMENT.test(lines[end - 1])) end--;
-    // `top`: the comment lines right above it, which describe it: evidence written at a function's comment is about it.
+    const next = starts.slice(k + 1).find((n) => indent(n.line) <= indent(s.line));
+    let end = next ? next.line - 1 : lines.length;
+    // The blank and comment lines just above the next declaration belong to it, not to this one.
+    if (next) while (end > s.line && BLANK_OR_COMMENT.test(lines[end - 1])) end--;
     let top = s.line;
     while (top > 1 && lines[top - 2].trim() && BLANK_OR_COMMENT.test(lines[top - 2])) top--;
-    // Nothing runs past the next declaration that starts a line unindented: braceEnd can miss a statement's end (its
-    // semicolon inside a template line it cannot read) and find the next function's braces instead.
-    const next = starts.slice(k + 1).find((n) => /^\S/u.test(lines[n.line - 1]));
-    let limit = next ? next.line - 1 : lines.length;
-    if (next) while (limit > s.line && BLANK_OR_COMMENT.test(lines[limit - 1])) limit--;
-    return { ...s, top, end: Math.min(own ?? end, limit) };
+    while (open.length && open.at(-1).end < s.line) open.pop();
+    const d = { ...s, top, end, approx: true, body: true, what: 'fn', depth: open.length, parent: open.at(-1)?.name ?? null, parentLine: open.at(-1)?.line ?? null };
+    open.push(d);
+    return d;
   });
 }
-// The line of the brace that closes the block opened on or after line `at` (1-based), counting braces in code only;
-// a one-line declaration (`const x = 1;`, an arrow without a body) ends on its line. null when it does not close.
-function braceEnd(path, lines, at) {
-  let depth = 0;
-  let opened = false;
-  for (let i = at - 1; i < lines.length; i++) {
-    const code = codeText(path, lines[i]);
-    for (const c of code) {
-      if (c === '{') { depth++; opened = true; } else if (c === '}') depth--;
-    }
-    if (opened && depth <= 0) return i + 1;
-    // A statement with no block of its own ends at its semicolon, on whichever line: a const set to a template or a
-    // call over several lines ran on to the next function's closing brace (until 0.30.1).
-    if (!opened && /;\s*$/u.test(code)) return i + 1;
-  }
-  return null;
-}
-// Python: the last line before the next non-blank line indented no deeper than the declaration.
-function pyEnd(lines, at) {
-  const indent = (l) => l.match(/^\s*/u)[0].length;
-  const base = indent(lines[at - 1]);
-  let last = at;
-  for (let i = at; i < lines.length; i++) {
-    if (!lines[i].trim()) continue;
-    if (indent(lines[i]) <= base) return last;
-    last = i + 1;
-  }
-  return last;
-}
 
-// A changed line as code: a comment line is nothing, strings and regex literals are blanked (codeOnly), and a comment at
-// the end of the line is cut.
-const codeText = (path, l) => {
-  if (BLANK_OR_COMMENT.test(l)) return '';
-  const js = !/\.py$/u.test(path);
-  return codeOnly(l, js).replace(js ? /\/\/.*$/u : /#.*$/u, '');
-};
+// The changed lines of one file as code: each with strings, template text and comments as spaces. An added line is
+// read at its place in the file as it is now (`rows`, the file's lexed lines), so a line inside a template or a block
+// comment that began above it is text, not code. A removed line is read from the state the file has where it stood,
+// and the removed lines after it go on from there. Without the file (or a change given without `at`), each line is
+// read alone.
+function changedCode(path, c, rows) {
+  const lang = /\.py$/u.test(path) ? 'py' : 'js';
+  let carry = null; // { before: the line a run of removed lines stood before, state }
+  return c.text.map((text, i) => {
+    const n = c.at?.[i];
+    if (rows && n > 0 && rows[n - 1]?.text === text) { carry = null; return rows[n - 1].code; }
+    if (rows && n < 0 && !rows[-n - 1]?.outside) {
+      const state = carry?.before === n ? carry.state : (-n >= 2 ? rows[-n - 2]?.state ?? null : null);
+      const row = lex([text], lang, state)[0];
+      carry = { before: n, state: row.state };
+      return row.code;
+    }
+    carry = null;
+    return rows && n < 0 ? '' : lex([text], lang)[0].code; // a line removed from markup is not code; anything else is read alone
+  });
+}
 
 const touches = (changes, from, to) => changes.whole || [...changes.lines].some((n) => n >= from && n <= to);
 
 // The names an item's text gives: backticked identifiers, and outside backticks and paths the words that look like code
 // (camelCase, snake_case, UPPER_CASE with an underscore): the map's risks mostly write `runHook swallows every error`,
 // not `\`runHook\``.
-// Also a name written as a call (`main()`, `api()`, not `file(s)`) and an all-capitals word of three or more letters
-// (`MARKER`, `FLAGS`): the map's risks write them bare, and none counted until 0.30.0, so a risk about `parse()` and its
-// FLAGS was never judged. Every one of them counts only where it is declared (declsOf), so an acronym such as JSON or a
-// plain word in a call costs nothing unless the code declares it.
+// Also a name written as a call (`main()`, `api()`, not `file(s)`): it counts only where it is declared (declsOf), so
+// a plain word in a call costs nothing unless the code declares it.
+// A bare capital word with no underscore (CLI, API, URL, JSON, VERSION, FLAGS) is prose, not a name: such words
+// counted as names from 0.30.0, and a risk about "the CLI version" then read as touched by a change to a line holding
+// a constant called CLI. The contract is the one the text can keep: a name is in backticks, or has a shape only code
+// has (camelCase, snake_case, UPPER_CASE with an underscore, a call). A risk about a constant FLAGS writes `FLAGS`.
 const CALL = /(?<![\w$.\/-])([A-Za-z_$][\w$]*)\((?!s\)|es\))/gu;
-const CAPS = /(?<![\w$.\/-])[A-Z][A-Z0-9]{2,}(?![\w$\/-])/gu;
+// The bare capital words of a text, for the one place that says so when such a word is declared (unmatchedItems).
+const BARE_CAPITALS = /(?<![\w$.\/-])[A-Z][A-Z0-9]{2,}(?![\w$\/-])/gu;
+const bareCapitals = (text) => [...new Set([...unjoin(String(text).replace(/`[^`\n]*`/gu, ' ').replace(PATH, ' ')).matchAll(BARE_CAPITALS)].map((m) => m[0]))];
 function spansOf(text) {
   const ticked = [...String(text).matchAll(/`([^`\n]+)`/gu)].flatMap((m) => unjoin(m[1].trim()).split(' ')).filter((s) => IDENT.test(s) && !FILE_LIKE.test(s));
   const prose = unjoin(String(text).replace(/`[^`\n]*`/gu, ' ').replace(PATH, ' '));
   const bare = [...prose.matchAll(CODE_NAME)].map((m) => m[0]);
   const calls = [...prose.matchAll(CALL)].map((m) => m[1]);
-  const caps = [...prose.matchAll(CAPS)].map((m) => m[0]);
-  return [...new Set([...ticked, ...bare, ...calls, ...caps])];
+  return [...new Set([...ticked, ...bare, ...calls])];
 }
 // The files the given ones import, one step: a risk shown for src/action.mjs about settleMap (declared in src/map.mjs,
 // which action.mjs imports) found no declaration and was shown unjudged on every change until 0.30.0.
@@ -215,6 +207,17 @@ function anchorOf(spans, path, at, declIn) {
   return { state: decls.some((d) => at >= d.top && at <= d.end) ? 'ok' : 'drift', decls };
 }
 
+// The entry of a table that evidence `path:at` points into, when the item's text names the entry by its key: a risk
+// about the pattern `no-await` with evidence inside that pattern's entry of a long PATTERNS table is about that entry,
+// not about the whole table and not about nothing. null when the line is in no table entry or the text does not name it.
+function entryNamed(text, path, at, declIn, read) {
+  const d = scopeOf(declIn(path), at);
+  if (!d || d.approx || d.what !== 'var' || at < d.line) return null;
+  const entry = entryAt(path, read(path) ?? '', d, at);
+  if (!entry?.key || entry.key.length < 3) return null;
+  return new RegExp(`(?<![\\w$-])${esc(entry.key)}(?![\\w$-])`, 'u').test(String(text)) ? entry : null;
+}
+
 // changes: path -> { lines, text, whole } (parseGitDiff, or parsePatch per pull request file). read(path) gives a file's
 // text at the head of the change. files: the tracked files. Sets `trigger` on each row of list.risks and list.rules:
 // { triggered, about, by } (about: what the item names; by: what of it the change touched), and returns the list.
@@ -225,11 +228,16 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
     if (!decl.has(path)) { const body = read(path); decl.set(path, body ? declarations(path, body) : []); }
     return decl.get(path);
   };
+  const rowsOf = (path) => { const body = reads(path) ? read(path) : null; return body ? codeRows(path, body) : null; };
+  // A file the reader cannot finish (it ends inside a template, a string or a comment) has no bounds to trust: all of
+  // it counts as touched, like a file with no readable patch.
+  const open = new Set([...changes.keys()].filter((path) => unfinished(rowsOf(path) ?? [])));
+  const changeOf = (path) => { const c = changes.get(path); return c && open.has(path) ? { ...c, whole: true } : c; };
   // Names are looked for in the changed lines of code only: the map, docs and config name functions all the time, and
   // a map risk that mentions runHook made every risk about runHook read as touched (readfirst#142, on its own PR).
   // Comments and strings are left out too: the comments of this very file name changedFiles and runHook, and made the
   // risks about them read as touched on its own PR.
-  const changedText = [...changes].filter(([path]) => !NOT_CODE.test(path)).flatMap(([path, c]) => c.text.map((l) => ({ path, code: codeText(path, l) })));
+  const changedText = [...changes].filter(([path]) => !NOT_CODE.test(path)).flatMap(([path, c]) => changedCode(path, c, rowsOf(path)).map((code) => ({ path, code })));
   // in: only the changed lines of these files (a capital constant used in the item's own files, not a test's own MAP).
   const named = (name, inPaths = null) => { const re = new RegExp(`(?<![\\w$])${esc(name)}(?![\\w$])`, 'u'); return changedText.some((t) => (!inPaths || inPaths.has(t.path)) && re.test(t.code)); };
   // A changed file of another group does not lend its names to a group's risk: a vendored copy of this CLI, with a
@@ -254,23 +262,27 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
       const name = span.split('.').pop();
       const lower = /^[a-z][a-z0-9]*$/u.test(name);
       const used = found[0].plain ? !lower && named(name, own) : named(name);
-      if (used || found.some((d) => changes.has(d.path) && touches(changes.get(d.path), d.line, d.end))) by.push(`\`${span}\``);
+      if (used || found.some((d) => changes.has(d.path) && touches(changeOf(d.path), d.line, d.end))) by.push(`\`${span}\``);
     }
     for (const m of String(text).matchAll(PATH_LINE)) {
       const [ref, path, at] = [m[0], m[1], Number(m[2])];
       if (!tracked.has(path) && !changes.has(path)) continue;
       namedIn.add(path);
-      const c = changes.get(path);
+      const c = changeOf(path);
       // The evidence was written against the file before the change: find where that line is now.
       const now = c ? toNew(c, at) : at;
       // A line outside everything the item names in that file may have moved with the code (src/cli.mjs:108 sat in
       // VERSION, not loadMapLenient, until 0.30.0), or may point elsewhere on purpose. It still judges the
       // item (dropping it could hide a real hit), and the verdict and `check` say it may have moved.
-      if (anchorOf(spans, path, now, declIn).state === 'drift') drifted.push(ref);
+      // The line is about the declaration it belongs to, the comment above it included (scopeOf): the function around
+      // a one-line local, not the local; or about one entry of a table, when the text names the entry's key. Only a
+      // line no declaration holds is judged by the ten lines around it.
+      const entry = entryNamed(text, path, now, declIn, read);
+      if (!entry && anchorOf(spans, path, now, declIn).state === 'drift') drifted.push(ref);
       about.push(ref);
       if (!c) continue;
-      const d = declIn(path).filter((x) => x.line <= now).at(-1);
-      const [from, to] = d && now <= d.end ? [d.line, d.end] : [now - 10, now + 10];
+      const d = entry ?? scopeOf(declIn(path), now);
+      const [from, to] = d ? [d.top ?? d.line, d.end] : [now - 10, now + 10];
       if (touches(c, from, to)) by.push(ref);
     }
     // A subject path judges the item only where nothing it names is found: "ClassIndex in lib/flows.mjs" is about
@@ -315,6 +327,7 @@ export function evidenceDrift(map, { files = [], read = () => null, history = ()
     for (const m of text.matchAll(PATH_LINE)) {
       const [ref, path, at] = [m[0], m[1], Number(m[2])];
       if (!tracked.has(path)) continue;
+      if (entryNamed(text, path, at, declIn, read)) continue; // inside the table entry the text names by its key
       const a = anchorOf(spans, path, at, declIn);
       // Said only when the line sits inside a declaration, so there is a name to give: top-level code (a script's last
       // lines) has none, and saying so on every check would be noise nobody can act on.
@@ -357,7 +370,9 @@ export function unmatchedItems(map, { files = [], read = () => null, imports = [
     const where = [...new Set([...own, ...importedBy(it.shown, imports)])];
     const named = spansOf(it.text).some((span) => declsOf(span, where, own, declIn).length);
     const lined = [...it.text.matchAll(PATH_LINE)].some((m) => tracked.has(m[1])) || subjectPaths(it.text, (p) => tracked.has(p)).length > 0 || filesWithoutNames(it.own, declIn).some((p) => tracked.has(p));
-    if (!named && !lined) out.push({ where: it.where, kind: it.kind, group: it.group ?? null, files: it.shown.length, text: it.text });
+    // `backtick`: the bare capital words of its text that its files declare. Such a word is prose until it is in
+    // backticks, so an item written before that rule (0.30.0 counted them) says here what would make it judged.
+    if (!named && !lined) out.push({ where: it.where, kind: it.kind, group: it.group ?? null, files: it.shown.length, text: it.text, backtick: bareCapitals(it.text).filter((w) => declsOf(w, where, own, declIn).length) });
   }
   return out.sort((a, b) => b.files - a.files || a.where.localeCompare(b.where));
 }

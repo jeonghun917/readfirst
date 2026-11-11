@@ -33,15 +33,30 @@ const one = (text, shown, changes) => {
   return list.risks[0].trigger;
 };
 
-test('a name written as a call, and a capital constant, count where they are declared', () => {
-  const t = one('main() reads the options in FLAGS', ['src/cli.mjs'], change('src/cli.mjs', [6], ['  return argv.filter((a) => FLAGS.has(a) && a);']));
-  assert.deepEqual(t.about, ['`main`', '`FLAGS`']);
+test('a name written as a call counts where it is declared; a capital constant counts when it is in backticks', () => {
+  const touched = change('src/cli.mjs', [6], ['  return argv.filter((a) => FLAGS.has(a) && a);']);
+  const t = one('main() reads the options in `FLAGS`', ['src/cli.mjs'], touched);
+  assert.deepEqual(t.about, ['`FLAGS`', '`main`']);
   assert.deepEqual(t.by, ['`FLAGS`'], 'line 6 is in parse, not main: only FLAGS is touched');
   assert.equal(one('a file(s) count in check(s)', ['src/cli.mjs'], new Map()).why, 'names no symbol or line readfirst can find: shown for its files', 'a plural in brackets is not a call, though a function named check is declared');
 });
 
-test('a capital word declared only in a changed file the item is not about does not count', () => {
-  const t = one('readfirst reports its own files as status MAP', ['src/cli.mjs'], change('test/a.test.mjs', [1], ['const MAP = { groups: [1] };']));
+test('a bare capital word with no underscore is prose, even when the code declares a constant of that name', () => {
+  // "the CLI version" is about a version, not about a constant called CLI that the changed line happens to use.
+  const body = 'export const CLI = "node bin/tool.mjs";\nexport const MAX_RUNS = 3;\nexport function prBody() {\n  return `run ${CLI} check`;\n}\n';
+  const judged = (text) => {
+    const list = { rules: [], risks: [{ group: 'g', text, for: ['lib/brief.mjs'] }] };
+    judge(list, { changes: change('lib/brief.mjs', [4], ['  return `run ${CLI} check`;']), read: (p) => (p === 'lib/brief.mjs' ? body : null), files: ['lib/brief.mjs'], imports: [] });
+    return list.risks[0].trigger;
+  };
+  assert.equal(judged('the pull request body names a CLI version by hand').why, 'names no symbol or line readfirst can find: shown for its files');
+  assert.deepEqual(judged('the `CLI` constant is the command the sandbox runs').by, ['`CLI`'], 'in backticks it is the constant');
+  assert.deepEqual(judged('MAX_RUNS bounds the cost').about, ['`MAX_RUNS`'], 'a capital name with an underscore has a shape only code has');
+  for (const word of ['API', 'URL', 'JSON', 'VERSION', 'FLAGS']) assert.deepEqual(judged(`the ${word} must stay stable, see MAX_RUNS`).about, ['`MAX_RUNS`'], word);
+});
+
+test('a capital word in backticks, declared only in a changed file the item is not about, does not count', () => {
+  const t = one('readfirst reports its own files as status `MAP`', ['src/cli.mjs'], change('test/a.test.mjs', [1], ['const MAP = { groups: [1] };']));
   assert.equal(t.why, 'names no symbol or line readfirst can find: shown for its files', 'the test\'s own MAP is not the MAP the risk means');
 });
 
@@ -63,3 +78,14 @@ test('audit lists the rules and risks no change can judge, widest first, in full
   const text = auditText({ files: 4, commit: null, problems: [], stale: [], hotspots: [], unguarded: [], unmatched: u, replacing: [], held: null, placeholders: [], unchecked: [], brokeMost: [], untested: { files: [], groups: [] }, unused: [], unseen: { languages: [], computed: [] } });
   assert.match(text, /## Rules and risks no change can judge[^\n]*\n\n- groups\.cli\.risks\[1\] \(shown for 3 files\): keep the docs in step with the help text, every word of it\n/u);
 });
+
+test('audit says which bare capital word backticks would make a name, for an item nothing can judge', async () => {
+  const { unmatchedItems } = await import('../src/trigger.mjs');
+  const body = 'export const MARKER = "<!-- tool -->";\nexport function post() {\n  return MARKER;\n}\n';
+  const map = (text) => ({ groups: [{ id: 'g', files: ['src/action.mjs'], risks: [{ text }] }], rules: [] });
+  const items = (text) => unmatchedItems(map(text), { files: ['src/action.mjs'], read: (p) => (p === 'src/action.mjs' ? body : null) });
+  assert.deepEqual(items('the comment is found by its first line (MARKER), never by an API call').map((u) => u.backtick), [['MARKER']], 'MARKER is declared in its file; API is not');
+  assert.deepEqual(items('the comment is found by its first line (`MARKER`)'), [], 'in backticks it is judged');
+  assert.deepEqual(items('the comment is found by its first line').map((u) => u.backtick), [[]]);
+});
+
