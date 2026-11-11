@@ -27,7 +27,7 @@ whole repository's, and its description becomes the group's title.
 
 The first map is the part nobody gets to. [readfirst-app](https://readfirst-cloud.vercel.app/) can write it for you: it
 reads the repository and your notes, and opens the map as a pull request with the file and line behind every risk.
-Free once per account; see [Hosted](#hosted-readfirst-app).
+The free hosted fill (once per account) is paused until readfirst has three paying subscribers; see [Hosted](#hosted-readfirst-app).
 
 Commit `.readfirst/map.json`. From then on:
 
@@ -513,7 +513,8 @@ Everything above is free and stays free. The GitHub App adds the parts that take
 
 - **First map:** install [readfirst-app](https://github.com/apps/readfirst-app/installations/new) on a repository and
   comment `/readfirst fill` on any issue. 5–20 minutes later a pull request arrives with the map, each risk and rule
-  citing the file and line it came from. Free once per account, for repositories up to 200 files.
+  citing the file and line it came from. Free once per account, for repositories up to 200 files; paused until readfirst has
+  three paying subscribers (Pro fills maps now).
 - **Pro, $39/month:** fills for up to 3 private repositories that also read the known traps of their libraries; after
   each merge, a small PR when the map needs it; on every pull request, a comment on the lines that look like they break
   a rule in your map. When that map PR waits a week or ten merges, `npx readfirst pending` and the Claude Code hook
