@@ -193,6 +193,22 @@ test('lex, Python: triple-quoted strings over lines, a quote inside a string, a 
   assert.equal(rows[2].code.trim(), '');
 });
 
+test('lex: a quoted string whose line ends in a backslash goes on at the next line (Python and JavaScript)', () => {
+  // Python's ast reads one string here and gives the class its method (clean, lines 7 to 8); V8 runs the JavaScript
+  // one and gives the string as 'one   two.'.
+  const py = L('class A:', '    x = f(', '        h=_("one \\', '        two.")', '    )', '', '    def clean(self):', '        return 1');
+  assert.deepEqual(codeOf(py.split('\n'), 'py').slice(2, 5), ['        h=_("     ', '            ")', '    )']);
+  assert.equal(lex(py.split('\n'), 'py')[3].startsIn, 'string');
+  assert.equal(bounds('a.py', py, { members: true }), 'A:1-8 clean:7-8');
+  const js = L('const o = {', "  h: f('one \\", "  two.'),", '};', 'function clean() {', '  return 1;', '}');
+  assert.equal(bounds('a.ts', js), 'o:1-4 clean:5-7');
+  assert.deepEqual(tokens(lex(js.split('\n'), 'js')).filter((t) => t.k === 'val').map((t) => [t.line, t.endLine]), [[2, 3], [6, 6]]);
+  // An escaped backslash at the end carries nothing on, and a string left open without one still ends at its line.
+  assert.deepEqual(codeOf(["a = 'x\\\\", 'b = 1'], 'py'), ["a = '   ", 'b = 1']);
+  assert.deepEqual(codeOf(["a = 'x", "b = '1'"]), ["a = ' ", "b = ' '"]);
+  assert.deepEqual(codeOf(['x = 1  # C:\\', 'y = 2'], 'py'), ['x = 1       ', 'y = 2']);
+});
+
 test('tokens and closeOf: a literal is one token whatever it holds, and a bracket closes at its own partner', () => {
   const toks = tokens(lex(['run(a, [b, { c }], ")]}", `x${y}z`)', 'next()'], 'js'));
   assert.deepEqual(toks.map((t) => t.v), ['run', '(', 'a', ',', '[', 'b', ',', '{', 'c', '}', ']', ',', "''", ',', '`', ')', 'next', '(', ')']);

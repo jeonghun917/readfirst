@@ -16,7 +16,8 @@ const REGEX_KEYWORD = /(?:^|[^\w$.])(?:return|typeof|case|in|of|do|else|void|del
 //   as spaces. Names inside a template's `${ }` stay (they are code); the `${` and its `}` are spaces.
 // - mark, per character: 'c' code, 'l' part of a literal, 't' the backtick that opens a template, 'p' code inside a
 //   template's placeholder, ' ' nothing (a comment, or space).
-// - startsIn: '' or what the line begins inside: 'block' (a /* */ comment), 'template', 'string3' (Python's triple quotes).
+// - startsIn: '' or what the line begins inside: 'block' (a /* */ comment), 'template', 'string3' (Python's triple quotes),
+//   'string' (a quoted string the line above carried on with a backslash at its end).
 // - comment: part of the line is a comment. tplOpen: the line ends inside a template's `${ }`.
 // - state: the state after the line. Passing it as the third argument goes on from the next line, so a hunk or a
 //   file's second half reads as it does in the whole file.
@@ -28,7 +29,8 @@ export function lex(lines, lang, state = null) {
   let last = state?.last ?? '';
   const out = [];
   for (const text of lines) {
-    const startsIn = q === 'block' ? 'block' : q === '`' ? 'template' : q && q.length === 3 ? 'string3' : '';
+    const startsIn = q === 'block' ? 'block' : q === '`' ? 'template' : q && q.length === 3 ? 'string3' : q === "'" || q === '"' ? 'string' : '';
+    let carriesOn = false; // a quoted string whose line ends in a backslash goes on at the next line
     let code = '';
     let mark = '';
     let comment = false;
@@ -39,7 +41,7 @@ export function lex(lines, lang, state = null) {
       const c = text[i];
       if (py) {
         if (q) {
-          if (c === '\\') { blank(Math.min(2, text.length - i), 'l'); continue; }
+          if (c === '\\') { carriesOn = i === text.length - 1; blank(Math.min(2, text.length - i), 'l'); continue; }
           if (q.length === 3 ? text.startsWith(q, i) : c === q) { const n = q.length; q = null; keep(n, 'l'); continue; }
           blank(1, 'l'); continue;
         }
@@ -72,7 +74,7 @@ export function lex(lines, lang, state = null) {
         else blank(1, 'l');
         continue;
       }
-      if (q) { if (c === '\\') blank(Math.min(2, text.length - i), 'l'); else if (c === q) { q = null; last = 'x'; keep(1, 'l'); } else blank(1, 'l'); continue; }
+      if (q) { if (c === '\\') { carriesOn = i === text.length - 1; blank(Math.min(2, text.length - i), 'l'); } else if (c === q) { q = null; last = 'x'; keep(1, 'l'); } else blank(1, 'l'); continue; }
       if (c === '/' && text[i + 1] === '/') { comment = true; blank(text.length - i); break; }
       if (c === '/' && text[i + 1] === '*') { q = 'block'; comment = true; blank(2); continue; }
       if (c === '/' && text[i - 1] !== '<' && !(last === '}' && text[i + 1] === '>') && (last === '' || /[(,=:[!&|?{};+\-*%<>~^]/u.test(last) || REGEX_KEYWORD.test(code.trimEnd()))) { q = 're'; keep(1, 'l'); continue; }
@@ -84,7 +86,7 @@ export function lex(lines, lang, state = null) {
       if (!/\s/u.test(c) && !(c === '!' && last === 'x' && text[i + 1] !== '=' && !REGEX_KEYWORD.test(code.trimEnd()))) last = /[A-Za-z0-9_$)\]]/u.test(c) ? 'x' : c;
       keep(1, tpl.length ? 'p' : 'c'); // code inside a template's ${ } is part of that literal for the token walk
     }
-    if (py ? q === "'" || q === '"' : q === "'" || q === '"' || q === 're') q = null;
+    if (q === 're' || ((q === "'" || q === '"') && !carriesOn)) q = null;
     if (startsIn === 'block') comment = true;
     out.push({ code, mark, startsIn, comment, text, tplOpen: tpl.length > 0, state: { q, tpl: tpl.length ? [...tpl] : NO_TEMPLATES, last } });
   }
@@ -101,7 +103,7 @@ export function tokens(rows, from = 0, to = rows.length) {
   for (let l = from; l < to; l++) {
     const { code, mark, startsIn } = rows[l];
     let first = true;
-    let carried = startsIn === 'template' || startsIn === 'string3' || (l > from && rows[l - 1].tplOpen);
+    let carried = startsIn === 'template' || startsIn === 'string3' || startsIn === 'string' || (l > from && rows[l - 1].tplOpen);
     for (let i = 0; i < code.length;) {
       const c = code[i];
       if (mark[i] === ' ' || (mark[i] === 'c' && /\s/u.test(c))) { i++; continue; }
