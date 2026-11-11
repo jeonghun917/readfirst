@@ -91,7 +91,7 @@
           ]
         },
         {
-          "text": "hook state keys (src/cli.mjs): a file's absolute path (notes shown; checked at the stop), `touched:<path>` (no time left to look it up: checked at the stop, looked up on the next call), `start:<root>` (the session's first call in that repository that wrote nothing readfirst can name: the Stop hook then also checks every changed file whose mtime is newer, so a file a script wrote is not skipped), `pending:<root>` and `notrun:<root>:<state>` (the stop already blocked once for checks that did not run at this state of the files), and since 0.31.0 `call:<sig>` (every call the hook saw), `denied:<sig>` (the gate refused it) and `resent:<sig>:<time>` (the same call made again with no other in between), and since 0.32.0 `find:<root>` (a Bash call ran readfirst find there), `nofind:<sig>` (the gate refused new code before find) and `nofindwrite:<sig>` (new code written before find; counted at the stop). runStopHook skips pending, notrun, call, denied, resent, find, nofind and nofindwrite: a new kind of key must go into its tag list, or it is read as a file path.",
+          "text": "hook state keys (src/cli.mjs): a file's absolute path (notes shown; checked at the stop), `touched:<path>` (no time left to look it up: checked at the stop, looked up on the next call), `start:<root>` (the session's first call in that repository that wrote nothing readfirst can name: the Stop hook then also checks every changed file whose mtime is newer, so a file a script wrote is not skipped), `pending:<root>` and `notrun:<root>:<state>` (the stop already blocked once for checks that did not run at this state of the files), and since 0.31.0 `call:<sig>` (every call the hook saw), `denied:<sig>` (the gate refused it) and `resent:<sig>:<time>` (the same call made again with no other in between), and in the release after 0.31.0 `find:<root>` (a Bash call ran readfirst find there), `findwords:<root>:<words>` (the words that find asked: a new name counts as searched for when one of them meets a word of the name), `nofind:<sig>:<names>` (the gate refused new code no find had asked about; a find run after it lets the same call through) and `nofindwrite:<sig>` (new code written without one; counted at the stop). runStopHook skips pending, notrun, call, denied, resent, find, findwords, nofind and nofindwrite: a new kind of key must go into its tag list, or it is read as a file path.",
           "files": [
             "src/cli.mjs"
           ]
@@ -482,6 +482,12 @@
         },
         {
           "text": "`subjectPaths` (src/trigger.mjs): a path in a risk's first clause, with or without an extension, is what the risk is about: a change to it triggers the risk unless the risk already names code in that file (`judge`), and readfirst's own files never count; `unmatchedItems` counts such a risk as judgeable. A file named only after the first clause judges nothing by itself (vendor/readfirst/VERSION read as not triggered until 0.32.0)",
+          "files": [
+            "src/trigger.mjs"
+          ]
+        },
+        {
+          "text": "`filesWithoutNames` (src/trigger.mjs): a risk whose `files` are all exact paths (no `*` or `?`) with nothing declared in them (a workflow, a Dockerfile, a JSON or YAML file) is about those files: a change to one triggers it in `judge`, and `unmatchedItems` counts it as judgeable. One pattern among the files, or one file with a declaration, and it is judged by its names as before. `judge` gets the files from the read list row (`files` on a risk row, set in readList of src/readlist.mjs for a group risk and for one found by risksNaming): a row built without it is judged as if the risk had no files. Rules are not judged this way.",
           "files": [
             "src/trigger.mjs"
           ]

@@ -80,7 +80,20 @@ const PATH = /(?<![\w/.-])((?:[\w.-]+\/)*[\w.-]+\.[A-Za-z]\w*)(?![\w/-])/gu;
 const SUBJECT_PATH = /(?<![\w@/.-])((?:[\w.-]+\/)+[\w.-]*\w|[\w-][\w.-]*\.[A-Za-z]\w{0,9})(?![\w/-]|:\d)/gu; // path:line is evidence, judged by its line
 // readfirst's own files (the map) are left out, as in unshownRisks: a risk that quotes the map's path is not about it.
 const subjectPaths = (text, has) => [...new Set([...String(text).split(/[;,]|:\s|\.\s/u)[0].matchAll(SUBJECT_PATH)].map((m) => m[1]).filter((p) => has(p) && !isOwnFile(p)))];
-const CODE_NAME = /(?<![\w$.\/-])(?:[a-z]+[A-Z][\w$]*|[a-z]+_[a-z0-9_]+|[A-Z][A-Z0-9]*_[A-Z0-9_]+)(?![\w$\/-])/gu;
+const CODE_SHAPE = '(?:[a-z]+[A-Z][\\w$]*|[a-z]+_[a-z0-9_]+|[A-Z][A-Z0-9]*_[A-Z0-9_]+)';
+const CODE_NAME = new RegExp(`(?<![\\w$.\\/-])${CODE_SHAPE}(?![\\w$\\/-])`, 'gu');
+// Names joined by a slash ("not inside encodeToken/decodeToken", "parseArgs()/runMain()") are each a name: next to
+// a `/` a name was refused, to keep the folders of a path out, so such a risk named nothing and was never judged.
+// Every part must look like code (camelCase, snake_case, UPPER_CASE with an underscore), so `src/readlist` and
+// `lib/fooBar/index` stay paths; a path with an extension (`src/fooBar/bazQux.js`) is taken out before this is read.
+const JOINED = new RegExp(`(?<![\\w$.\\/-])${CODE_SHAPE}(?:\\(\\))?(?:\\/${CODE_SHAPE}(?:\\(\\))?)+(?![\\w$\\/-]|\\.\\w)`, 'gu');
+const unjoin = (text) => text.replace(JOINED, (m) => m.replaceAll('/', ' '));
+// A `files` entry that is one path, not a pattern (`*`, `?` and so `**` make a pattern; see patternToRegExp).
+const exactPath = (p) => typeof p === 'string' && !/[*?]/u.test(p);
+// The files an item gives when all of them are exact paths in which no declaration is found (a JSON or YAML file, a
+// Dockerfile, a workflow): there is no name or line to judge such a risk by, so a change to one of those files is what
+// touches it. With a pattern among them, or a declaration in any of them, the item is judged by its names as before.
+const filesWithoutNames = (files, declIn) => (Array.isArray(files) && files.length && files.every((p) => exactPath(p) && !isOwnFile(p) && !declIn(p).length) ? files : []);
 const NOT_CODE = /(?:^|\/)\.readfirst\/|\.(?:md|mdx|markdown|txt|rst|json|jsonl|ya?ml|toml|lock|ini|cfg|html?|css|svg|csv)$/iu;
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 
@@ -167,8 +180,8 @@ const touches = (changes, from, to) => changes.whole || [...changes.lines].some(
 const CALL = /(?<![\w$.\/-])([A-Za-z_$][\w$]*)\((?!s\)|es\))/gu;
 const CAPS = /(?<![\w$.\/-])[A-Z][A-Z0-9]{2,}(?![\w$\/-])/gu;
 function spansOf(text) {
-  const ticked = [...String(text).matchAll(/`([^`\n]+)`/gu)].map((m) => m[1].trim()).filter((s) => IDENT.test(s) && !FILE_LIKE.test(s));
-  const prose = String(text).replace(/`[^`\n]*`/gu, ' ').replace(PATH, ' ');
+  const ticked = [...String(text).matchAll(/`([^`\n]+)`/gu)].flatMap((m) => unjoin(m[1].trim()).split(' ')).filter((s) => IDENT.test(s) && !FILE_LIKE.test(s));
+  const prose = unjoin(String(text).replace(/`[^`\n]*`/gu, ' ').replace(PATH, ' '));
   const bare = [...prose.matchAll(CODE_NAME)].map((m) => m[0]);
   const calls = [...prose.matchAll(CALL)].map((m) => m[1]);
   const caps = [...prose.matchAll(CAPS)].map((m) => m[0]);
@@ -223,7 +236,7 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
   // NOT_CODE of its own, made a risk about the package's NOT_CODE read as touched (until 0.31.0). Its own files, the
   // files it names and what they import still count wherever they are.
   const groupOf = new Map((list.targets ?? []).map((t) => [t.path, t.group]));
-  const judgeOne = (text, shownFor, group = null) => {
+  const judgeOne = (text, shownFor, group = null, ownFiles = null) => {
     const spans = spansOf(text);
     const mentioned = [...String(text).matchAll(PATH)].map((m) => m[1]).filter((p) => tracked.has(p));
     const changedHere = [...changes.keys()].filter((p) => !group || !groupOf.has(p) || groupOf.get(p) === group);
@@ -262,7 +275,8 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
     }
     // A subject path judges the item only where nothing it names is found: "ClassIndex in lib/flows.mjs" is about
     // ClassIndex, not every change to lib/flows.mjs.
-    for (const path of subjectPaths(text, (p) => tracked.has(p) || changes.has(p))) {
+    // So do the item's own files when they are exact paths with nothing declared in them (filesWithoutNames).
+    for (const path of [...subjectPaths(text, (p) => tracked.has(p) || changes.has(p)), ...filesWithoutNames(ownFiles, declIn).filter((p) => tracked.has(p) || changes.has(p))]) {
       if (about.includes(path) || namedIn.has(path)) continue;
       about.push(path);
       if (changes.has(path)) by.push(path);
@@ -271,7 +285,7 @@ export function judge(list, { changes, read = () => null, files = [], imports = 
     if (!about.length) return { triggered: true, about, by, why: 'names no symbol or line readfirst can find: shown for its files', ...more };
     return by.length ? { triggered: true, about, by, ...more } : { triggered: false, about, by, why: `the change does not touch ${about.join(', ')}`, ...more };
   };
-  for (const r of list.risks ?? []) r.trigger = judgeOne(r.text, r.for ?? [], r.group ?? null);
+  for (const r of list.risks ?? []) r.trigger = judgeOne(r.text, r.for ?? [], r.group ?? null, r.files ?? null);
   for (const r of list.rules ?? []) r.trigger = judgeOne(r.rule, r.for ?? []);
   return list;
 }
@@ -332,7 +346,7 @@ export function unmatchedItems(map, { files = [], read = () => null, imports = [
     return cache.get(path);
   };
   const items = [
-    ...(map?.groups ?? []).flatMap((g) => (g.risks ?? []).map((r, i) => ({ where: `groups.${g.id}.risks[${i}]`, kind: 'risk', group: g.id, text: r?.text, shown: files.filter((f) => (r?.files ? matcher(r.files)(f) : groupOf(map, f)?.id === g.id)) }))),
+    ...(map?.groups ?? []).flatMap((g) => (g.risks ?? []).map((r, i) => ({ where: `groups.${g.id}.risks[${i}]`, kind: 'risk', group: g.id, text: r?.text, own: r?.files ?? null, shown: files.filter((f) => (r?.files ? matcher(r.files)(f) : groupOf(map, f)?.id === g.id)) }))),
     ...(map?.rules ?? []).map((r) => ({ where: `rules.${r?.id}`, kind: 'rule', text: r?.rule, shown: r?.files ? files.filter(matcher(r.files)) : [] })),
   ];
   const out = [];
@@ -342,7 +356,7 @@ export function unmatchedItems(map, { files = [], read = () => null, imports = [
     const own = new Set([...it.shown, ...mentioned]);
     const where = [...new Set([...own, ...importedBy(it.shown, imports)])];
     const named = spansOf(it.text).some((span) => declsOf(span, where, own, declIn).length);
-    const lined = [...it.text.matchAll(PATH_LINE)].some((m) => tracked.has(m[1])) || subjectPaths(it.text, (p) => tracked.has(p)).length > 0;
+    const lined = [...it.text.matchAll(PATH_LINE)].some((m) => tracked.has(m[1])) || subjectPaths(it.text, (p) => tracked.has(p)).length > 0 || filesWithoutNames(it.own, declIn).some((p) => tracked.has(p));
     if (!named && !lined) out.push({ where: it.where, kind: it.kind, group: it.group ?? null, files: it.shown.length, text: it.text });
   }
   return out.sort((a, b) => b.files - a.files || a.where.localeCompare(b.where));

@@ -41,7 +41,7 @@ function stem(w) {
 
 // Two words meet when they are equal or one starts the other (pay / payment, 결제 / 결제창), the shorter at least 3
 // letters (2 for Hangul).
-const meets = (q, w) => q === w || (Math.min(q.length, w.length) >= (/\p{Script=Hangul}/u.test(q) ? 2 : 3) && (w.startsWith(q) || q.startsWith(w)));
+export const meets = (q, w) => q === w || (Math.min(q.length, w.length) >= (/\p{Script=Hangul}/u.test(q) ? 2 : 3) && (w.startsWith(q) || q.startsWith(w)));
 
 // Definitions by language: a name and the line it is on. Rough on purpose: a name a person would search for.
 const DEFS = [

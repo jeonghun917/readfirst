@@ -118,11 +118,11 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
     }
     if (group) {
       if (group.deprecated) note('deprecated', group.id, { group: group.id, why: group.deprecated.why, use: group.deprecated.use ?? null }, target);
-      for (const r of group.risks ?? []) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text, named: Boolean(r.files) }, target);
+      for (const r of group.risks ?? []) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text, named: Boolean(r.files), ...(r.files ? { files: r.files } : {}) }, target);
       for (const c of group.checks ?? []) note('checks', c.run, { run: c.run, why: c.why ?? `checks for ${group.title}`, from: `group ${group.id}` }, target);
     }
     // Risks of other groups whose files name this file (risksNaming): they show here too.
-    for (const { group: g, risk: r } of risksNaming(map, target, group?.id ?? null)) note('risks', `${g.id}\0${r.text}`, { group: g.id, text: r.text, named: true }, target);
+    for (const { group: g, risk: r } of risksNaming(map, target, group?.id ?? null)) note('risks', `${g.id}\0${r.text}`, { group: g.id, text: r.text, named: true, files: r.files }, target);
     (map.requires ?? []).forEach((r, i) => { if (matcher(r.when)(target)) note('together', i, { when: r.when, also: r.also, why: r.why }, target); });
     for (const d of map.dependents ?? []) if (matcher(d.files)(target)) note('dependents', `${d.repo}\0${d.files.join('\0')}`, { repo: d.repo, paths: d.paths ?? [], why: d.why }, target);
     for (const f of map.flows ?? []) if (f.file === target || f.reaches.some((r) => r.file === target)) note('flows', `${f.file}\0${f.line}\0${f.entry}`, { entry: f.entry, file: f.file, line: f.line, checks: f.checks, reaches: f.reaches }, target);
