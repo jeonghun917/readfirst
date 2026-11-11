@@ -1,9 +1,11 @@
 // The bug shapes `readfirst scan` looks for, without a model: a line that computes a new value and drops it (a Django
 // QuerySet .filter(), a string .replace() or .strip()), and a test assertion on a promise that nothing waits for.
 // These are the shapes already published in readfirst's write-ups; the hosted version (readfirst-cloud, Pro and the
-// one-off audit) runs more, and keeps this file's copy of them in step (lib/discarded.mjs there).
+// one-off audit) runs more, through this file's machinery: `candidates` and `discardedResults` take the list of
+// patterns to look for. What is code on a line, and where a function's body is, comes from the one reader
+// (src/code.mjs); nothing here skips a string or a comment by itself.
 import { createHash } from 'node:crypto';
-import { blockLines } from './lex.mjs';
+import { declarations, lex, tokens } from './code.mjs';
 
 export const PATTERNS_VERSION = 'patterns-7';
 // Patterns about test code: the audit and the pattern bank read test files for these and for nothing else.
@@ -79,17 +81,12 @@ export const PATTERNS = [
   },
 ];
 
-// Brackets opened minus closed on a line, outside strings and comments (roughly: enough to tell a statement from a
-// line inside a call). In JavaScript a brace opens a block far more often than a value, so only ( and [ count there:
-// counting braces made every line of a function body look like the inside of a call.
-function depthChange(text, py) {
+// Brackets opened minus closed on a line of code (a row of the lexer: what is in a string, a template, a comment or a
+// regular expression is not code). In JavaScript a brace opens a block far more often than a value, so only ( and [
+// count there: counting braces made every line of a function body look like the inside of a call.
+function depthChange({ code }, py) {
   let d = 0;
-  let q = null;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
-    if (c === '"' || c === "'" || (!py && c === '`')) { q = c; continue; }
-    if ((py && c === '#') || (!py && c === '/' && text[i + 1] === '/')) break;
+  for (const c of code) {
     if ((py ? '([{' : '([').includes(c)) d++;
     else if ((py ? ')]}' : ')]').includes(c)) d--;
   }
@@ -98,22 +95,22 @@ function depthChange(text, py) {
 
 // JavaScript statement context: a stack of the brackets still open, 'b' for a block brace (a function or control-flow body,
 // whose lines are statements again even inside a call: `items.forEach((x) => {`) and 'p' for ( [ and a brace that
-// opens an object literal or a type. A line is a statement start when the top of the stack is a block or empty. `tpl`
-// carries an open template literal over to the next line. Returns the new { stack, tpl }.
-function scanStack(state, text) {
+// opens an object literal or a type. A line is a statement start when the top of the stack is a block or empty.
+// Reads a row of the lexer; `last` is the last significant character so far, carried over from the lines above (a
+// literal counts as a value). Returns the new { stack, last }.
+function scanStack(state, { code, mark }) {
   const stack = state.stack.slice();
-  let q = state.tpl ? '`' : null;
-  let last = state.last ?? ''; // the last significant character so far, carried over from the lines above
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (q) { if (c === '\\') i++; else if (c === q) { q = null; last = 'x'; } continue; }
-    if (c === '"' || c === "'" || c === '`') { q = c; continue; }
-    if (c === '/' && text[i + 1] === '/') break;
+  let last = state.last ?? '';
+  for (let i = 0; i < code.length; i++) {
+    if (mark[i] === ' ') continue;
+    if (mark[i] !== 'c') { last = 'x'; continue; }
+    const c = code[i];
     if (c === '(' || c === '[') { stack.push('p'); last = c; continue; }
     if (c === ')' || c === ']') { stack.pop(); last = c; continue; }
     if (c === '{') {
-      const before = text.slice(0, i).trimEnd() || last;
-      const object = /(?:[(\[,=:?{&|!+\-*%<.]|\breturn|\bcase|\byield|\bawait|\btypeof|\bin|\bof)$/u.test(before) && !/=>$/u.test(before);
+      const before = code.slice(0, i).trimEnd() || last;
+      // After `case x:` and `default:` the brace opens that branch's block, though a colon stands before it.
+      const object = /(?:[(\[,=:?{&|!+\-*%<.]|\breturn|\bcase|\byield|\bawait|\btypeof|\bin|\bof)$/u.test(before) && !/=>$/u.test(before) && !/^\s*(?:case\b.*|default\s*):$/u.test(before);
       stack.push(object ? 'p' : 'b');
       last = c;
       continue;
@@ -121,7 +118,7 @@ function scanStack(state, text) {
     if (c === '}') { stack.pop(); last = c; continue; }
     if (!/\s/u.test(c)) last = c;
   }
-  return { stack, tpl: q === '`', last };
+  return { stack, last };
 }
 
 // The new file's lines a patch shows (context and added), each with its number and whether the patch adds it.
@@ -139,33 +136,31 @@ function newLines(patch) {
   return out;
 }
 
-// From an opening bracket, the index just past its match in the joined statement text, or -1.
-function closeOf(s, open, py) {
+// From an opening bracket, the index just past its match, or -1. `code` is the statement as the lexer left it: the
+// same length as its text, with the insides of strings, templates, comments and regular expressions as spaces.
+// -1 too when what opens there is not code (the pattern's words stood in the text of a template).
+function closeOf(code, open) {
+  if (code[open] !== '(') return -1;
   let d = 0;
-  let q = null;
-  for (let i = open; i < s.length; i++) {
-    const c = s[i];
-    if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
-    if (c === '"' || c === "'" || (!py && c === '`')) { q = c; continue; }
-    if (c === '(') d++;
-    else if (c === ')' && --d === 0) return i + 1;
+  for (let i = open; i < code.length; i++) {
+    if (code[i] === '(') d++;
+    else if (code[i] === ')' && --d === 0) return i + 1;
   }
   return -1;
 }
 
-// How many arguments the call that opens at `open` has: top-level commas outside strings, plus one; 0 for ().
-function argCount(s, open) {
+// How many arguments the call that opens at `open` has; 0 for (). Reads the same code (a string's quotes are kept
+// there, so a string is an argument). An argument is what stands before a comma or the closing parenthesis: the
+// comma after the last one (`f(\n  a,\n)`) starts nothing.
+function argCount(code, open) {
   let d = 0;
-  let q = null;
   let n = 0;
-  let any = false;
-  for (let i = open; i < s.length; i++) {
-    const c = s[i];
-    if (q) { if (c === '\\') i++; else if (c === q) q = null; continue; }
-    if (c === '"' || c === "'" || c === '`') { q = c; if (d === 1) any = true; continue; }
+  let any = false; // something of an argument has been read since the last comma
+  for (let i = open; i < code.length; i++) {
+    const c = code[i];
     if (c === '(' || c === '[' || c === '{') { if (d === 1) any = true; d++; continue; }
-    if (c === ')' || c === ']' || c === '}') { if (--d === 0) return any ? n + 1 : 0; continue; }
-    if (d === 1) { if (c === ',') n++; else if (!/\s/u.test(c)) any = true; }
+    if (c === ')' || c === ']' || c === '}') { if (--d === 0) return n + (any ? 1 : 0); continue; }
+    if (d === 1) { if (c === ',') { if (any) n++; any = false; } else if (!/\s/u.test(c)) any = true; }
   }
   return 0;
 }
@@ -187,31 +182,59 @@ export const assignedFromQueryset = (name, text) => {
 };
 
 const indentOf = (l) => l.match(/^\s*/u)[0].length;
-// The function a line sits in, found by indentation (prettier-style code): up through the blocks that are not functions
-// (if, for, try, case) to the first line that opens one. { header, at } or null.
-function enclosingFunction(lines, idx) {
-  let cur = indentOf(lines[idx]);
-  for (let k = idx - 1; k >= 0 && cur > 0; k--) {
-    if (!lines[k].trim() || indentOf(lines[k]) >= cur) continue;
-    cur = indentOf(lines[k]);
-    const t = lines[k].trim();
-    if (/^(?:if|else|for|while|try|catch|finally|switch|do)\b|^\}\s*(?:else|catch|finally)\b|^(?:case|default)\b/u.test(t)) continue;
-    if (/\bfunction\b|=>\s*\{$|\)(?::\s*[^{]+)?\s*\{$/u.test(t)) return { header: t, at: k };
+// The function a line sits in, as the reader sees the file: the innermost body that opens above the line and closes at
+// or after `endLine`. A body is a declared function or method (`declarations`), or a brace after `=>` or after a `)`
+// whose parenthesis does not follow if, for, while, switch, catch or with: the callback of a test or of a handler is
+// where such a line most often is, and it has no name to be declared by. { start, end } in line numbers, or null.
+const NOT_A_FUNCTION = new Set(['if', 'for', 'while', 'switch', 'catch', 'with']);
+function enclosingFunction(path, text, rows, line, endLine) {
+  const bodies = declarations(path, text, { members: true }).filter((d) => d.fn || d.what === 'fn').map((d) => ({ start: d.line, end: d.end }));
+  const toks = tokens(rows);
+  const open = []; // the brackets open so far: { v, at, line, fn }
+  let closedParen = -1; // the token that opened the parenthesis just closed
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k];
+    if (t.line > line) break;
+    if (t.k !== 'punct') continue;
+    if (t.v === '(' || t.v === '[') open.push({ v: t.v, at: k });
+    else if (t.v === '{') {
+      const prev = toks[k - 1];
+      const head = prev?.k === 'punct' && prev.v === ')' && closedParen > 0 ? toks[closedParen - 1] : null;
+      const fn = (prev?.k === 'punct' && prev.v === '=>') || (head !== null && !(head.k === 'word' && (NOT_A_FUNCTION.has(head.v) || (head.v === 'await' && toks[closedParen - 2]?.v === 'for'))));
+      open.push({ v: '{', at: k, line: t.line, fn });
+    } else if (t.v === ')' || t.v === ']' || t.v === '}') {
+      const o = open.pop();
+      if (t.v === ')' && o) closedParen = o.at;
+    }
   }
-  return null;
+  // What is still open at the line holds it (a body that opens on the line itself is the call's own callback, and is
+  // left out below with every body that does not start above the line).
+  for (const o of open) {
+    if (o.v !== '{' || !o.fn) continue;
+    let depth = 0;
+    let end = Infinity;
+    for (let j = o.at; j < toks.length; j++) {
+      if (toks[j].k !== 'punct') continue;
+      if (toks[j].v === '{') depth++;
+      else if (toks[j].v === '}' && --depth === 0) { end = toks[j].line; break; }
+    }
+    bodies.push({ start: o.line, end });
+  }
+  let best = null;
+  for (const b of bodies) if (b.start < line && b.end >= endLine && (!best || b.start > best.start)) best = b;
+  return best;
 }
 
-// Does a statement come after the call (lines idx..end) in the same function? The first later line that is not blank, a
-// closer, a label or another branch of an if/try, indented no deeper than the call, before the function ends.
-function statementAfter(lines, fn, end) {
+// Does a statement come after the call (which ends on line index `end`) in the same function? The first later line of
+// code (a blank line, a comment and the text of a template are not) that is not a closer, a label or another branch of
+// an if/try, indented no deeper than the call, before the function's last line.
+function statementAfter(lines, rows, fn, end) {
   const base = indentOf(lines[end]);
-  const top = indentOf(lines[fn.at]);
   let alt = null; // indent of an else/catch/case line: the branch below it runs instead of this one, not after it
-  for (let j = end + 1; j < lines.length; j++) {
-    const t = lines[j].trim();
+  for (let j = end + 1; j < lines.length && j + 1 < fn.end; j++) {
+    const t = rows[j].code.trim();
     if (!t) continue;
     const ind = indentOf(lines[j]);
-    if (ind <= top) return false;
     const branch = /^\}\s*(?:else|catch|finally)\b|^(?:case|default)\b/u.test(t);
     if (alt !== null) {
       if (ind > alt || (ind === alt && branch)) continue;
@@ -219,19 +242,22 @@ function statementAfter(lines, fn, end) {
     }
     if (branch) { alt = ind; continue; }
     if (ind > base) continue;
-    if (/^[})\]]|^(?:break|continue)\b|^(?:\/\/|\/\*|\*)/u.test(t)) continue;
+    if (/^[})\]]|^(?:break|continue)\b/u.test(t)) continue;
     return true;
   }
   return false;
 }
 
-// The file-level half of js-foreach-async: the loop sits in a function, and a statement of that function follows it.
+// The file-level half of a pattern marked afterFile (a loop whose callbacks nothing waits for): the call sits in a
+// function, and a statement of that function follows it.
 function followedHere(c, text) {
   const lines = text.split('\n');
   const idx = c.line - 1;
   if (!lines[idx] || lines[idx].trim() !== c.text.trim()) return false;
-  const fn = enclosingFunction(lines, idx);
-  return !!fn && statementAfter(lines, fn, Math.min(Math.max(c.end, c.line), lines.length) - 1);
+  const rows = lex(lines, 'js');
+  const end = Math.min(Math.max(c.end, c.line), lines.length);
+  const fn = enclosingFunction(c.file, text, rows, c.line, end);
+  return !!fn && statementAfter(lines, rows, fn, end - 1);
 }
 
 // Candidate findings in one changed file, before the queryset check that may need the whole file.
@@ -239,37 +265,42 @@ const SKIP_PATH = /(?:^|\/)(?:\.semgrep|semgrep|docs?|examples?)\//u;
 // A line that carries on the expression above it (an arrow body, an assignment's value, a returned expression).
 const CONTINUES = { js: /(?:=>|[=(,+\-*?:&|]|\$\{|\breturn)$/u, py: /(?:[=(,+\-*\\]|\b(?:and|or|not|return|in|is|lambda))$/u };
 
-export function candidates(file) {
+// `patterns`: the shapes to look for. The published ones by default; the hosted version passes its own list.
+export function candidates(file, patterns = PATTERNS) {
   const py = PY.test(file.filename);
   if ((!py && !JS.test(file.filename)) || SKIP_PATH.test(file.filename)) return [];
   const rows = newLines(file.patch);
-  // Where the triple-quoted strings (Python) and block comments (JavaScript) are, worked out once per hunk by a scan that
-  // knows strings from comments (lib/lex.mjs): a quote or comment marker inside a string is not taken for one.
-  const blocks = [];
+  // What is code on each line, worked out once per hunk by the one reader (a hunk starts where the patch does, so
+  // its first lines are read as code, as they always were): lexed[i] is the row of rows[i], null for a hunk header.
+  const lexed = [];
   for (let i = 0; i < rows.length;) {
-    if (rows[i].hunk) { blocks.push(null); i++; continue; }
+    if (rows[i].hunk) { lexed.push(null); i++; continue; }
     let j = i;
     while (j < rows.length && !rows[j].hunk) j++;
-    blocks.push(...blockLines(rows.slice(i, j).map((r) => r.text), py));
+    lexed.push(...lex(rows.slice(i, j).map((r) => r.text), py ? 'py' : 'js'));
     i = j;
   }
+  // The line as the patterns read it (trimmed), and the same characters as the lexer left them.
+  const codeOf = (k) => { const lead = rows[k].text.length - rows[k].text.trimStart().length; return lexed[k].code.slice(lead, lead + rows[k].text.trim().length); };
   const out = [];
   let depth = 0;
-  let js = { stack: [], tpl: false }; // JavaScript: brackets open (scanStack)
+  let js = { stack: [] }; // JavaScript: brackets open (scanStack)
   let prev = '';
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    if (r.hunk) { depth = 0; js = { stack: [], tpl: false }; prev = ''; continue; }
+    if (r.hunk) { depth = 0; js = { stack: [] }; prev = ''; continue; }
     const trimmed = r.text.trim();
-    // Lines in or touching a Python triple-quoted string are skipped (docstrings hold example code); in JavaScript the
-    // lines a block comment spans are, and the line that closes one starts a new statement.
-    const b = blocks[i];
-    if (py ? b.touches : b.startsIn || b.endsIn) { if (!py && b.startsIn && !b.endsIn) prev = ''; continue; }
-    const startDepth = py ? depth : (js.tpl || js.stack.at(-1) === 'p' ? 1 : 0);
-    depth = Math.max(0, depth + depthChange(r.text, py));
-    if (!py) js = scanStack(js, r.text);
+    const x = lexed[i];
+    // A Python line that opens or closes a triple-quoted string is skipped (a call that takes one, the line a
+    // docstring ends on). The lines inside one, a comment and template text need no rule: they are not code, so no
+    // call is found in them.
+    if (py && /'{3}|"{3}/u.test(x.code)) continue;
+    // A line that begins inside a template's ${ } or inside a call is not a statement.
+    const startDepth = py ? depth : (lexed[i - 1]?.tplOpen || js.stack.at(-1) === 'p' ? 1 : 0);
+    depth = Math.max(0, depth + depthChange(x, py));
+    if (!py) js = scanStack(js, x);
     const before = prev;
-    if (trimmed && !trimmed.startsWith('#') && !trimmed.startsWith('//')) prev = trimmed.replace(py ? /\s+#.*$/u : /\s+\/\/.*$/u, '');
+    if (x.code.trim()) prev = x.code.trim();
     if (!r.added || startDepth > 0 || (py ? CONTINUES.py : CONTINUES.js).test(before) && !/^(?:case\b|default\s*:)/u.test(before)) continue;
     // A filter built from unpacked input as the only thing in a try block checks that the lookups are valid
     // (try: Model.objects.filter(**given) except FieldError: ...); the call is the point, its result is not.
@@ -279,34 +310,36 @@ export function candidates(file) {
     const typeTest = !py && /^\/\/\s*@ts-(?:expect-error|ignore)\b/u.test(rows[i - 1]?.text?.trim() ?? '');
     // In JavaScript the expression may go on below: a ternary's ? or :, a chained call, an operator.
     if (!py) {
-      const below = rows.slice(i + 1).find((x) => x.hunk || x.text.trim());
-      if (below && !below.hunk && /^(?:\?|:|\.|&&|\|\||\+|-(?!-)|\*|\/(?![/*])|%|\?\?)/u.test(below.text.trim())) continue;
+      let k = i + 1;
+      while (k < rows.length && !rows[k].hunk && !lexed[k].code.trim()) k++;
+      if (k < rows.length && !rows[k].hunk && /^(?:\?|:|\.|&&|\|\||\+|-(?!-)|\*|\/|%|\?\?)/u.test(lexed[k].code.trim())) continue;
     }
     // The whole statement: this line and, when it opens a call, the lines until the call closes (at most 15).
     // A pattern marked long (a callback with a body) reads on up to 400 lines, and says what comes after the call.
     const joined = (limit) => {
       let text = trimmed;
-      let d = depthChange(r.text, py);
+      let code = codeOf(i);
+      let d = depthChange(x, py);
       let k = i + 1;
-      for (; d > 0 && k < rows.length && k <= i + limit && !rows[k].hunk; k++) { text += `\n${rows[k].text.trim()}`; d += depthChange(rows[k].text, py); }
-      return { text, closed: d <= 0, next: k };
+      for (; d > 0 && k < rows.length && k <= i + limit && !rows[k].hunk; k++) { text += `\n${rows[k].text.trim()}`; code += `\n${codeOf(k)}`; d += depthChange(lexed[k], py); }
+      return { text, code, closed: d <= 0, next: k };
     };
     const short = joined(15);
     let long = null;
-    for (const p of PATTERNS) {
+    for (const p of patterns) {
       if (!p.lang.test(file.filename)) continue;
-      const { text: stmt, next } = p.long ? (long ??= joined(400)) : short;
+      const { text: stmt, code, next } = p.long ? (long ??= joined(400)) : short;
       const m = p.find ? p.find(stmt) : stmt.match(p.head);
       if (!m) continue;
       if (typeTest && !p.tests) continue; // (a test pattern's line is the assertion; the error is in its arguments)
       if (p.skip?.test(m[1])) continue;
       if (p.unless?.test(stmt)) continue;
-      if (p.args && argCount(stmt, m.open ?? m[1].length + 1 + m[2].length) < p.args) continue;
+      if (p.args && argCount(code, m.open ?? m[1].length + 1 + m[2].length) < p.args) continue;
       // The call this pattern names must end the statement: nothing after it but a semicolon or a comment.
-      const end = closeOf(stmt, m.open ?? m[1].length + 1 + m[2].length, py);
+      const end = closeOf(code, m.open ?? m[1].length + 1 + m[2].length);
       if (end < 0) continue;
-      const rest = stmt.slice(end).trim();
-      if (rest && !/^;?\s*(?:(?:#|\/\/).*)?$/u.test(rest)) continue;
+      const rest = code.slice(end).trim();
+      if (rest && rest !== ';') continue;
       out.push({ pattern: p, method: m[2], recv: m[1], file: file.filename, line: r.line, end: rows[next - 1].line ?? r.line, text: r.text });
       break;
     }
@@ -316,12 +349,12 @@ export function candidates(file) {
 
 // Findings for the files of a pull request. fileText(path) returns the file at the head commit, or null; it is asked
 // only when a queryset candidate's receiver isn't shown to be one by the patch itself.
-// muted: pattern ids left out (lib/pattern-health.mjs: patterns people almost never act on in live PRs).
-export async function discardedResults(files, fileText = async () => null, { only = null } = {}) {
+// only: the pattern ids to report, when given. patterns: the shapes to look for (see `candidates`).
+export async function discardedResults(files, fileText = async () => null, { only = null, patterns = PATTERNS } = {}) {
   const out = [];
   for (const f of files) {
     if (f.status === 'removed' || !f.patch) continue;
-    for (const c of candidates(f)) {
+    for (const c of candidates(f, patterns)) {
       if (only && !only.has(c.pattern.id)) continue;
       if (c.pattern.queryset && !QS_HINT.test(c.recv)) {
         const name = c.recv.match(/^[A-Za-z_][\w.]*/u)[0];

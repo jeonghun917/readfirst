@@ -277,7 +277,6 @@
         "src/held.mjs",
         "src/export.mjs",
         "src/agents.mjs",
-        "src/lex.mjs",
         "src/scan.mjs",
         "src/shapes.mjs",
         "src/history.mjs",
@@ -369,10 +368,9 @@
           "text": "the agents setup knows are listed in several places: `AGENTS`, detectAgents, `PLAN` and `SNIPPETS` in src/agents.mjs, the notes-file list in addAgentLine (cli.mjs), the HELP text and the 'Wire every agent at once' section of docs/guide.md. A new agent must be added to all of them: without a `PLAN` entry setupAgents throws on it, and without a `SNIPPETS` entry the by-hand message for an unparsable file says only 'the readfirst MCP server'. Setup writes a file only when it parses as plain JSON (or, for Codex, when no [mcp_servers.readfirst] table exists), and a readfirst key that is already there is never compared or updated."
         },
         {
-          "text": "src/shapes.mjs (`PATTERNS`, `candidates`) and src/lex.mjs (`blockLines`) are copied from readfirst-cloud lib/discarded.mjs and lib/lex.mjs with only the published shapes kept (queryset, str-method, str-replace, js-string, js-replace, js-expect-promise); do not add the server's other shapes here, they stay hosted. js-expect-promise leaves out files on vitest or bun test (notIn: a *.vitest.* name or an import of vitest or bun:test), which fail such a test themselves; keep notIn the same on both sides",
+          "text": "src/shapes.mjs holds the published shapes (`PATTERNS`: queryset, str-method, str-replace, js-string, js-replace, js-expect-promise) and the machinery that looks for any list of shapes (`candidates(file, patterns)`, `discardedResults(files, fileText, { patterns })`); the hosted version passes its own list, so do not add the server's other shapes here, they stay hosted. What is code on a line comes from the one reader (`lex` in src/code.mjs, once per hunk: a hunk starts where the patch does), and the function around a call from its tokens and `declarations` (`enclosingFunction`: a declared function, or a brace after `=>` or after a `)` that does not follow if, for, while, switch, catch or with); no helper here skips a string or a comment itself, and one that does is the copy this file had four of. js-expect-promise leaves out files on vitest or bun test (notIn: a *.vitest.* name or an import of vitest or bun:test), which fail such a test themselves",
           "files": [
-            "src/shapes.mjs",
-            "src/lex.mjs"
+            "src/shapes.mjs"
           ]
         },
         {
@@ -504,7 +502,7 @@
           ]
         },
         {
-          "text": "src/code.mjs is the one reader of code (`lex`, `tokens`, `closeOf`, `declarations`, `scopeOf`, `scriptBlocks`): one pass over the characters with the state carried from line to line, then one walk over the tokens with the brackets that are open. Nothing in it matches a pattern against a single line. A shape it misreads becomes a snippet in test/code.test.mjs with a parser's answer first, and is then fixed in the walk or in its lists of tokens (`NEEDS_MORE`, `CONTINUES`, `TYPE_BEFORE`, `OBJECT_BEFORE`, `STATEMENT_HEADS`), never by a rule for that one line: rules per line are what it replaces. One misread now travels down the file (a string or bracket left open shifts everything after it), where a reader per line kept it on its line. Its known guesses are the todo tests in test/code.test.mjs (JSX text on a line of its own outside parentheses, `await` at a line's end, a method named `catch` or `with` in an object, a callee that begins with a parenthesis). The trigger engine (src/trigger.mjs), `unseenIn` (src/readlist.mjs), `unusedCode` (src/audit.mjs), find's `definitions` and the find gate (`newCode` in src/cli.mjs) read through it; src/shapes.mjs still has its own readers and moves onto it in a change that deletes them. A second reader of strings, comments or brackets written beside it is how five of them came to exist.",
+          "text": "src/code.mjs is the one reader of code (`lex`, `tokens`, `closeOf`, `declarations`, `scopeOf`, `scriptBlocks`): one pass over the characters with the state carried from line to line, then one walk over the tokens with the brackets that are open. Nothing in it matches a pattern against a single line. A shape it misreads becomes a snippet in test/code.test.mjs with a parser's answer first, and is then fixed in the walk or in its lists of tokens (`NEEDS_MORE`, `CONTINUES`, `TYPE_BEFORE`, `OBJECT_BEFORE`, `STATEMENT_HEADS`), never by a rule for that one line: rules per line are what it replaces. One misread now travels down the file (a string or bracket left open shifts everything after it), where a reader per line kept it on its line. Its known guesses are the todo tests in test/code.test.mjs (JSX text on a line of its own outside parentheses, `await` at a line's end, a method named `catch` or `with` in an object, a callee that begins with a parenthesis). The trigger engine (src/trigger.mjs), `unseenIn` (src/readlist.mjs), `unusedCode` (src/audit.mjs), find's `definitions` and the find gate (`newCode` in src/cli.mjs) read through it; the shape patterns (src/shapes.mjs) read through it too. src/langs.mjs still blanks comments by regex (`noComments`, `blank`) for the languages the reader has no mode for. A second reader of strings, comments or brackets written beside it is how five of them came to exist.",
           "files": [
             "src/code.mjs",
             "test/code.test.mjs",
@@ -826,8 +824,7 @@
     },
     {
       "files": [
-        "src/shapes.mjs",
-        "src/lex.mjs"
+        "src/shapes.mjs"
       ],
       "repo": "jeonghun917/readfirst-cloud",
       "paths": [
