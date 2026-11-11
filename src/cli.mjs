@@ -36,7 +36,7 @@ import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
 import { bashWrites } from './bash-writes.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
-import { definitions, find, findText } from './find.mjs';
+import { definitions, find, findText, meets, words } from './find.mjs';
 import { CURSOR_DIR, cursorPlan } from './export.mjs';
 import { AGENTS, detectAgents, outsideRepo, setupAgents } from './agents.mjs';
 import { gitHooksReport, setupGitHooks } from './git-hooks.mjs';
@@ -425,11 +425,25 @@ function lastCall(seen) {
 export const ACTED_LOG = 'readfirst-acted.jsonl';
 
 // `readfirst find` before new code (2026-11-10: CLAUDE.md asked for it, a session wrote seven new functions without it;
-// read was enforced by the gate, find only written). A Bash call that runs find marks find:<root>; an Edit, Write or
-// MultiEdit that declares a function or type its file did not have, in a repository with a map, before find ran there
-// is refused once by the gate (nofind:<sig>) with the names and the command, and goes through when made again; written
-// so, it is kept as nofindwrite:<sig> and counted by the Stop hook.
+// read was enforced by the gate, find only written). A Bash call that runs find marks find:<root> and the words it
+// asked (findwords:<root>:<words>); an Edit, Write or MultiEdit that declares a function or type its file did not
+// have, in a repository with a map, with no find that asked about it, is refused once by the gate
+// (nofind:<sig>:<names>) with the names and the command, and goes through when made again; written so, it is kept as
+// nofindwrite:<sig> and counted by the Stop hook.
+// Which find counts for a new name (until 0.31.0 any find, once, opened the gate for the rest of the session, so one
+// search at the start covered every function written afterwards): one whose query shares a word with the name
+// (`find "retry a payment"` for retryPayment, by find's own words and meets), so searching first and then writing
+// passes without a refusal; or any find run after the gate asked about these very names, so a name the query does
+// not happen to share a word with costs one refusal and never more.
 const FIND_RUN = /(?:^|[\s;&|(])(?:npx\s+(?:--yes\s+|-y\s+)?)?(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)\s+find\b/u;
+// The words a find command asked: what follows `find` up to the end of that command, options left out.
+const findQuery = (command) => { const m = String(command).match(FIND_RUN); return m ? words(String(command).slice(m.index + m[0].length).split(/[;|&\n]/u)[0].replace(/(?:^|\s)--?[\w-]+(?:=\S+)?/gu, ' ')) : []; };
+// Whether a find of this session asked about `name` in the repository `root`.
+function findAsked(seen, root, name) {
+  const mine = words(name);
+  const prefix = `findwords:${root}:`;
+  return Object.keys(seen).some((k) => k.startsWith(prefix) && k.slice(prefix.length).split(' ').some((q) => mine.some((w) => meets(q, w))));
+}
 function newCode(tool, input, abs) {
   const names = (text) => new Set(definitions(abs, String(text ?? '')).map((d) => d.name));
   const added = (after, before) => { const was = names(before); return [...names(after)].filter((n) => !was.has(n)); };
@@ -464,7 +478,11 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const prev = lastCall(seen);
     if (prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]) seen[`resent:${sig}:${now}`] = now;
     seen[`call:${sig}`] = now;
-    if (tool === 'Bash' && FIND_RUN.test(String(event.tool_input?.command ?? ''))) { const root = repoOf(cwd); if (root) seen[`find:${root}`] = now; }
+    if (tool === 'Bash' && FIND_RUN.test(String(event.tool_input?.command ?? ''))) {
+      const root = repoOf(cwd);
+      const asked = findQuery(event.tool_input.command);
+      if (root) { seen[`find:${root}`] = now; if (asked.length) seen[`findwords:${root}:${[...new Set(asked)].join(' ')}`] = now; }
+    }
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
@@ -475,11 +493,16 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const { notes, late } = notesFor(targets, seen, now, { deadline, stateDir });
     const waiting = pendingNotes(targets, seen, now);
     const known = new Map();
-    const fresh = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => ({ abs, root: rootOf(abs, known), names: newCode(tool, event.tool_input, abs) }))
-      .filter((f) => f.names.length && f.root && !seen[`find:${f.root}`] && existsSync(join(f.root, MAP_PATH))) : [];
-    const askFind = fresh.length > 0 && !before[`nofind:${sig}`];
-    const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and \`readfirst find\` has not run in this session. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
-    if (fresh.length) seen[gate && askFind ? `nofind:${sig}` : `nofindwrite:${sig}`] = now;
+    const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => ({ abs, root: rootOf(abs, known), names: newCode(tool, event.tool_input, abs) }))
+      .filter((f) => f.names.length && f.root && existsSync(join(f.root, MAP_PATH))) : [];
+    // The names no find asked about; the ask is kept with them, so the same file given other new names later is asked again.
+    const open = added.map((f) => ({ ...f, names: f.names.filter((n) => !findAsked(seen, f.root, n)) })).filter((f) => f.names.length);
+    const askKey = `nofind:${sig}:${open.flatMap((f) => f.names).sort().join(',')}`;
+    const askedAt = before[askKey];
+    const fresh = open.filter((f) => !(askedAt && seen[`find:${f.root}`] > askedAt));
+    const askFind = fresh.length > 0 && !askedAt;
+    const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
+    if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
     if (gate && (notes.length || askFind)) seen[`denied:${sig}`] = now;
     const saved = save();
     const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
@@ -638,8 +661,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|nofind|nofindwrite):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|nofind|nofindwrite)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
