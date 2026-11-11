@@ -20,13 +20,6 @@
       ],
       "risks": [
         {
-          "text": "src/action.mjs imports repoFiles, readMapFile and readText from cli.mjs, so changing how files are listed or the map is read also changes the GitHub Action",
-          "files": [
-            "src/cli.mjs",
-            "src/action.mjs"
-          ]
-        },
-        {
           "text": "repoFiles lists untracked files that .gitignore does not exclude, so a stray scratch file in the working tree makes `check` fail and shows up in `diff`",
           "files": [
             "src/cli.mjs"
@@ -152,6 +145,28 @@
           "files": [
             "bin/readfirst.mjs"
           ]
+        },
+        {
+          "text": "src/action.mjs imports edgesWith, repoFiles, readMapFile and readText from cli.mjs, so changing how files are listed, import edges are built or the map is read also changes the GitHub Action",
+          "files": [
+            "src/cli.mjs",
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "--timeout (seconds per check) is shared by verify (default 900) and `hook --stop` (default 600); the plain PreToolUse hook ignores it. main() passes it to runStopHook only when it is a number above 0 and reports anything else through letThrough (a systemMessage, exit 0), never as the default. The hook's own `timeout` in .claude/settings.json is a separate limit that must cover all the checks together, or Claude Code kills the Stop hook before the checks finish. A new option the Stop hook should honour has to be passed on in main(): until 0.29.1 --timeout was parsed and dropped."
+        },
+        {
+          "text": "`runStopHook` appends one JSON line per stop to readfirst-acted.jsonl in the temp folder (fields session, at, shown, asked, acted, notActed, resent, and, in the release after 0.31.0, noFind, the count of `nofindwrite:` marks), and `hookReport` reads those lines back, keeping the last line of each session and treating a missing field as 0. Renaming or dropping a field makes lines written by an older readfirst count as zeros in `hook --report`, with no error. `asked` and `notActed` come only from a `stopFor` that reaches its result, so a stop that ends earlier adds nothing to them.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "the find-first gate in `runHook` recognises `readfirst find` only by the `FIND_RUN` pattern (readfirst, readfirst@version, npx with --yes/-y, or a path ending in readfirst.mjs, followed by `find`) in a Bash call; any other way of running it (a shell alias, `node -e`, a script that wraps it) leaves no `find:<root>` mark, and the next edit that adds a function is refused as if find never ran. What counts as new code is `newCode`, which compares the names `definitions` (src/find.mjs) finds in the new text with those in the old text (for Write, the file as it is); a change to `definitions` changes what the gate refuses.",
+          "files": [
+            "src/cli.mjs"
+          ]
         }
       ]
     },
@@ -234,6 +249,12 @@
         },
         {
           "text": "The Action finds its comment by the first line (MARKER; partMarker(N) for the parts of a long one) and edits it in place. Anyone can post a comment that starts with the marker: until 0.26.5 (readfirst#132, security) another user's such comment was taken as ours, the PATCH failed with 403, the 403 was read as a fork PR, and no readfirst comment was posted. Bots' marked comments are tried first, then the rest newest first, each PATCH that fails with 403 or 404 moves to the next, and a new comment is posted only when none can be edited. Test with a marked comment by another user.",
+          "files": [
+            "src/action.mjs"
+          ]
+        },
+        {
+          "text": "when the map has problems the comment opens with a verdict whose Blocked line names them, then shows the problems but no read list, and the job fails unless fail-on-map-problems is 'false'",
           "files": [
             "src/action.mjs"
           ]
@@ -800,7 +821,7 @@
     {
       "file": "src/action.mjs",
       "symbol": "runAction",
-      "line": 59,
+      "line": 98,
       "labels": [
         "secrets"
       ],
@@ -812,7 +833,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "git",
-      "line": 121,
+      "line": 127,
       "labels": [
         "exec"
       ],
@@ -825,20 +846,20 @@
     {
       "file": "src/cli.mjs",
       "symbol": "addLineTo",
-      "line": 186,
+      "line": 192,
       "labels": [
         "fs-write"
       ],
       "rules": [
-        "only-init-and-fix-write",
-        "no-silent-cut"
+        "no-silent-cut",
+        "only-init-and-fix-write"
       ],
       "note": "Writes files"
     },
     {
       "file": "src/cli.mjs",
       "symbol": "verifyChecks",
-      "line": 277,
+      "line": 283,
       "labels": [
         "secrets",
         "exec"
@@ -851,29 +872,29 @@
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "treeState",
-      "line": 686,
+      "symbol": "callSig",
+      "line": 419,
       "labels": [
         "crypto"
       ],
       "rules": [
-        "only-init-and-fix-write",
-        "no-silent-cut"
+        "no-silent-cut",
+        "only-init-and-fix-write"
       ],
       "note": "Hashes, signs or encrypts"
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "writeWorkflow",
-      "line": 697,
+      "symbol": "treeState",
+      "line": 789,
       "labels": [
-        "fs-write"
+        "crypto"
       ],
       "rules": [
-        "only-init-and-fix-write",
-        "no-silent-cut"
+        "no-silent-cut",
+        "only-init-and-fix-write"
       ],
-      "note": "Writes files"
+      "note": "Hashes, signs or encrypts"
     },
     {
       "file": "src/git-hooks.mjs",
