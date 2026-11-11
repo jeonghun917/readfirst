@@ -27,7 +27,7 @@ whole repository's, and its description becomes the group's title.
 
 The first map is the part nobody gets to. [readfirst-app](https://readfirst-cloud.vercel.app/) can write it for you: it
 reads the repository and your notes, and opens the map as a pull request with the file and line behind every risk.
-Free once per account; see [Hosted](#hosted-readfirst-app).
+The free hosted fill (once per account) is paused until readfirst has three paying subscribers; see [Hosted](#hosted-readfirst-app).
 
 Commit `.readfirst/map.json`. From then on:
 
@@ -513,7 +513,8 @@ Everything above is free and stays free. The GitHub App adds the parts that take
 
 - **First map:** install [readfirst-app](https://github.com/apps/readfirst-app/installations/new) on a repository and
   comment `/readfirst fill` on any issue. 5–20 minutes later a pull request arrives with the map, each risk and rule
-  citing the file and line it came from. Free once per account, for repositories up to 200 files.
+  citing the file and line it came from. Free once per account, for repositories up to 200 files; paused until readfirst has
+  three paying subscribers (Pro fills maps now).
 - **Pro, $39/month:** fills for up to 3 private repositories that also read the known traps of their libraries; after
   each merge, a small PR when the map needs it; on every pull request, a comment on the lines that look like they break
   a rule in your map. When that map PR waits a week or ten merges, `npx readfirst pending` and the Claude Code hook
@@ -525,3 +526,28 @@ Everything above is free and stays free. The GitHub App adds the parts that take
 
 The CLI, hook, MCP server and Action never send your code anywhere. What the app reads and keeps is listed on
 [the site](https://readfirst-cloud.vercel.app/#your-code).
+
+## What it caught
+
+Fixed upstream: [Saleor #19984](https://github.com/saleor/saleor/pull/19984),
+[Wagtail #14790](https://github.com/wagtail/wagtail/pull/14790), [n8n #43033](https://github.com/n8n-io/n8n/pull/43033)
+(fixed by the n8n team after our issue), [django-allauth f1e06cc](https://codeberg.org/allauth/django-allauth/commit/f1e06cc050eb),
+[WYGIWYH #649](https://github.com/eitchtee/WYGIWYH/pull/649). In mealie, a household safety filter that never applied
+([mealie#8964](https://github.com/mealie-recipes/mealie/issues/8964)) is gone on main since a maintainer's scope fix
+([mealie#8965](https://github.com/mealie-recipes/mealie/pull/8965)).
+
+Still with their maintainers: a Tandoor filter that never applied
+([TandoorRecipes/recipes#4917](https://github.com/TandoorRecipes/recipes/pull/4917)); a failed PayPal capture that went
+on to mark the booking paid, and webhooks nobody awaited, in Cal.diy
+([#30526](https://github.com/calcom/cal.diy/pull/30526), [#30527](https://github.com/calcom/cal.diy/pull/30527));
+Sentry tasks queued before the rows they read were committed
+([getsentry/sentry#130383](https://github.com/getsentry/sentry/pull/130383)); a 500 instead of a refusal on a non-ASCII
+secret in vas3k.club ([vas3k/vas3k.club#1533](https://github.com/vas3k/vas3k.club/pull/1533), approved); and findings
+sent privately to other projects, which stay unnamed until they are fixed.
+
+How the numbers were counted: the hosted shapes were run over 68 open-source repositories; 897 hits, 849 of them judged
+and recorded (real, caveat, false positive, dead code). 136 are real: 100 bugs in app code (21 of them low-severity
+secret comparisons) and 36 tests that pass even when their check fails, every one `expect(promise).resolves...` with no
+`await` or `return`, so under Jest the test ends before the assertion runs (Vitest and bun test catch it, so their files
+are left out). The 312 false positives are kept on record too, each one settled by a condition every repository gets.
+The counts come after tuning on the same repositories, so read them as "what is there", not as precision.
