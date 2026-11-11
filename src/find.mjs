@@ -5,11 +5,12 @@
 // writes nothing.
 import { matcher, groupOf, MAP_PATH } from './map.mjs';
 import { isTest, OTHER_CODE } from './readlist.mjs';
+import { codeRows, declarations, reads } from './code.mjs';
 
 export const FIND_FORMAT = 'readfirst/find@1';
 
 // Words that say what kind of change is wanted, not what it is about.
-const STOP = new Set(('a an the to for of and or in on at by with from into via is are be it this that new add adding make making create creating write '
+const STOP = new Set(('a an the to for of and or in on at by with from into via is are be it this that where new add adding make making create creating write '
   + 'build implement implementing helper helpers util utils utility function functions method class module file code thing logic support handle handling '
   + 'some any each all get set use using want need should would could can way something').split(' '));
 
@@ -43,14 +44,11 @@ function stem(w) {
 // letters (2 for Hangul).
 export const meets = (q, w) => q === w || (Math.min(q.length, w.length) >= (/\p{Script=Hangul}/u.test(q) ? 2 : 3) && (w.startsWith(q) || q.startsWith(w)));
 
-// Definitions by language: a name and the line it is on. Rough on purpose: a name a person would search for.
+// Definitions by language: a name and the line it is on. JavaScript, TypeScript, Python and the <script> blocks of
+// .vue and .svelte files are read by the one reader (src/code.mjs), from the file's structure. The languages below
+// have no such reader here: a pattern per line, rough on purpose (a name a person would search for), and wrong where
+// a line inside a string or a comment is shaped like a declaration.
 const DEFS = [
-  // JS/TS: functions, classes (abstract, declare), types, arrow and function constants (also generic `<T,>(x) =>` and one
-  // wrapping call such as memoize(...) or useCallback(...)), `exports.x =` / `module.exports.x =`, and class methods
-  // (indented `name(...) {` with modifiers; control keywords are left out by KEYWORDS). The review of 2026-11-09 found
-  // `find "retry payment"` blind to `async retryPayment(id) {}` inside a class.
-  { test: /\.(?:m?js|cjs|tsx?|jsx|mts|cts|vue|svelte)$/u, re: /^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:async\s+)?(?:function\s*\*?\s*([A-Za-z_$][\w$]*)|(?:abstract\s+)?class\s+([A-Za-z_$][\w$]*)|(?:interface|type|enum)\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:[\w$.]+\(\s*)?(?:async\s*)?(?:<[^>]*>\s*)?(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*(?::[^=]+)?=>|(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:[\w$.]+\(\s*)?(?:async\s+)?function)|^\s*(?:module\.)?exports\.([A-Za-z_$][\w$]*)\s*=|^\s+(?:(?:public|private|protected|static|async|override|readonly|get|set)\s+)*\*?\s*([A-Za-z_$][\w$]*)\s*(?:<[^>]*>)?\s*\([^)]*\)\s*(?::\s*[^{=]+)?\{\s*(?:\}\s*)?$/u },
-  { test: /\.py$/u, re: /^\s*(?:async\s+)?(?:def\s+([A-Za-z_]\w*)|class\s+([A-Za-z_]\w*))/u },
   { test: /\.go$/u, re: /^(?:func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)|type\s+([A-Za-z_]\w*))/u },
   { test: /\.rs$/u, re: /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:fn\s+([A-Za-z_]\w*)|(?:struct|enum|trait)\s+([A-Za-z_]\w*))/u },
   { test: /\.rb$/u, re: /^\s*(?:def\s+(?:self\.)?([A-Za-z_]\w*[?!]?)|(?:class|module)\s+([A-Z]\w*))/u },
@@ -59,7 +57,7 @@ const DEFS = [
   { test: /\.(?:java|kts?|cs)$/u, re: /^\s*(?:(?:public|private|protected|internal|static|final|abstract|sealed|open|override|suspend|async|virtual|data)\s+)*(?:(?:class|interface|enum|record|object|struct)\s+([A-Za-z_]\w*)|fun\s+(?:<[^>]+>\s*)?([A-Za-z_]\w*)\s*\(|[\w<>[\],.?\s]+?\s+([A-Za-z_]\w*)\s*\([^;]*$)/u },
 ];
 // Whether find has patterns for this file's language.
-export const hasDefinitions = (path) => DEFS.some((d) => d.test.test(path));
+export const hasDefinitions = (path) => reads(path) || DEFS.some((d) => d.test.test(path));
 const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'else', 'main', 'function', 'super', 'await', 'typeof']);
 const SKIP = /\.d\.ts$|\.min\.js$|(?:^|\/)(?:vendor|node_modules|dist|build|migrations)\//u;
 
@@ -67,9 +65,11 @@ const SKIP = /\.d\.ts$|\.min\.js$|(?:^|\/)(?:vendor|node_modules|dist|build|migr
 // Python docstring right below. At most 600 characters.
 const COMMENT = /^\s*(?:\/\/+|#(?!!)|\/\*+|\*(?!\/)|--)\s?(.*?)\s*(?:\*\/)?\s*$/u;
 const DOCSTRING = /^\s*[rubf]*("""|''')(.*)$/iu;
-function docOf(lines, i, py) {
+function docOf(lines, i, py, top = null) {
   const above = [];
-  for (let k = i - 1; k >= 0 && above.length < 12; k--) {
+  // top: the first line of the comment and decorators above it, as the reader found it (a decorator is no comment).
+  if (top !== null) { for (let k = top - 1; k < i; k++) { const m = lines[k].match(COMMENT); if (m) above.push(m[1]); } }
+  else for (let k = i - 1; k >= 0 && above.length < 12; k--) {
     const l = lines[k];
     if (/^\s*@/u.test(l) && !above.length) continue;
     const m = l.match(COMMENT);
@@ -86,9 +86,46 @@ function docOf(lines, i, py) {
   return text.trim().slice(0, 600);
 }
 
+// What find lists of a file the reader reads: functions, classes and types by name. Its own choices are a filter over
+// the reader's declarations: a value that is not a function is nothing to reuse; names under three letters, private
+// `#names` and its noise words are left out. What a CommonJS module puts on `exports` is listed whatever it is set to,
+// and so is a property set to a function in the object a module exports as a whole (`module.exports = { parse:
+// function () {} }`, `export default { methods: { save: () => {} } }`). A property of any other object is not: an
+// options object passed to a call (`run({ out: (s) => s })`) would flood the list.
+// The comment that says what each does comes from the reader's `top` (the comment and decorators right above) and a
+// Python docstring right below. The list also carries the file's own header comment (`header`), which says what the
+// module is for: find matches it for the file as a whole, once, not for each definition in it.
+function readDefinitions(path, body) {
+  const lines = body.split('\n');
+  const py = /\.py$/u.test(path);
+  const decls = declarations(path, body, { members: true });
+  const out = decls
+    .filter((d) => (d.what !== 'var' || d.fn || d.ofModule) && (!d.member || d.ofModule) && !d.name.startsWith('#') && !KEYWORDS.has(d.name) && d.name.length >= 3)
+    .map((d) => ({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), kind: ['class', 'type', 'alias', 'enum'].includes(d.what) ? 'type' : 'function' }));
+  out.header = headerOf(path, body, lines, decls);
+  return out;
+}
+// The comment a file opens with, when it is not the comment of its first declaration: the lines of comment from the
+// first line (after a `#!` line) up to the first line of code or the first blank line after text.
+function headerOf(path, body, lines, decls) {
+  const rows = codeRows(path, body);
+  const out = [];
+  let i = lines[0]?.startsWith('#!') ? 1 : 0;
+  for (; i < lines.length; i++) {
+    if (rows[i].outside) { if (out.length) break; continue; }
+    if (rows[i].code.trim()) break;
+    if (!lines[i].trim()) { if (out.length) break; continue; }
+    if (decls.some((d) => d.top <= i + 1 && i + 1 < d.line)) return '';
+    out.push(lines[i].match(COMMENT)?.[1] ?? lines[i].trim());
+  }
+  return out.join(' ').trim().slice(0, 600); // cut: a description, not a list; find matches words in its first 600 characters
+}
+
 export function definitions(path, body) {
+  if (!body) return [];
+  if (reads(path)) return readDefinitions(path, body);
   const lang = DEFS.find((d) => d.test.test(path));
-  if (!lang || !body) return [];
+  if (!lang) return [];
   const out = [];
   const lines = body.split('\n');
   const py = /\.py$/u.test(path);
@@ -106,7 +143,7 @@ export function definitions(path, body) {
 export function find({ query, files, imports = [], read = () => null, map = null, limit = 15 }) {
   const asked = [...new Set(words(query))];
   const ignored = matcher(map?.ignore ?? []);
-  const code = files.filter((f) => f !== MAP_PATH && !SKIP.test(f) && !ignored(f) && DEFS.some((d) => d.test.test(f)));
+  const code = files.filter((f) => f !== MAP_PATH && !SKIP.test(f) && !ignored(f) && hasDefinitions(f));
   const users = new Map();
   for (const e of imports) if (!isTest(e.from)) users.set(e.to, (users.get(e.to) ?? 0) + 1);
   const group = (f) => (map ? groupOf(map, f)?.id ?? null : null);
@@ -118,9 +155,13 @@ export function find({ query, files, imports = [], read = () => null, map = null
   let defs = 0;
   for (const f of code) {
     const test = isTest(f);
-    items.push({ kind: 'file', file: f, words: words(f.replace(/\.[^./]+$/u, '')), test });
     const at = words(f.replace(/\.[^./]+$/u, ''));
-    for (const d of definitions(f, read(f))) { defs++; items.push({ kind: d.kind, name: d.name, file: f, line: d.line, words: words(d.name), path: at, doc: words(d.doc), test }); }
+    const found = definitions(f, read(f));
+    // A file is found by its path, and by the comment it opens with: often the only place that says what a module's
+    // functions are for ("strings and comments carried across lines" for a file whose functions are named by what
+    // they return).
+    items.push({ kind: 'file', file: f, words: at, doc: words(found.header ?? ''), test });
+    for (const d of found) { defs++; items.push({ kind: d.kind, name: d.name, file: f, line: d.line, words: words(d.name), path: at, doc: words(d.doc), test }); }
   }
   for (const g of map?.groups ?? []) items.push({ kind: 'group', id: g.id, text: g.title, words: words(`${g.id} ${g.title}`) });
   for (const r of map?.rules ?? []) items.push({ kind: 'rule', id: r.id, text: r.rule, words: words(`${r.id} ${r.rule} ${r.why ?? ''}`) });

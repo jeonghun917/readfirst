@@ -259,7 +259,8 @@ function scanJs(toks, lastLine) {
       f.atStart = false;
       const own = t.first || f.decoFirst === true; // its decorators began the line
       f.decoFirst = null;
-      f.cur = { rec: null, label: word(t, 'case') || word(t, 'default'), value: word(t, 'export') && word(toks[i + 1], 'default') };
+      // module: the statement sets what the module exports as a whole (`export default`, `module.exports =`).
+      f.cur = { rec: null, label: word(t, 'case') || word(t, 'default'), value: word(t, 'export') && word(toks[i + 1], 'default'), module: frames.length === 1 && ((word(t, 'export') && word(toks[i + 1], 'default')) || (word(t, 'module') && punct(toks[i + 1], '.') && word(toks[i + 2], 'exports') && punct(toks[i + 3], '='))) };
       const before = decls.length;
       if (f.kind === 'class') {
         let k = i;
@@ -279,8 +280,8 @@ function scanJs(toks, lastLine) {
         else if (word(w, 'const') && word(n, 'enum') && word(toks[k + 2])) f.cur.rec = record(toks[k + 2].v, t.line, 'enum', 'block', own);
         else if (word(w, 'type') && word(n) && (punct(toks[k + 2], '=') || punct(toks[k + 2], '<'))) f.cur.rec = record(n.v, t.line, 'alias', 'statement', own);
         else if ((word(w, 'const') || word(w, 'let') || word(w, 'var')) && word(n)) f.cur.rec = record(n.v, t.line, 'var', 'statement', own);
-        else if (word(w, 'exports') && punct(n, '.') && word(toks[k + 2]) && punct(toks[k + 3], '=')) f.cur.rec = record(toks[k + 2].v, t.line, 'var', 'statement', own);
-        else if (word(w, 'module') && punct(n, '.') && word(toks[k + 2], 'exports') && punct(toks[k + 3], '.') && word(toks[k + 4]) && punct(toks[k + 5], '=')) f.cur.rec = record(toks[k + 4].v, t.line, 'var', 'statement', own);
+        else if (word(w, 'exports') && punct(n, '.') && word(toks[k + 2]) && punct(toks[k + 3], '=')) { f.cur.rec = record(toks[k + 2].v, t.line, 'var', 'statement', own); f.cur.rec.ofModule = true; }
+        else if (word(w, 'module') && punct(n, '.') && word(toks[k + 2], 'exports') && punct(toks[k + 3], '.') && word(toks[k + 4]) && punct(toks[k + 5], '=')) { f.cur.rec = record(toks[k + 4].v, t.line, 'var', 'statement', own); f.cur.rec.ofModule = true; }
       }
       if (decls.length > before && word(t, 'export')) decls.at(-1).exported = true;
     } else if (f.kind === 'object' && f.atStart && !(t.k === 'punct' && ')]}'.includes(t.v))) {
@@ -290,7 +291,7 @@ function scanJs(toks, lastLine) {
       while (toks[k] && (toks[k].k === 'word' || punct(toks[k], '*'))) k++;
       const name = toks[k - 1];
       const mods = toks.slice(i, Math.max(i, k - 1)).every((m) => punct(m, '*') || m.v === 'async' || m.v === 'get' || m.v === 'set');
-      if (k === i + 1 && word(name) && punct(toks[k], ':') && functionAt(toks, k + 1)) { f.member = record(name.v, t.line, 'fn', 'statement', t.first); f.member.member = true; f.member.fnValue = true; }
+      if (k === i + 1 && word(name) && punct(toks[k], ':') && functionAt(toks, k + 1)) { f.member = record(name.v, t.line, 'fn', 'statement', t.first); f.member.member = true; f.member.fnValue = true; f.member.ofModule = Boolean(f.moduleOwn); }
       if (k > i && word(name) && !STATEMENT_HEADS.has(name.v) && mods && (punct(toks[k], '(') || punct(toks[k], '<'))) f.pend = { name: name.v, line: t.line, what: 'fn', startsLine: t.first };
     } else if (t.first && (word(t, 'function') || word(t, 'class') || (word(t, 'async') && word(toks[i + 1], 'function')))) {
       // A named function or class that starts its line as a value: `register(` / `function onDone() {`.
@@ -303,7 +304,9 @@ function scanJs(toks, lastLine) {
     // A statement set to a function or class (valueIsFunction, read once at its `=`).
     if (punct(t, '=') && f.cur?.rec?.what === 'var' && !f.cur.rec.assigned) f.cur.rec.fnValue = valueIsFunction(toks, i + 1);
     if (punct(t, '=') && f.cur?.rec) f.cur.rec.assigned = true;
-    if (punct(t, '(')) push('paren');
+    // moduleOwn: the bracket is the value the module exports as a whole, or inside it (`export default wrap({ ... })`).
+    const moduleOwn = (isStmt(f) && Boolean(f.cur?.module)) || Boolean(f.moduleOwn);
+    if (punct(t, '(')) push('paren', { moduleOwn });
     else if (punct(t, '[')) push('bracket');
     else if (punct(t, '{')) {
       const before = prev ? prev.v : '';
@@ -321,7 +324,8 @@ function scanJs(toks, lastLine) {
       // brace is a block only after a parameter list or an arrow; a statement's own brace is read from what precedes it.
       else {
         const inValue = !isStmt(f) || f.cur?.value || (f.cur?.rec && f.cur.rec.form === 'statement' && f.cur.rec.assigned);
-        push(opensStatement || (before === ':' && f.cur?.label) ? 'block' : (inValue ? before !== ')' && before !== '=>' : OBJECT_BEFORE.has(before)) ? 'object' : 'block');
+        const kind = opensStatement || (before === ':' && f.cur?.label) ? 'block' : (inValue ? before !== ')' && before !== '=>' : OBJECT_BEFORE.has(before)) ? 'object' : 'block';
+        push(kind, kind === 'object' ? { moduleOwn } : {});
       }
     } else if (t.k === 'punct' && ')]}'.includes(t.v) && frames.length > 1) {
       const g = frames.pop();
@@ -340,9 +344,10 @@ function scanJs(toks, lastLine) {
   for (const f of frames) if (f.cur?.rec && f.cur.rec.end === null) f.cur.rec.end = prev ? prev.endLine : lastLine;
   for (const d of decls) if (d.end === null) d.end = lastLine;
   // Which of them readfirst reads is a choice, made in this one line: a value inside a function or block (`const n = 1`)
-  // is read only when it is set to a function or class.
+  // is read only when it is set to a function or class, or put on `exports` (a module written inside a wrapper
+  // function, `define(function (require, exports) { exports.Mode = Mode })`, exports from there).
   const kept = new Map();
-  for (const d of decls) if (!(d.what === 'var' && d.local && !d.fnValue)) kept.set(d, { name: d.name, line: d.line, end: d.end, fn: d.what === 'fn' || d.fnValue, body: d.bodied || d.fnValue, value: d.form === 'value', what: d.what, exported: d.exported, member: d.member, startsLine: d.startsLine, around: d.around });
+  for (const d of decls) if (!(d.what === 'var' && d.local && !d.fnValue && !d.ofModule)) kept.set(d, { name: d.name, line: d.line, end: d.end, fn: d.what === 'fn' || d.fnValue, body: d.bodied || d.fnValue, value: d.form === 'value', what: d.what, exported: d.exported, member: d.member, ofModule: Boolean(d.ofModule), startsLine: d.startsLine, around: d.around });
   // What is around each, among the declarations that are read.
   for (const s of kept.values()) { let a = s.around; while (a && !kept.has(a)) a = a.around; s.around = a ? kept.get(a) : null; }
   return [...kept.values()];
@@ -384,7 +389,7 @@ function scanPy(rows, raw) {
         if (rows[k].code.trim() || rows[k].startsIn) end = k + 1;
       }
     }
-    decls.push({ name: head ? head[2] : name[1], line: i + 1, end, fn: Boolean(head) && head[1] === 'def', body: Boolean(head), value: false, what: head ? (head[1] === 'def' ? 'fn' : 'class') : 'var', exported: false, member: false, startsLine: true, around: null });
+    decls.push({ name: head ? head[2] : name[1], line: i + 1, end, fn: Boolean(head) && head[1] === 'def', body: Boolean(head), value: false, what: head ? (head[1] === 'def' ? 'fn' : 'class') : 'var', exported: false, member: false, ofModule: false, startsLine: true, around: null });
   }
   // One statement to a logical line, so what is around each is the nearest earlier one whose lines hold it.
   const open = [];
@@ -440,7 +445,8 @@ export function unfinished(rows) {
 // decorators right above it, or its own line), what ('fn', 'class', 'type' for an interface, 'enum', 'alias' for
 // `type N =`, 'var'), fn (a function, or a
 // statement set to one), body (it has a body of its own: a function or class, or a statement set to one), value (a
-// named function or class used as a value), exported, member, depth, parent and parentLine (the name and line of the
+// named function or class used as a value), exported, member, ofModule (it is what a CommonJS module puts on
+// `exports`, or a property of the object a module exports as a whole), depth, parent and parentLine (the name and line of the
 // declaration around it, or null). A value inside a function is read only when it is set to a function or class.
 // members: also an object's properties set to a function (`save: async (row) => ...`).
 export function declarations(path, body, { members = false } = {}) {

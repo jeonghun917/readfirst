@@ -444,12 +444,18 @@ function findAsked(seen, root, name) {
   const prefix = `findwords:${root}:`;
   return Object.keys(seen).some((k) => k.startsWith(prefix) && k.slice(prefix.length).split(' ').some((q) => mine.some((w) => meets(q, w))));
 }
-function newCode(tool, input, abs) {
+export function newCode(tool, input, abs) {
   const names = (text) => new Set(definitions(abs, String(text ?? '')).map((d) => d.name));
   const added = (after, before) => { const was = names(before); return [...names(after)].filter((n) => !was.has(n)); };
-  if (tool === 'Edit') return added(input?.new_string, input?.old_string);
-  if (tool === 'MultiEdit') return [...new Set((input?.edits ?? []).flatMap((e) => added(e?.new_string, e?.old_string)))];
-  if (tool === 'Write') { let old = ''; try { old = readFileSync(abs, 'utf8'); } catch { /* a new file */ } return added(input?.content, old); }
+  // An edit's old and new strings are fragments: a method's lines without its class, half a statement, a line of a
+  // template. Read so, a function that is only moved or re-indented looked new and a word in a string looked like a
+  // declaration. The file before and after the edit is what can be read.
+  let before = '';
+  try { before = readFileSync(abs, 'utf8'); } catch { /* a new file */ }
+  const apply = (text, e) => { const [from, to] = [String(e?.old_string ?? ''), String(e?.new_string ?? '')]; return !from ? text : e?.replace_all ? text.split(from).join(to) : text.replace(from, () => to); };
+  if (tool === 'Edit') return added(apply(before, input), before);
+  if (tool === 'MultiEdit') return added((input?.edits ?? []).reduce(apply, before), before);
+  if (tool === 'Write') return added(input?.content, before);
   return [];
 }
 
