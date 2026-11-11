@@ -285,7 +285,8 @@
         "src/bash-writes.mjs",
         "src/git-hooks.mjs",
         "src/trigger.mjs",
-        "src/verdict.mjs"
+        "src/verdict.mjs",
+        "src/code.mjs"
       ],
       "checks": [
         {
@@ -490,6 +491,18 @@
           "text": "`filesWithoutNames` (src/trigger.mjs): a risk whose `files` are all exact paths (no `*` or `?`) with nothing declared in them (a workflow, a Dockerfile, a JSON or YAML file) is about those files: a change to one triggers it in `judge`, and `unmatchedItems` counts it as judgeable. One pattern among the files, or one file with a declaration, and it is judged by its names as before. `judge` gets the files from the read list row (`files` on a risk row, set in readList of src/readlist.mjs for a group risk and for one found by risksNaming): a row built without it is judged as if the risk had no files. Rules are not judged this way.",
           "files": [
             "src/trigger.mjs"
+          ]
+        },
+        {
+          "text": "src/code.mjs is the one reader of code (`lex`, `tokens`, `closeOf`, `declarations`, `scopeOf`, `scriptBlocks`): one pass over the characters with the state carried from line to line, then one walk over the tokens with the brackets that are open. Nothing in it matches a pattern against a single line. A shape it misreads becomes a snippet in test/code.test.mjs with a parser's answer first, and is then fixed in the walk or in its lists of tokens (`NEEDS_MORE`, `CONTINUES`, `TYPE_BEFORE`, `OBJECT_BEFORE`, `STATEMENT_HEADS`), never by a rule for that one line: rules per line are what it replaces. One misread now travels down the file (a string or bracket left open shifts everything after it), where a reader per line kept it on its line. Its known guesses are the todo tests in test/code.test.mjs (JSX text on a line of its own outside parentheses, `await` at a line's end, a method named `catch` or `with` in an object, a callee that begins with a parenthesis). Nothing uses it yet: src/trigger.mjs, src/find.mjs, src/readlist.mjs, src/audit.mjs and src/shapes.mjs still have their own readers, and each moves onto it in a change that deletes the reader it replaces.",
+          "files": [
+            "src/code.mjs",
+            "test/code.test.mjs",
+            "src/trigger.mjs",
+            "src/find.mjs",
+            "src/readlist.mjs",
+            "src/audit.mjs",
+            "src/shapes.mjs"
           ]
         }
       ]
