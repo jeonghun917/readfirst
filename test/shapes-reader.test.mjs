@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { scanText } from '../src/scan.mjs';
-import { candidates, discardedResults, PATTERNS } from '../src/shapes.mjs';
+import { candidates, closeOf, discardedResults, PATTERNS } from '../src/shapes.mjs';
 
 const L = (...a) => a.join('\n');
 const ids = (path, text) => scanText(path, text).map((f) => `${f.pattern}:${f.line}`);
@@ -21,6 +21,14 @@ test('a call is read to its end whatever its arguments hold: a quote or a parent
     '}',
   );
   assert.deepEqual(ids('src/clean.ts', js), ['js-replace:2', 'js-replace:3', 'js-replace:4', 'js-string:5']);
+});
+
+test('a pattern that reads the statement itself closes its call on the code, not on the text: a parenthesis in a string', () => {
+  const t = L("test('a', async () => {", "  expect(load(')')).resolves.toBe(1);", "  expect(load('(')).rejects.toThrow();", "  expect(load(`${a ? ')' : '('}`)).resolves.toBe(1);", '  await expect(load(")")).resolves.toBe(1);', '});');
+  assert.deepEqual(ids('src/user.test.ts', t), ['js-expect-promise:2', 'js-expect-promise:3', 'js-expect-promise:4']);
+  // A list given from outside gets the code too, and the helper to close a call on it.
+  const own = [{ id: 'own-wait', lang: /\.ts$/u, find: (stmt, code) => { const end = closeOf(code, 4); return end > 0 && stmt.startsWith('wait(') ? Object.assign(['', 'wait', 'then'], { open: 4 }) : null; }, why: () => '' }];
+  assert.deepEqual(candidates(added('src/a.ts', L('function f() {', "  wait(')');", '}')), own).map((c) => c.line), [2]);
 });
 
 test('arguments are counted in code: a comma in a template or in a regular expression is not one', () => {

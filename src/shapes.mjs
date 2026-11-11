@@ -66,10 +66,10 @@ export const PATTERNS = [
     // Test files only matter here, so the audit and the pattern bank read them for this pattern (tests: true).
     id: 'js-expect-promise', lang: JS, tests: true,
     notIn: { path: /\.vitest\./u, text: /\bfrom\s*['"](?:vitest|bun:test)['"]|\brequire\(\s*['"](?:vitest|bun:test)['"]\s*\)/u },
-    find: (stmt) => {
+    find: (stmt, code) => {
       const head = stmt.match(/^expect(?:\.soft)?\(/u);
       if (!head) return null;
-      const close = closeOf(stmt, head[0].length - 1, false);
+      const close = closeOf(code, head[0].length - 1);
       if (close < 0) return null;
       const tail = stmt.slice(close).match(/^\.(resolves|rejects)\.(?:not\.)?(\w+)\(/u);
       if (!tail) return null;
@@ -138,8 +138,10 @@ function newLines(patch) {
 
 // From an opening bracket, the index just past its match, or -1. `code` is the statement as the lexer left it: the
 // same length as its text, with the insides of strings, templates, comments and regular expressions as spaces.
-// -1 too when what opens there is not code (the pattern's words stood in the text of a template).
-function closeOf(code, open) {
+// -1 too when what opens there is not code (the pattern's words stood in the text of a template). Exported for a
+// pattern's own `find`, here and in the hosted list: given the statement's text it would stop at a parenthesis
+// inside a string, which is what it did for one release candidate.
+export function closeOf(code, open) {
   if (code[open] !== '(') return -1;
   let d = 0;
   for (let i = open; i < code.length; i++) {
@@ -329,7 +331,9 @@ export function candidates(file, patterns = PATTERNS) {
     for (const p of patterns) {
       if (!p.lang.test(file.filename)) continue;
       const { text: stmt, code, next } = p.long ? (long ??= joined(400)) : short;
-      const m = p.find ? p.find(stmt) : stmt.match(p.head);
+      // A pattern's own `find` gets the statement and, beside it, the same characters as the lexer left them: what it
+      // closes or counts, it closes and counts on the code (`closeOf`), never on the text.
+      const m = p.find ? p.find(stmt, code) : stmt.match(p.head);
       if (!m) continue;
       if (typeTest && !p.tests) continue; // (a test pattern's line is the assertion; the error is in its arguments)
       if (p.skip?.test(m[1])) continue;
