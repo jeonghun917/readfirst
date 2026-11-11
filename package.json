@@ -23,7 +23,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/*.test.mjs"
+    "test": "node --import ./test/setup.mjs --test test/*.test.mjs"
   },
   "keywords": [
     "ai",

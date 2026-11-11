@@ -529,9 +529,10 @@
       ],
       "risks": [
         {
-          "text": "npm test only runs test/*.test.mjs, so a test in a subfolder or with another file name never runs",
+          "text": "npm test only runs test/*.test.mjs, so a test in a subfolder or with another file name never runs. It loads test/setup.mjs first (`node --import ./test/setup.mjs --test`), which turns commit signing off for the tests' git processes and gives each test process a temp folder of its own, removed when it ends. A test file run by hand without `--import ./test/setup.mjs` gets neither: on a machine set to sign every commit its commits ask the signing service (a hosted agent session's service ran out of file handles after a day of test runs, and then no commit could be made, 2026-11-11), and its temp folders stay. A new way of running the tests (a script, a workflow step) passes the same --import.",
           "files": [
-            "test/**"
+            "test/**",
+            "package.json"
           ]
         },
         {
@@ -553,7 +554,7 @@
           ]
         },
         {
-          "text": "the hook test calls main(['hook']) without a stateDir, so it writes to the real temp folder and relies on a unique session_id; reusing a fixed id would make the hook print nothing on later runs"
+          "text": "the hook test calls main(['hook']) without a stateDir, so it writes to the temp folder (under npm test the test process's own, see test/setup.mjs; run by hand, the machine's) and relies on a unique session_id; reusing a fixed id would make the hook print nothing on later runs"
         },
         {
           "text": "test/silent-cuts.test.mjs finds cuts by their shape (`CUT`, and `TEXT` for cuts of text), not by meaning: a slice to a number, an UPPER_CASE constant or max/limit/count, a slice from the end (.slice(-N), N of 3 or more or a constant; missed until 0.27.4, so verify's last-30-lines cut passed), a push under such a bound, a loop stopped at one. A cut of text is told apart by its receiver (sha, hash, title, subject, message, body, String(), a string method): a list named like one of those, or a cut to a bound of another name (k, at, end), is not looked at. When it misses one, widen the shapes; do not add a cut: note to pass it",
