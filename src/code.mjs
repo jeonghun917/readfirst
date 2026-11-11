@@ -92,7 +92,8 @@ export function lex(lines, lang, state = null) {
 }
 
 // ---- tokens: the code of the lexed lines as words, punctuation and literals, each with its line and whether it is
-// the first on its line. A literal (string, template text, regular expression) is one token whatever it holds.
+// the first on its line. A literal (string, template text, regular expression) is one token whatever it holds; `text`
+// is what it is written as on its first line.
 // `>>` and `>>>` are left as single `>`: closing generics (`Promise<Res<T>>`) cannot be told from a shift here.
 const OPS = ['...', '===', '!==', '**=', '<<=', '&&=', '||=', '??=', '=>', '==', '!=', '<=', '>=', '&&', '||', '??', '?.', '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**'];
 export function tokens(rows, from = 0, to = rows.length) {
@@ -109,7 +110,7 @@ export function tokens(rows, from = 0, to = rows.length) {
         while (j < code.length && (mark[j] !== 'c' && mark[j] !== ' ' || (mark[j] === ' ' && /[ltp]/u.test(mark[j + 1] ?? '') && /\s/u.test(code[j])))) j++;
         // The rest of a template or string that began on an earlier line is the same literal, not a new token.
         if (carried && out.length && out.at(-1).k === 'val') out.at(-1).endLine = l + 1;
-        else { out.push({ k: 'val', v: mark[i] === 't' ? '`' : "''", line: l + 1, endLine: l + 1, first }); first = false; }
+        else { out.push({ k: 'val', v: mark[i] === 't' ? '`' : "''", line: l + 1, endLine: l + 1, first, text: rows[l].text.slice(i, j) }); first = false; }
         carried = false;
         i = j;
         continue;
@@ -274,8 +275,8 @@ function scanJs(toks, lastLine) {
         const n = toks[k + 1];
         if (word(w, 'function')) { const nm = punct(n, '*') ? toks[k + 2] : n; if (word(nm)) f.cur.rec = record(nm.v, t.line, 'fn', 'block', own); }
         else if (word(w, 'class')) { if (word(n) && n.v !== 'extends' && n.v !== 'implements') f.cur.rec = record(n.v, t.line, 'class', 'block', own); else f.classHead = true; }
-        else if ((word(w, 'interface') || word(w, 'enum')) && word(n) && !punct(n, '=')) { if (word(n)) f.cur.rec = record(n.v, t.line, 'type', 'block', own); }
-        else if (word(w, 'const') && word(n, 'enum') && word(toks[k + 2])) f.cur.rec = record(toks[k + 2].v, t.line, 'type', 'block', own);
+        else if ((word(w, 'interface') || word(w, 'enum')) && word(n) && !punct(n, '=')) { if (word(n)) f.cur.rec = record(n.v, t.line, w.v === 'enum' ? 'enum' : 'type', 'block', own); }
+        else if (word(w, 'const') && word(n, 'enum') && word(toks[k + 2])) f.cur.rec = record(toks[k + 2].v, t.line, 'enum', 'block', own);
         else if (word(w, 'type') && word(n) && (punct(toks[k + 2], '=') || punct(toks[k + 2], '<'))) f.cur.rec = record(n.v, t.line, 'alias', 'statement', own);
         else if ((word(w, 'const') || word(w, 'let') || word(w, 'var')) && word(n)) f.cur.rec = record(n.v, t.line, 'var', 'statement', own);
         else if (word(w, 'exports') && punct(n, '.') && word(toks[k + 2]) && punct(toks[k + 3], '=')) f.cur.rec = record(toks[k + 2].v, t.line, 'var', 'statement', own);
@@ -313,7 +314,7 @@ function scanJs(toks, lastLine) {
         rec.bodied = true;
         f.pend = null;
         f.classHead = false;
-        push(rec.what === 'class' ? 'class' : rec.what === 'type' ? 'type' : 'block', { decl: rec });
+        push(rec.what === 'class' ? 'class' : rec.what === 'type' || rec.what === 'enum' ? 'type' : 'block', { decl: rec });
       } else if ((waiting || f.classHead) && TYPE_BEFORE.has(before)) push('object'); // a type in a header
       else if (f.classHead) { f.classHead = false; push('class'); }
       // Inside a value (after a statement's `=`, after `export default`, in a parenthesis, bracket or object) a
@@ -412,8 +413,32 @@ export function scriptBlocks(raw) {
   return out;
 }
 
+// The files this reader has a grammar for. Any other language is read by its callers with their own, rougher means.
+const READS = /\.(?:m?js|cjs|jsx|tsx?|mts|cts|vue|svelte|py)$/u;
+export const reads = (path) => READS.test(path);
+
+// The lexed lines of a whole file. In a .vue or .svelte file only the lines of its <script> blocks are code, each
+// block lexed on its own; every other line has no code (`outside`). blocks: those blocks, or null for other files.
+function rowsOf(path, raw) {
+  if (!/\.(?:vue|svelte)$/u.test(path)) return { rows: lex(raw, /\.py$/u.test(path) ? 'py' : 'js'), blocks: null };
+  const rows = raw.map((text) => ({ code: '', mark: '', startsIn: 'outside', comment: false, text, outside: true, state: null }));
+  const blocks = scriptBlocks(raw);
+  for (const b of blocks) lex(raw.slice(b.from, b.to), 'js').forEach((r, i) => { rows[b.from + i] = r; });
+  return { rows, blocks };
+}
+// The same, for callers that want each line's code (`rows[i].code`) or to go on from a line's state.
+export const codeRows = (path, body) => rowsOf(path, String(body).split('\n')).rows;
+// What a file ends inside when the lexer cannot finish it ('a block comment', 'a template', 'a string'), or ''. Its
+// declarations cannot be trusted then: one thing left open shifts everything after it.
+export function unfinished(rows) {
+  const s = rows.at(-1)?.state;
+  if (!s) return '';
+  return s.q === 'block' ? 'a block comment' : s.q === '`' || s.tpl.length ? 'a template' : s.q ? 'a string' : '';
+}
+
 // The declarations of a file, in the order they start. Each: name, line, end, top (the first line of the comment and
-// decorators right above it, or its own line), what ('fn', 'class', 'type', 'alias', 'var'), fn (a function, or a
+// decorators right above it, or its own line), what ('fn', 'class', 'type' for an interface, 'enum', 'alias' for
+// `type N =`, 'var'), fn (a function, or a
 // statement set to one), body (it has a body of its own: a function or class, or a statement set to one), value (a
 // named function or class used as a value), exported, member, depth, parent and parentLine (the name and line of the
 // declaration around it, or null). A value inside a function is read only when it is set to a function or class.
@@ -421,19 +446,10 @@ export function scriptBlocks(raw) {
 export function declarations(path, body, { members = false } = {}) {
   const py = /\.py$/u.test(path);
   const raw = body.split('\n');
-  let rows;
+  const { rows, blocks } = rowsOf(path, raw);
   let found;
-  if (/\.(?:vue|svelte)$/u.test(path)) {
-    rows = raw.map((text) => ({ code: '', mark: '', startsIn: 'outside', comment: false, text, outside: true }));
-    found = [];
-    for (const b of scriptBlocks(raw)) {
-      lex(raw.slice(b.from, b.to), 'js').forEach((r, i) => { rows[b.from + i] = r; });
-      found.push(...scanJs(tokens(rows, b.from, b.to), b.to));
-    }
-  } else {
-    rows = lex(raw, py ? 'py' : 'js');
-    found = py ? scanPy(rows, raw) : scanJs(tokens(rows), raw.length);
-  }
+  if (blocks) found = blocks.flatMap((b) => scanJs(tokens(rows, b.from, b.to), b.to));
+  else found = py ? scanPy(rows, raw) : scanJs(tokens(rows), raw.length);
   if (!members) {
     const gone = new Set(found.filter((d) => d.member));
     found = found.filter((d) => !gone.has(d));
@@ -473,4 +489,38 @@ export function declarations(path, body, { members = false } = {}) {
 export function scopeOf(decls, line) {
   const holding = decls.filter((d) => d.top <= line && line <= d.end && (d.depth === 0 || (d.body && d.end > d.line)));
   return holding.sort((a, b) => b.depth - a.depth || b.line - a.line)[0] ?? null;
+}
+
+// An entry of a table: when the declaration `d` is set to an array or an object, the element or property of it that
+// holds `line`, as { line, end, key }. The comment lines above an entry are part of it. key: a property's name, or
+// the first string an element holds (`{ id: 'no-await', ... }`, `['no-await', ...]`), or null. Evidence that points
+// into a long table is about that entry, and a text can name it by its key.
+export function entryAt(path, body, d, line) {
+  if (!reads(path) || line < d.line || line > d.end) return null;
+  const off = d.line - 1;
+  const toks = tokens(lex(String(body).split('\n').slice(off, d.end), /\.py$/u.test(path) ? 'py' : 'js'));
+  let k = toks.findIndex((t) => isPunct(t, '='));
+  if (k < 0 || !(isPunct(toks[k + 1], '[') || isPunct(toks[k + 1], '{'))) return null;
+  k++;
+  const close = closeOf(toks, k);
+  if (close < 0) return null;
+  const unquote = (t) => t?.text?.match(/^(['"`])(.*)\1$/u)?.[2] ?? null;
+  let start = k + 1;
+  let depth = 0;
+  for (let j = k + 1; j <= close; j++) {
+    const t = toks[j];
+    if (j < close && t.k === 'punct' && '([{'.includes(t.v)) depth++;
+    else if (j < close && t.k === 'punct' && ')]}'.includes(t.v)) depth--;
+    if (j < close && !(depth === 0 && isPunct(t, ','))) continue;
+    if (j > start) {
+      const from = Math.min(toks[start].line, toks[start - 1].endLine + 1) + off;
+      const to = toks[j - 1].endLine + off;
+      if (from <= line && line <= to) {
+        const named = isPunct(toks[start + 1], ':') ? (isWord(toks[start]) ? toks[start].v : unquote(toks[start])) : null;
+        return { line: from, end: to, key: named ?? unquote(toks.slice(start, j).find((x) => unquote(x) !== null)) };
+      }
+    }
+    start = j + 1;
+  }
+  return null;
 }

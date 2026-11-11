@@ -26,7 +26,7 @@
           ]
         },
         {
-          "text": "parse() knows its options from two lists, FLAGS (on/off) and VALUES (take a value, also as --name=value); any other --option is an error, so a new option must go into one of them or every use of it fails with 'unknown option'. Before 0.26.4 an unknown option took the next word as its value (hook --new-flag --stop ran the wrong hook). A `hook` call (not --install) never fails on its own arguments or errors: main() answers with a systemMessage warning and exit 0, because exit 2 from a PreToolUse hook refuses the tool call (an older readfirst that did not know --gate stopped every Edit and Bash call of a session, 2026-11-08)",
+          "text": "parse() knows its options from two lists, `FLAGS` (on/off) and `VALUES` (take a value, also as --name=value); any other --option is an error, so a new option must go into one of them or every use of it fails with 'unknown option'. Before 0.26.4 an unknown option took the next word as its value (hook --new-flag --stop ran the wrong hook). A `hook` call (not --install) never fails on its own arguments or errors: main() answers with a systemMessage warning and exit 0, because exit 2 from a PreToolUse hook refuses the tool call (an older readfirst that did not know --gate stopped every Edit and Bash call of a session, 2026-11-08)",
           "files": [
             "src/cli.mjs"
           ]
@@ -72,7 +72,7 @@
           "text": "runHook and runStopHook find the repository from each edited file, not from the session's folder: a session can start in a folder above several repositories, and the hook state keeps absolute paths (older state files with relative paths still read against the session's repository). The state is append-only (readfirst-hook-<session>.lines in the temp folder, one [key, time] JSON line per marked file, written in one append): hooks of one session run at the same time, and reading and rewriting one JSON object lost the files of all but the last writer. The older .json object file is still read (readSeen) and never written. Each path is resolved through symlinks first (physical(): the nearest existing folder through realpath), because git gives the physical top level: a file reached through a linked folder (/tmp/lnk -> /tmp/x/r, or macOS /var -> /private/var) would otherwise be outside its repository and the hook silent. Looking the root up from event.cwd again would make the hook silent in that setup (rootOf finds it per file) - src/cli.mjs:458"
         },
         {
-          "text": "the PreToolUse hook reads Bash commands too: src/bash-writes.mjs names the files a command writes (redirects, sed -i / perl -i, tee, cp/mv destinations, git checkout of paths, code that writes run by python/node/sh from -c, -e or a here-document: only the targets of its write calls, resolved by codeTargets from a literal, an assigned variable, a parameter, a for-loop, a glob or the script's arguments, falling back to the files it names that exist) and only those; file arguments are read per command through OPTIONS/options() in bash-writes.mjs: < and 2> redirects and option values (truncate -s N, sed -e/-f SCRIPT, cp/mv/install -t DIR, which is then the destination) are dropped first, and only -i, -i<suffix>, --in-place or a flag cluster reaching i make sed/perl write (perl -M<module>, -I<dir> do not); a command whose options are not in OPTIONS gets no option values dropped; segments split at ; && | and newlines outside quotes only, so node -e \"a; fs.writeFileSync(f)\" stays one command, and a here-document belongs to the last command on its line and its paths start after the cds before it; after a cd to a variable (cd $D) relative paths are not named at all; a command that merely reads or runs tests must give none, or every Bash call would carry notes. The matcher in installHook and plugins/readfirst/hooks/hooks.json includes Bash; with --gate the first call on an unseen file is denied with the notes and the retry passes, because the notes mark the file as seen. Quotes are read by blank()/closeOf(): they open again inside $( ) (so a > in python3 -c \"...\" inside \"$(...)\" is code, not a redirect, and a redirect inside $( ) is a write ending at its ); a regex once read `i>=0` there as a write to `=0`), and a quote that never closes is a plain character",
+          "text": "the PreToolUse hook reads Bash commands too: src/bash-writes.mjs names the files a command writes (redirects, sed -i / perl -i, tee, cp/mv destinations, git checkout of paths, code that writes run by python/node/sh from -c, -e or a here-document: only the targets of its write calls, resolved by codeTargets from a literal, an assigned variable, a parameter, a for-loop, a glob or the script's arguments, falling back to the files it names that exist) and only those; file arguments are read per command through OPTIONS/options() in bash-writes.mjs: < and 2> redirects and option values (truncate -s N, sed -e/-f SCRIPT, cp/mv/install -t DIR, which is then the destination) are dropped first, and only -i, -i<suffix>, --in-place or a flag cluster reaching i make sed/perl write (perl -M<module>, -I<dir> do not); a command whose options are not in `OPTIONS` gets no option values dropped; segments split at ; && | and newlines outside quotes only, so node -e \"a; fs.writeFileSync(f)\" stays one command, and a here-document belongs to the last command on its line and its paths start after the cds before it; after a cd to a variable (cd $D) relative paths are not named at all; a command that merely reads or runs tests must give none, or every Bash call would carry notes. The matcher in installHook and plugins/readfirst/hooks/hooks.json includes Bash; with --gate the first call on an unseen file is denied with the notes and the retry passes, because the notes mark the file as seen. Quotes are read by blank()/closeOf(): they open again inside $( ) (so a > in python3 -c \"...\" inside \"$(...)\" is code, not a redirect, and a redirect inside $( ) is a write ending at its ); a regex once read `i>=0` there as a write to `=0`), and a quote that never closes is a plain character",
           "files": [
             "src/bash-writes.mjs"
           ]
@@ -103,7 +103,7 @@
           ]
         },
         {
-          "text": "src/hook-cache.mjs keeps the import graph and brokeBefore results per repository in the hook's state folder between calls (mode 600; a file another user owns is ignored), keyed by HEAD, the file list, the changed config files and the readfirst version. Edges from changed JS/TS/Python/JSON files are read again from the files; any other changed file (Go, C#, Java: their edges depend on other files' text) rebuilds the whole graph. A new file importEdges reads to resolve imports (beside package.json, tsconfig/jsconfig) must go into CONFIG there, or edits to it are served stale. sentry (22,494 files): 3.1 s cold, 85 ms warm, the same edges as a full rebuild.",
+          "text": "src/hook-cache.mjs keeps the import graph and brokeBefore results per repository in the hook's state folder between calls (mode 600; a file another user owns is ignored), keyed by HEAD, the file list, the changed config files and the readfirst version. Edges from changed JS/TS/Python/JSON files are read again from the files; any other changed file (Go, C#, Java: their edges depend on other files' text) rebuilds the whole graph. A new file importEdges reads to resolve imports (beside package.json, tsconfig/jsconfig) must go into `CONFIG` there, or edits to it are served stale. sentry (22,494 files): 3.1 s cold, 85 ms warm, the same edges as a full rebuild.",
           "files": [
             "src/hook-cache.mjs",
             "src/imports.mjs"
@@ -116,7 +116,7 @@
           ]
         },
         {
-          "text": "init --agent, setup and hook --install (installHook, addAgentLine, setupAgents) add to files people edit by hand, often with comments (JSONC). A file that does not parse as plain JSON is never rewritten and never stops the rest: init goes on and prints what to add by hand (hookSnippet, SNIPPETS in src/agents.mjs). Until 0.26.4 (readfirst#130) init stopped at a .claude/settings.json with comments and wrote nothing after it. A new file that init or setup touches needs a test with a commented copy in the middle of the list.",
+          "text": "init --agent, setup and hook --install (installHook, addAgentLine, setupAgents) add to files people edit by hand, often with comments (JSONC). A file that does not parse as plain JSON is never rewritten and never stops the rest: init goes on and prints what to add by hand (hookSnippet, `SNIPPETS` in src/agents.mjs). Until 0.26.4 (readfirst#130) init stopped at a .claude/settings.json with comments and wrote nothing after it. A new file that init or setup touches needs a test with a commented copy in the middle of the list.",
           "files": [
             "src/cli.mjs",
             "src/agents.mjs"
@@ -192,7 +192,7 @@
           ]
         },
         {
-          "text": "the existing PR comment is found by its first line (MARKER); changing MARKER makes every open PR get a second comment instead of an update",
+          "text": "the existing PR comment is found by its first line (`MARKER`); changing `MARKER` makes every open PR get a second comment instead of an update",
           "files": [
             "src/action.mjs"
           ]
@@ -242,13 +242,13 @@
           ]
         },
         {
-          "text": "a read list longer than one comment is split by splitComment (60,000 characters a part, cut only between top-level blocks; a <details> block is closed and reopened with '(continued)'); part N starts with partMarker(N), `<!-- readfirst:pr-comment:N -->`, and is found by it on the next push, as part 1 is by MARKER. Changing partMarker gives every open PR new parts; the job summary gets the whole body unsplit.",
+          "text": "a read list longer than one comment is split by splitComment (60,000 characters a part, cut only between top-level blocks; a <details> block is closed and reopened with '(continued)'); part N starts with partMarker(N), `<!-- readfirst:pr-comment:N -->`, and is found by it on the next push, as part 1 is by `MARKER`. Changing partMarker gives every open PR new parts; the job summary gets the whole body unsplit.",
           "files": [
             "src/action.mjs"
           ]
         },
         {
-          "text": "The Action finds its comment by the first line (MARKER; partMarker(N) for the parts of a long one) and edits it in place. Anyone can post a comment that starts with the marker: until 0.26.5 (readfirst#132, security) another user's such comment was taken as ours, the PATCH failed with 403, the 403 was read as a fork PR, and no readfirst comment was posted. Bots' marked comments are tried first, then the rest newest first, each PATCH that fails with 403 or 404 moves to the next, and a new comment is posted only when none can be edited. Test with a marked comment by another user.",
+          "text": "The Action finds its comment by the first line (`MARKER`; partMarker(N) for the parts of a long one) and edits it in place. Anyone can post a comment that starts with the marker: until 0.26.5 (readfirst#132, security) another user's such comment was taken as ours, the PATCH failed with 403, the 403 was read as a fork PR, and no readfirst comment was posted. Bots' marked comments are tried first, then the rest newest first, each PATCH that fails with 403 or 404 moves to the next, and a new comment is posted only when none can be edited. Test with a marked comment by another user.",
           "files": [
             "src/action.mjs"
           ]
@@ -366,7 +366,7 @@
           "text": "readfirst's own files (the map, .readfirst/held.json and the exported .cursor/rules/readfirst-*.mdc) belong to no group: isOwnFile in map.mjs (OWN_FILES and OWN_PATTERN) keeps them out of placement, and readlist.mjs reports them as status MAP. A new file readfirst writes into the checkout must be added there, or check fails with it as an unplaced file. The Cursor file name is matched twice (OWN_PATTERN in map.mjs and isCursorExport in export.mjs): change both together. The text export writes is compared byte for byte by `export --cursor --check`, so rewording it makes every user's CI fail until they re-export. - src/map.mjs:10"
         },
         {
-          "text": "the agents setup knows are listed in several places: AGENTS, detectAgents, PLAN and SNIPPETS in src/agents.mjs, the notes-file list in addAgentLine (cli.mjs), the HELP text and the 'Wire every agent at once' section of docs/guide.md. A new agent must be added to all of them: without a PLAN entry setupAgents throws on it, and without a SNIPPETS entry the by-hand message for an unparsable file says only 'the readfirst MCP server'. Setup writes a file only when it parses as plain JSON (or, for Codex, when no [mcp_servers.readfirst] table exists), and a readfirst key that is already there is never compared or updated."
+          "text": "the agents setup knows are listed in several places: `AGENTS`, detectAgents, `PLAN` and `SNIPPETS` in src/agents.mjs, the notes-file list in addAgentLine (cli.mjs), the HELP text and the 'Wire every agent at once' section of docs/guide.md. A new agent must be added to all of them: without a `PLAN` entry setupAgents throws on it, and without a `SNIPPETS` entry the by-hand message for an unparsable file says only 'the readfirst MCP server'. Setup writes a file only when it parses as plain JSON (or, for Codex, when no [mcp_servers.readfirst] table exists), and a readfirst key that is already there is never compared or updated."
         },
         {
           "text": "src/shapes.mjs (`PATTERNS`, `candidates`) and src/lex.mjs (`blockLines`) are copied from readfirst-cloud lib/discarded.mjs and lib/lex.mjs with only the published shapes kept (queryset, str-method, str-replace, js-string, js-replace, js-expect-promise); do not add the server's other shapes here, they stay hosted. js-expect-promise leaves out files on vitest or bun test (notIn: a *.vitest.* name or an import of vitest or bun:test), which fail such a test themselves; keep notIn the same on both sides",
@@ -376,7 +376,7 @@
           ]
         },
         {
-          "text": "the scar rules in src/history.mjs (SIGNALS, NOISE, NOT_CODE, TEST, scar, spreadScars) are a copy of the hosted version's lib/history.mjs, kept in one module so the hosted side can import them from the package; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
+          "text": "the scar rules in src/history.mjs (`SIGNALS`, `NOISE`, NOT_CODE, `TEST`, scar, spreadScars) are a copy of the hosted version's lib/history.mjs, kept in one module so the hosted side can import them from the package; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
           "files": [
             "src/history.mjs"
           ]
@@ -402,7 +402,7 @@
           ]
         },
         {
-          "text": "the hooks keep importEdges' result between calls (src/hook-cache.mjs): edges from a changed JS/TS/Python/JSON file are read again from that file alone, with the config files in its CONFIG (package.json, tsconfig/jsconfig, pyproject.toml, setup.py, setup.cfg). A resolver that starts reading another file, or edges of those languages that come to depend on other files' text, must be added there, or the hook serves stale edges until the next commit.",
+          "text": "the hooks keep importEdges' result between calls (src/hook-cache.mjs): edges from a changed JS/TS/Python/JSON file are read again from that file alone, with the config files in its `CONFIG` (package.json, tsconfig/jsconfig, pyproject.toml, setup.py, setup.cfg). A resolver that starts reading another file, or edges of those languages that come to depend on other files' text, must be added there, or the hook serves stale edges until the next commit.",
           "files": [
             "src/hook-cache.mjs",
             "src/imports.mjs",
@@ -436,13 +436,13 @@
           ]
         },
         {
-          "text": "find (src/find.mjs) knows definitions only through its line regexes (DEFS): a declaration shape none of them matches is absent from `readfirst find`, and an agent writes the function again. Missed until 0.27.0 (readfirst#133): class methods, exports.x = and module.exports.x =, arrows wrapped in a call or with generics, abstract and declared classes. A new language or syntax goes into DEFS with a test of the declaration and of a line that only looks like one (a call, a string, a comment).",
+          "text": "find (src/find.mjs) knows definitions only through its line regexes (`DEFS`): a declaration shape none of them matches is absent from `readfirst find`, and an agent writes the function again. Missed until 0.27.0 (readfirst#133): class methods, exports.x = and module.exports.x =, arrows wrapped in a call or with generics, abstract and declared classes. A new language or syntax goes into `DEFS` with a test of the declaration and of a line that only looks like one (a call, a string, a comment).",
           "files": [
             "src/find.mjs"
           ]
         },
         {
-          "text": "draftChecks and workspaceChecks (src/map.mjs) write commands into the user's map, and verify and the Stop hook later run them in a shell with the user's rights. A drafted check must only read (no lint --fix, prettier --write, jest -u or --updateSnapshot: REWRITES), end by itself (no watch script: vitest without run, jest --watch, a dev server: WATCHES; verify hung until 0.26.4), use the project's runner (poetry run pytest, uv run pytest; a Makefile test := is a variable, not a target), and quote every package name, folder or script name read from the repository (pnpm --filter 'a; touch x' ran touch x until 0.26.5, readfirst#132, security). codexConfig (src/agents.mjs) must not write a second [mcp_servers.readfirst] table (0.27.0). A new drafted check needs a test with a hostile name and with a script that writes or watches.",
+          "text": "draftChecks and workspaceChecks (src/map.mjs) write commands into the user's map, and verify and the Stop hook later run them in a shell with the user's rights. A drafted check must only read (no lint --fix, prettier --write, jest -u or --updateSnapshot: `REWRITES`), end by itself (no watch script: vitest without run, jest --watch, a dev server: `WATCHES`; verify hung until 0.26.4), use the project's runner (poetry run pytest, uv run pytest; a Makefile test := is a variable, not a target), and quote every package name, folder or script name read from the repository (pnpm --filter 'a; touch x' ran touch x until 0.26.5, readfirst#132, security). codexConfig (src/agents.mjs) must not write a second [mcp_servers.readfirst] table (0.27.0). A new drafted check needs a test with a hostile name and with a script that writes or watches.",
           "files": [
             "src/map.mjs",
             "src/agents.mjs"
@@ -466,11 +466,20 @@
           ]
         },
         {
-          "text": "src/trigger.mjs judges each risk and rule of a change's read list (`judge`, used by `diff` and the Action, not by `read`; declaration bounds from `declarations` and `braceEnd`): what it is about is the backticked names and the code-looking names (camelCase, snake_case, UPPER_CASE with _) declared in the files it is shown for, the files its text names or the changed files (for a group's risk, only changed files of its own group: a vendored copy's NOT_CODE touched a risk about the package's until 0.31.0), plus its path:line evidence, which is carried from the file before the change to where it is now (toNew, from the hunk headers). Triggered when a changed line falls in that declaration (to its own closing brace or, with no block, its semicolon; in Python its indent; else up to the next declaration less the blank and comment lines above it; never past the next declaration that starts a line unindented, which a multi-line const ran into until 0.30.0) or the name is in an added or removed line of code (not in docs, the map, config, comments or strings: on its own PR the map edit and trigger.mjs's comments named runHook and changedFiles); a plain lowercase word counts only as a function in the item's own files and never by appearing in the diff (a test's own `run` helper and the word `files` made risks read as touched on readfirst#139). An item naming nothing found is triggered by its files, as before, and a not-triggered one is listed with its reason, never dropped. Evidence that has drifted from its code (line 266 of src/cli.mjs pointed into verifyChecks for a risk about rootOf until 0.28.0) gives a wrong verdict: since 0.30.0 a line outside everything its item names is marked as such in the verdict, `check` lists it (evidenceDrift; --strict fails) and `fix` moves it only where git shows the code moving (moveEvidence). Write an example line number in prose, not as path:line, or it is read as evidence.",
+          "text": "src/trigger.mjs judges each risk and rule of a change's read list (`judge`, used by `diff` and the Action, not by `read`; declaration bounds from `declarations`, which asks the one reader in src/code.mjs): what it is about is the backticked names and the code-looking names (camelCase, snake_case, UPPER_CASE with _) declared in the files it is shown for, the files its text names or the changed files (for a group's risk, only changed files of its own group: a vendored copy's NOT_CODE touched a risk about the package's until 0.31.0), plus its path:line evidence, which is carried from the file before the change to where it is now (toNew, from the hunk headers). Triggered when a changed line falls in that declaration (bounds from the file's structure; in a language src/code.mjs does not read, `approximateBounds`, up to the next declaration indented no deeper, the wide reading on purpose) or the name is in an added or removed line of code, read in its place in the file by `changedCode` (not in docs, the map, config, comments, strings or template text: on its own PR the map edit and trigger.mjs's comments named runHook and changedFiles); a plain lowercase word counts only as a function in the item's own files and never by appearing in the diff (a test's own `run` helper and the word `files` made risks read as touched on readfirst#139). An item naming nothing found is triggered by its files, as before, and a not-triggered one is listed with its reason, never dropped. Evidence that has drifted from its code (line 266 of src/cli.mjs pointed into verifyChecks for a risk about rootOf until 0.28.0) gives a wrong verdict: since 0.30.0 a line outside everything its item names is marked as such in the verdict, `check` lists it (evidenceDrift; --strict fails) and `fix` moves it only where git shows the code moving (moveEvidence). Write an example line number in prose, not as path:line, or it is read as evidence.",
           "files": [
             "src/trigger.mjs",
             "src/readlist.mjs",
-            "src/action.mjs"
+            "src/action.mjs",
+            "src/code.mjs"
+          ]
+        },
+        {
+          "text": "What evidence `path:line` is about in `judge` and `evidenceDrift` (src/trigger.mjs): the declaration the line belongs to (`scopeOf` in src/code.mjs: the function around a one-line local, the declaration below a doc comment or a decorator), or one entry of a table when the text names the entry's key (`entryNamed`, `entryAt`: the first string of an object in an array, or a property's name), so a risk about one pattern of a long table is not touched by a change to another. Only a line no declaration holds is judged by the ten lines around it. Evidence inside a table entry whose key the text does not name is about the whole table, and `check` lists it as having no anchor: name the key in the text. A file the reader cannot finish (it ends inside a template, a string or a comment: `unfinished`) counts as wholly touched and `unseenIn` (src/readlist.mjs) lists it.",
+          "files": [
+            "src/trigger.mjs",
+            "src/code.mjs",
+            "src/readlist.mjs"
           ]
         },
         {
@@ -494,7 +503,7 @@
           ]
         },
         {
-          "text": "src/code.mjs is the one reader of code (`lex`, `tokens`, `closeOf`, `declarations`, `scopeOf`, `scriptBlocks`): one pass over the characters with the state carried from line to line, then one walk over the tokens with the brackets that are open. Nothing in it matches a pattern against a single line. A shape it misreads becomes a snippet in test/code.test.mjs with a parser's answer first, and is then fixed in the walk or in its lists of tokens (`NEEDS_MORE`, `CONTINUES`, `TYPE_BEFORE`, `OBJECT_BEFORE`, `STATEMENT_HEADS`), never by a rule for that one line: rules per line are what it replaces. One misread now travels down the file (a string or bracket left open shifts everything after it), where a reader per line kept it on its line. Its known guesses are the todo tests in test/code.test.mjs (JSX text on a line of its own outside parentheses, `await` at a line's end, a method named `catch` or `with` in an object, a callee that begins with a parenthesis). Nothing uses it yet: src/trigger.mjs, src/find.mjs, src/readlist.mjs, src/audit.mjs and src/shapes.mjs still have their own readers, and each moves onto it in a change that deletes the reader it replaces.",
+          "text": "src/code.mjs is the one reader of code (`lex`, `tokens`, `closeOf`, `declarations`, `scopeOf`, `scriptBlocks`): one pass over the characters with the state carried from line to line, then one walk over the tokens with the brackets that are open. Nothing in it matches a pattern against a single line. A shape it misreads becomes a snippet in test/code.test.mjs with a parser's answer first, and is then fixed in the walk or in its lists of tokens (`NEEDS_MORE`, `CONTINUES`, `TYPE_BEFORE`, `OBJECT_BEFORE`, `STATEMENT_HEADS`), never by a rule for that one line: rules per line are what it replaces. One misread now travels down the file (a string or bracket left open shifts everything after it), where a reader per line kept it on its line. Its known guesses are the todo tests in test/code.test.mjs (JSX text on a line of its own outside parentheses, `await` at a line's end, a method named `catch` or `with` in an object, a callee that begins with a parenthesis). The trigger engine (src/trigger.mjs), `unseenIn` (src/readlist.mjs) and `unusedCode` (src/audit.mjs) read through it; src/find.mjs and src/shapes.mjs still have their own readers, and each moves onto it in a change that deletes the reader it replaces. A second reader of strings, comments or brackets written beside it is how five of them came to exist.",
           "files": [
             "src/code.mjs",
             "test/code.test.mjs",
@@ -593,7 +602,7 @@
           ]
         },
         {
-          "text": "docs/guide.md repeats the command list, the Action inputs table and a sample read list, and README.md the three start commands; update them when the HELP text in src/cli.mjs, action.yml inputs or the output of `toMarkdown` (src/readlist.mjs) change",
+          "text": "docs/guide.md repeats the command list, the Action inputs table and a sample read list, and README.md the three start commands; update them when the `HELP` text in src/cli.mjs, action.yml inputs or the output of `toMarkdown` (src/readlist.mjs) change",
           "files": [
             "README.md",
             "docs/guide.md"

@@ -12,7 +12,8 @@
 // Every part is computed from the checkout and its git history; nothing runs.
 import { MAP_PATH, matcher, groupOf, risksNaming } from './map.mjs';
 import { brokeMost, BROKE_MOST_MIN_COMMITS, BROKE_MOST_MIN_SCORE } from './history.mjs';
-import { unmatchedItems } from './trigger.mjs';
+import { approximateBounds, unmatchedItems } from './trigger.mjs';
+import { codeRows, declarations, reads } from './code.mjs';
 import { isTest, OTHER_CODE, READS_IMPORTS, unseenIn } from './readlist.mjs';
 
 export const AUDIT_FORMAT = 'readfirst/audit@1';
@@ -59,24 +60,26 @@ export function parseLog(text) {
 const CONVENTION = /^(?:default|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|loader|action|config|metadata|generateMetadata|generateStaticParams|getServerSideProps|getStaticProps|getStaticPaths|middleware|handler|main|setup|teardown|run|Meta)$/u;
 export function unusedCode({ code, users, read }) {
   const texts = new Map(code.map((f) => [f, read(f) ?? '']));
+  // A use is a name in code: a mention in a comment, a string or the text of a template uses nothing, and kept dead
+  // code off this list.
+  const codeOf = new Map([...texts].map(([f, t]) => [f, reads(f) ? codeRows(f, t).map((r) => r.code) : t.split('\n')]));
   const where = new Map(); // identifier -> files that hold it
-  for (const [f, t] of texts) for (const w of new Set(t.match(/[A-Za-z_$][\w$]*/gu) ?? [])) { if (!where.has(w)) where.set(w, new Set()); where.get(w).add(f); }
+  for (const [f, rows] of codeOf) for (const w of new Set(rows.join('\n').match(/[A-Za-z_$][\w$]*/gu) ?? [])) { if (!where.has(w)) where.set(w, new Set()); where.get(w).add(f); }
   const out = [];
   for (const [f, t] of texts) {
     if (!(users.get(f) > 0)) continue; // a file nothing imports is an entry point or a script, not a library
-    const lines = t.split('\n');
+    const raw = t.split('\n');
+    const lines = codeOf.get(f);
     const names = [];
+    const decls = reads(f) ? declarations(f, t).filter((d) => d.depth === 0) : [];
     if (/\.py$/u.test(f)) {
-      lines.forEach((l, i) => {
-        const m = l.match(/^(?:async\s+)?(?:def|class)\s+([A-Za-z]\w*)/u);
-        if (m && !/^\s*@/u.test(lines[i - 1] ?? '') && !/^test_?/u.test(m[1])) names.push({ name: m[1], line: i + 1 });
-      });
+      // A top-level def or class with no decorator above it (a route, a task, a fixture is called by its framework).
+      for (const d of decls) if (d.what !== 'var' && !raw.slice(d.top - 1, d.line - 1).some((l) => /^\s*@/u.test(l)) && !/^test_?/u.test(d.name)) names.push({ name: d.name, line: d.line });
       const all = t.match(/__all__\s*=\s*[[(]([^\])]*)/u);
       if (all) for (const n of all[1].matchAll(/['"](\w+)['"]/gu)) { const k = names.findIndex((x) => x.name === n[1]); if (k >= 0) names.splice(k, 1); }
     } else {
+      for (const d of decls) if (d.exported && d.what !== 'type' && d.what !== 'alias') names.push({ name: d.name, line: d.line });
       lines.forEach((l, i) => {
-        const m = l.match(/^export\s+(?:declare\s+)?(?:async\s+)?(?:function\*?|const|let|var|class|enum)\s+([A-Za-z_$][\w$]*)/u);
-        if (m) names.push({ name: m[1], line: i + 1 });
         const list = l.match(/^export\s*\{([^}]*)\}\s*;?\s*$/u);
         if (list) for (const part of list[1].split(',')) { const n = part.trim().split(/\s+as\s+/u).pop(); if (/^[A-Za-z_$][\w$]*$/u.test(n ?? '')) names.push({ name: n, line: i + 1 }); }
       });
@@ -85,7 +88,7 @@ export function unusedCode({ code, users, read }) {
       if (CONVENTION.test(name)) continue;
       const holders = where.get(name) ?? new Set();
       if ([...holders].some((h) => h !== f)) continue;
-      const own = (t.match(new RegExp(`(?<![\\w$])${name.replace(/\$/gu, '\\$')}(?![\\w$])`, 'gu')) ?? []).length;
+      const own = (lines.join('\n').match(new RegExp(`(?<![\\w$])${name.replace(/\$/gu, '\\$')}(?![\\w$])`, 'gu')) ?? []).length;
       if (own > 1) continue; // used in its own file; only the export is unneeded
       out.push({ path: f, name, line });
     }
@@ -203,7 +206,10 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
 
   const other = new Map();
   for (const f of files) if (OTHER_CODE.test(f) && !ignored(f) && !SKIP_CODE.test(f)) { const ext = f.split('.').pop().toLowerCase(); other.set(ext, (other.get(ext) ?? 0) + 1); }
-  const computed = code.flatMap((f) => unseenIn(f, read));
+  const seen = code.flatMap((f) => unseenIn(f, read));
+  const computed = seen.filter((u) => u.line);
+  const approx = new Map();
+  for (const f of files) if (approximateBounds(f) && !ignored(f) && !SKIP_CODE.test(f)) { const ext = f.split('.').pop().toLowerCase(); approx.set(ext, (approx.get(ext) ?? 0) + 1); }
   // Tests count as users: an export only a test names is still listed under "no test reaches" if untested, not here.
   // A file the map says another repository depends on (`dependents`) may be used there: such names are listed apart.
   const elsewhere = (f) => (map.dependents ?? []).filter((d) => matcher(d.files)(f)).map((d) => d.repo);
@@ -233,6 +239,9 @@ export function audit({ map, problems = [], files, imports, read = () => null, b
       languages: [...other].map(([ext, count]) => ({ ext, count })).sort((a, b) => b.count - a.count),
       computed,
       computedCount: computed.length,
+      // Files the reader cannot finish, and languages whose declarations end where the next one starts.
+      unfinished: seen.filter((u) => !u.line),
+      approximate: [...approx].map(([ext, count]) => ({ ext, count })).sort((a, b) => b.count - a.count),
     },
   };
 }
@@ -267,7 +276,7 @@ export function auditText(a) {
   section(`Rules and risks that may be out of date (${STALE_COMMITS}+ commits changed their files since they were written)`, firstThenNamed(a.stale, (s) =>
     `- ${s.kind === 'rule' ? `rule **${s.id}**` : `risk in group ${s.group}`}: "${s.text.length > 100 ? `${s.text.slice(0, 100)}…` : s.text}" — written ${s.written.date} (${s.written.commit}); ${s.commits} commits changed ${s.files} of its files since${s.relied?.commits ? `, and ${s.relied.commits} changed ${s.relied.files} file${s.relied.files === 1 ? '' : 's'} they import` : ''}. Still true?`, (s) => (s.kind === 'rule' ? `rule ${s.id}` : `risk in ${s.group} "${s.text.length > 50 ? `${s.text.slice(0, 50)}…` : s.text}"`)));
   section('Hot spots no longer at their line', a.hotspots.map((h) => `- \`${h.symbol}\` in \`${h.file}\`: map says line ${h.line}, ${h.status === 'MOVED' ? `now line ${h.now}` : 'not found in the file'}`));
-  section('Rules and risks no change can judge (they name no function or file:line readfirst finds in their files, so diff and the PR comment show them unjudged; name the function in backticks or give file:line)', (a.unmatched ?? []).map((u) => `- ${u.where}${u.files ? ` (shown for ${u.files} file${u.files === 1 ? '' : 's'})` : ''}: ${u.text}`));
+  section('Rules and risks no change can judge (they name no function or file:line readfirst finds in their files, so diff and the PR comment show them unjudged; name the function in backticks or give file:line)', (a.unmatched ?? []).map((u) => `- ${u.where}${u.files ? ` (shown for ${u.files} file${u.files === 1 ? '' : 's'})` : ''}: ${u.text}${u.backtick?.length ? ` — its files declare ${u.backtick.map((w) => `\`${w}\``).join(', ')}: a capital word counts as that name only in backticks` : ''}`));
   section('Hot spots nothing checks (no test reaches their file, and no check of their own in the map)', firstThenNamed(a.unguarded, (h) =>
     `- \`${h.symbol}\` in \`${h.file}:${h.line}\`: ${h.labels.join(', ')}`, (h) => `\`${h.symbol}\` (\`${h.file}:${h.line}\`)`));
   // cut: the files past TOP are named on the same line
@@ -292,6 +301,8 @@ export function auditText(a) {
   ]);
   section('Not seen by readfirst', [
     ...a.unseen.languages.map((l) => `- ${l.count} .${l.ext} file(s): imports in this language are not read, so their users and tests are unknown`),
+    ...(a.unseen.approximate ?? []).map((l) => `- ${l.count} .${l.ext} file(s): where a declaration ends is approximate in this language (it runs to the next one), so a risk about one name can read as touched by a change just below it, never the reverse`),
+    ...(a.unseen.unfinished ?? []).map((u) => `- \`${u.path}\`: ${u.why}`),
     ...firstThenNamed(a.unseen.computed, (c) => `- \`${c.path}:${c.line}\` loads a module by a computed name: what it loads is not followed`, (c) => `\`${c.path}:${c.line}\``, 'more computed loads'),
   ]);
   if (out.length === 2) out.push('Nothing to report: the map matches the code.', '');

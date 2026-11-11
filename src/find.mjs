@@ -58,6 +58,8 @@ const DEFS = [
   { test: /\.exs?$/u, re: /^\s*(?:defp?\s+([a-z_]\w*[?!]?)|defmodule\s+([A-Z][\w.]*))/u },
   { test: /\.(?:java|kts?|cs)$/u, re: /^\s*(?:(?:public|private|protected|internal|static|final|abstract|sealed|open|override|suspend|async|virtual|data)\s+)*(?:(?:class|interface|enum|record|object|struct)\s+([A-Za-z_]\w*)|fun\s+(?:<[^>]+>\s*)?([A-Za-z_]\w*)\s*\(|[\w<>[\],.?\s]+?\s+([A-Za-z_]\w*)\s*\([^;]*$)/u },
 ];
+// Whether find has patterns for this file's language.
+export const hasDefinitions = (path) => DEFS.some((d) => d.test.test(path));
 const KEYWORDS = new Set(['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'else', 'main', 'function', 'super', 'await', 'typeof']);
 const SKIP = /\.d\.ts$|\.min\.js$|(?:^|\/)(?:vendor|node_modules|dist|build|migrations)\//u;
 
