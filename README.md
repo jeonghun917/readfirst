@@ -40,7 +40,7 @@ No server, no account, no model calls. It reads your git checkout and the map.
 |  | Free (MIT) | Pro, $39 a month ([readfirst-app](https://readfirst-cloud.vercel.app/)) |
 |---|---|---|
 | Where it runs | your machine and your CI; your code goes nowhere | the readfirst-app GitHub App reads your repositories on our server |
-| The map | `init` writes a first one; you keep it | written for you from the code and its history (one hosted fill free per account), and kept in step after each merge |
+| The map | `init` writes a first one; you keep it | written for you from the code and its history (the free hosted fill is paused until three paying subscribers), and kept in step after each merge |
 | Pull requests | the Action posts what to read and check | PR watch comments on every pull request, whoever opened it: rules a change may break, files left out, the same table written elsewhere |
 | Bug shapes | the 6 published shapes (`scan`) | the full hosted set, a repository audit and fix PRs |
 | Where outside input goes | — | flows: from each route to the writes it reaches and the checks on the way |
