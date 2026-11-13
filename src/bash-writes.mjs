@@ -433,7 +433,7 @@ const snapshot = (state) => ({ base: state.base, why: state.why, vars: copyVars(
 // How a segment runs, from its words before opening() and the operators around it: { pipe, maybe }. Also counts the
 // blocks it opens and closes in state.depth (an `if` line's own condition always runs: depth goes up after it).
 // An operator inside a $( ) or backticks (the shell text was split there: `S=$(echo b | tr b c)`) is not this
-// command's: the caller passes '' for it (Walk).
+// command's: eachCommand passes '' for it.
 function howItRuns(state, raw, before, after) {
   const pipe = /^\|&?$/u.test(before ?? '') || /^\|&?$/u.test(after ?? '');
   const first = (raw[0] ?? '').replace(/^[({]+/u, '') || raw[1] || '';
@@ -563,9 +563,10 @@ export function bashWrites(command, cwd = process.cwd()) {
   return shellWrites(command, cwd).files;
 }
 
-// The files a command writes, and the writes it makes where readfirst cannot tell before it runs: { files, unknown },
-// unknown: [{ part, word, why }]: what is not known, the word it is in, and why. A command starts with no variables
-// known (`vars`); a here-document or a `bash -c` string is read with those of the shell around it that it sees.
+// The files a command writes, the writes it makes where readfirst cannot tell before it runs, and the checkouts it
+// makes: { files, unknown, repos }. unknown: [{ part, word, why, prefix, fresh?, direct? }]: what is not known, the word
+// it is in, why, and the folder it is known to be under. A command starts with the variables `vars` gives (the hook:
+// its environment); a here-document or a `bash -c` string is read with those of the shell around it that it sees.
 export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), why = null } = {}) {
   const found = new Set();
   const unknown = [];
