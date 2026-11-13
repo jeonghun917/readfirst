@@ -348,6 +348,38 @@ test('case arms, a block after a wrapper, and a function that may cd: not named 
   assert.deepEqual(s('f() { echo; }; f; echo x > /abs/g'), ['/abs/g']);
 });
 
+// Review of #182 (2026-11-13): more shapes that named a folder as sure, and a function that never cds made it not known.
+test('command, builtin and time cd, source, case heads after {, if or a wrapper, nested case, ;& and functions without cd', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => u.part)]; };
+  // command, builtin and time run cd in this shell; `command -v cd` only asks where it is.
+  assert.deepEqual(s('command cd /a; echo > k'), ['/a/k']);
+  assert.deepEqual(s('builtin cd /a; echo > k'), ['/a/k']);
+  assert.deepEqual(s('time { cd /a; echo x > f; }'), ['/a/f']);
+  assert.deepEqual(s('command -v cd; echo > k'), ['/r/k']);
+  // source and `.` may cd: relative paths after them are not known, absolute ones still are.
+  assert.deepEqual(s('source env.sh; echo > k'), ['source env.sh']);
+  assert.deepEqual(s('. env.sh; echo > /abs/k'), ['/abs/k']);
+  // A case head after `{`, `if` or a wrapper opens the case too.
+  assert.deepEqual(s('{ case $v in a) cd /a;; esac; }; echo > f'), ['cd /a']);
+  assert.deepEqual(s('if case $v in a) cd /a;; esac; then echo; fi; echo > f'), ['cd /a']);
+  assert.deepEqual(s('time case $v in a) cd /a;; esac; echo > f'), ['cd /a']);
+  // A case nested in an arm on one line has arms of its own; the outer arms after it start from before the outer case.
+  assert.deepEqual(s('case $x in a) case $y in b) cd /b;; esac; echo > i;; c) echo > j;; esac'), ['/r/j', 'cd /b']);
+  // ;& and ;;& let the next arm run after this one: it starts from either.
+  assert.deepEqual(s('case $x in a) cd /a;& b) echo y > g;; esac'), ['cd /a']);
+  assert.deepEqual(s('case $x in a) cd /a;;& b) echo y > g;; esac'), ['cd /a']);
+  assert.deepEqual(s('case $x in a) S=/a;& b) echo > $S/g;; esac'), ['$S']);
+  // A function whose body runs no cd-like command keeps the folder; one that may cd, calls one that may, runs a command
+  // named by a variable, or is defined twice, does not.
+  assert.deepEqual(s('f() { echo; }; f; echo x > g'), ['/r/g']);
+  assert.deepEqual(s('f() { echo "$x"; }; f; echo > h'), ['/r/h']);
+  assert.deepEqual(s('f() {\n  npm test\n}\nf\necho > h'), ['/r/h']);
+  assert.deepEqual(s('f() {\n  npm test\n  cd /q\n}\nf\necho > h'), ['f']);
+  assert.deepEqual(s('f() { g; }; g() { cd /z; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('run() { "$@"; }; run ls; echo > h'), ['run']);
+  assert.deepEqual(s('f() { npm test; }; f() { cd /z; }; f; echo > h'), ['f']);
+});
+
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
   n++;
   const root = repo();
