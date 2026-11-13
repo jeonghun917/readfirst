@@ -462,26 +462,41 @@ function unsure(state, from, why, changed = new Set(), moved = false) {
     state.why = { part: state.cdText ?? 'cd', why: `the folder ${why}`, prefix: '' };
   }
 }
+// Another branch of a block starts (`else`, `elif`, a case arm): it runs instead of the branch before it, so it starts
+// from what was there before the block, and what that branch changed is kept in `changed` for the block's end.
+function branchAgain(state, top) {
+  for (const [k, v] of state.vars) { const o = top.at.vars.get(k); if (!o || o.value !== v.value || o.why !== v.why) top.changed.add(k); }
+  top.moved ||= state.base !== top.at.base;
+  Object.assign(state, { base: top.at.base, why: top.at.why, vars: copyVars(top.at.vars) });
+}
 // How a segment runs, from its words before opening() and the operators around it: { pipe, maybe }. It also keeps the
 // blocks the segment opens and closes (state.blocks: what was there before each, to make what it changed not known
-// at its end; `else` and `elif` start again from before the `if`).
+// at its end; `else`, `elif` and each case arm start again from before the block).
+// The word that opens a block may follow `do`, `then`, `!` or a wrapper (`time for ...`, `do for ...`): until
+// 2026-11-13 only the first word was looked at, so `time for f in $L; do S=/b; done` named $S as /b after the loop.
 // An operator inside a $( ) or backticks (the shell text was split there: `S=$(echo b | tr b c)`) is not this
 // command's: eachCommand passes '' for it.
 function howItRuns(state, raw, before, after) {
   const pipe = /^\|&?$/u.test(before ?? '') || /^\|&?$/u.test(after ?? '');
-  const first = (raw[0] ?? '').replace(/^[({]+/u, '') || raw[1] || '';
+  let ws = raw;
+  for (;;) {
+    const head = (ws[0] ?? '').replace(/^[({]+/u, '');
+    ws = head ? [head, ...ws.slice(1)] : ws.slice(1);
+    if (!/^(?:do|then|!)$/u.test(ws[0] ?? '')) break;
+    ws = ws.slice(1);
+  }
+  const first = unwrap(ws)[0] ?? '';
   state.blocks ??= [];
   const top = state.blocks.at(-1);
-  if (OPENS.test(first)) state.blocks.push({ kind: first, at: snapshot({ ...state, blocks: [] }), changed: new Set(), moved: false, paren: state.paren ?? 0 });
-  else if (top?.kind === 'if' && /^(?:else|elif)$/u.test(first)) {
-    for (const [k, v] of state.vars) { const o = top.at.vars.get(k); if (!o || o.value !== v.value || o.why !== v.why) top.changed.add(k); }
-    top.moved ||= state.base !== top.at.base;
-    Object.assign(state, { base: top.at.base, why: top.at.why, vars: copyVars(top.at.vars) });
-  } else if (top && CLOSES.test(first)) {
+  if (OPENS.test(first)) {
+    state.blocks.push({ kind: first, at: snapshot({ ...state, blocks: [] }), changed: new Set(), moved: false, paren: state.paren ?? 0 });
+    if (first === 'case') state.arm = true;
+  } else if (top?.kind === 'if' && /^(?:else|elif)$/u.test(first)) branchAgain(state, top);
+  else if (top && CLOSES.test(first)) {
     state.blocks.pop();
     unsure(state, top.at, `is set only on some paths through the command (inside ${top.kind})`, top.changed, top.moved);
   }
-  const maybe = before === '||' || state.blocks.some((b) => b.kind === 'case');
+  const maybe = before === '||';
   return { pipe, maybe };
 }
 // Each command of some shell text, with the subshells around it: visit(p, raw, how, op) gets parens()' view of the
@@ -497,7 +512,27 @@ function eachCommand(shell, state, visit, tail = () => {}) {
   let before = '';
   let ticks = false;
   const inSub = (list) => list.some((o) => o.sub);
-  for (const { text, op } of segmentsAndOps(shell)) {
+  // `case W in a) cd /a;;` is one segment up to the first `;`: its head `case W in` opens the block, and the rest is
+  // the first arm. Until 2026-11-13 the arm was not read: `a)` stood where the command name should be, so a cd in an
+  // arm was not followed and a write after `esac` was named in the folder from before it.
+  const list = segmentsAndOps(shell).flatMap((s) => {
+    const h = blank(s.text).match(/^(\s*\(*\s*(?:(?:do|then|else|!)\s+)*case\s[^]*?\sin)(?=\s+\S)/u);
+    return h ? [{ text: s.text.slice(0, h[1].length), op: ';' }, { text: s.text.slice(h[1].length), op: s.op }] : [s];
+  });
+  for (const seg of list) {
+    const { op } = seg;
+    let { text } = seg;
+    // An arm starts after `case W in` and after each `;;` (which leaves an empty segment): its `pattern)` is taken off,
+    // and it starts again from before the case, as `else` does.
+    const top = state.blocks?.at(-1);
+    if (top?.kind === 'case' && !text.trim()) state.arm = true;
+    else if (top?.kind === 'case' && state.arm && !/^\s*esac\b/u.test(text)) {
+      const pattern = blank(text).match(/^\s*\(?[^()]*\)/u);
+      // A pattern with alternatives (`a|b)`) was split at its `|`: the part before it is pattern, not a command.
+      if (!pattern && op === '|') continue;
+      if (pattern) { branchAgain(state, top); text = text.slice(pattern[0].length); }
+      state.arm = false;
+    }
     const p = parens(text, outer.length);
     const subBefore = ticks || inSub(outer);
     if ((blank(text).match(/(?<!\\)`/gu) ?? []).length % 2) ticks = !ticks;
@@ -541,7 +576,13 @@ function follow(state, ws, { pipe = false, maybe = false } = {}) {
     state.fnDepth = Math.max(0, braces);
     return true;
   }
-  if (state.fns.has(cmd)) { loseAll(`${cmd}, a function this command defines, may change it`); return false; }
+  // The function's body may cd too: where relative paths start is not known after the call either (until 2026-11-13
+  // `f() { cd /z; }; f; echo x > g` named g in the folder from before the call).
+  if (state.fns.has(cmd)) {
+    loseAll(`${cmd}, a function this command defines, may change it`);
+    if (state.base != null) { state.base = null; state.why = { part: cmd, why: `${cmd}, a function this command defines, may cd`, prefix: '' }; }
+    return false;
+  }
   if (/^(?:eval|source|\.)$/u.test(cmd)) { loseAll(`${cmd} may change it`); return false; }
   if (cmd === 'printf') { const v = ws.indexOf('-v'); if (v > 0 && NAME.test(ws[v + 1] ?? '')) lose(ws[v + 1], `printf -v sets ${ws[v + 1]} when it runs`); return false; }
   if (cmd === 'mapfile' || cmd === 'readarray') {
