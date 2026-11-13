@@ -385,9 +385,10 @@ function parens(segment, open) {
   // (( )) is arithmetic, not two subshells.
   if (/^\s*\(\(/u.test(segment)) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 };
   const b = blank(segment);
-  // The ( of a subshell opens after the words that open a loop's or an if's body too: `do (cd h && ...)`, and after
-  // `time` (`time (cd /a; ...)` was not a subshell until 2026-11-13: its cd was lost inside it).
-  let i = b.match(/^\s*(?:(?:do|then|else|!|time(?:\s+-p)?)\s+)*/u)[0].length;
+  // The ( of a subshell opens after the words that open a loop's or an if's body too: `do (cd h && ...)`, after the
+  // words that open its condition (`if (cd /a; ...); then`: its cd was taken past the `)`, and after `until` or `elif`
+  // the `)` stuck to the folder, `/a)/g`), and after `time` (`time (cd /a; ...)` lost its cd inside it), until 2026-11-13.
+  let i = b.match(/^\s*(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)*/u)[0].length;
   const at = i;
   while (i < b.length && (b[i] === '(' || /\s/u.test(b[i]))) i++;
   const lead = (b.slice(at, i).match(/\(/gu) ?? []).length;
@@ -507,8 +508,9 @@ function howItRuns(state, raw, before, after) {
   const pipe = /^\|&?$/u.test(before ?? '') || /^\|&?$/u.test(after ?? '');
   // A body whose { stands on the line after the name (`f()` then `{`) is the function's: follow reads the rest of it
   // as the body (it was read as a { } group that runs where it is written, so its cd moved the folder with no call,
-  // until 2026-11-13). Here, where the { is still on the words.
-  if (state.fnAwait) { state.fnAwait = false; if ((raw[0] ?? '').startsWith('{')) state.fnDepth = 1; }
+  // until 2026-11-13). Here, where the { is still on the words. A blank or comment line between them is no command and
+  // leaves it waiting (it took the wait away, so the body after `f ()`, a comment and `{` ran where it was written).
+  if (state.fnAwait && raw.length) { state.fnAwait = false; if ((raw[0] ?? '').startsWith('{')) state.fnDepth = 1; }
   let ws = raw;
   for (;;) {
     const head = (ws[0] ?? '').replace(/^[({]+/u, '');

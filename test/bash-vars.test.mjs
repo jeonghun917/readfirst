@@ -392,10 +392,22 @@ test('a function written `f ()` or with its { on the next line, and a subshell a
   assert.deepEqual(s('f()\n{\n  cd /a\n}\necho > h'), ['/r/h']);
   assert.deepEqual(s('f ()\n{ cd /a\n}\nf\necho > h'), ['f']);
   assert.deepEqual(s('f()\n{\n  npm test\n}\nf\necho > h'), ['/r/h']);
+  // A comment or blank line between the name and its { leaves the body still to come.
+  assert.deepEqual(s('f ()\n# the body\n{ cd /a\n}\nf; echo > h'), ['f']);
+  assert.deepEqual(s('f ()\n\n# c\n\n{\n cd /a\n}\necho > h'), ['/r/h']);
+  assert.deepEqual(s('f() { echo; }\n\n{ cd /b; }\necho > h'), ['/b/h']);
   // time ( ... ) is a subshell: its cd moves what is inside it, and what follows its ) starts from before it.
   assert.deepEqual(s('time (cd /a; echo x > f); echo y > g'), ['/a/f', '/r/g']);
   assert.deepEqual(s('time -p ( cd /a; echo x > f ); echo y > g'), ['/a/f', '/r/g']);
   assert.deepEqual(s('time ( echo x > f ); echo y > g'), ['/r/f', '/r/g']);
+  // So is a ( ) right after if, elif, while or until: its cd ends at its ) (it went on past it, and after until or elif
+  // the ) stuck to the folder: /a)/g).
+  assert.deepEqual(s('if (cd /a; echo x > f); then echo y > g; fi'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('while (cd /a; echo x > f); do echo y > g; done'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('until (cd /a); do echo y > g; done'), ['/r/g']);
+  assert.deepEqual(s('if false; then :; elif (cd /a); then echo y > g; fi'), ['/r/g']);
+  assert.deepEqual(s('if time (cd /a; echo x > f); then echo y > g; fi'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('if cd /a; then echo y > g; fi'), ['/a/g']);
 });
 
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
