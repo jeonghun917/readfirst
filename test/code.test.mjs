@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { Worker } from 'node:worker_threads';
 import { closeOf, countSteps, declarations, lex, scopeOf, scriptBlocks, tokens } from '../src/code.mjs';
 
 const L = (...a) => a.join('\n');
@@ -351,19 +352,47 @@ test('params: linear steps in the length of a parameter list, its nesting and it
   }
 });
 
-test('params: linear time in the length of a parameter list, its nesting and its file', () => {
-  for (const [name, make] of Object.entries(LONG_SHAPES)) {
-    // The fastest of five runs at each size: one run varies by 3 times on a shared machine. 16 times the text may take
-    // at most 32 times as long (quadratic would be 256); measured 11 to 29 times alone, and once 34 under npm test's
-    // other files, so the pair is measured up to three times and one under 32 passes (quadratic fails all three).
+// The time, for the work the steps do not count (a builtin's: a slice per token was 600 times slower at 16 times the
+// text, with the same steps). Each size is read once first (the first read compiles the reader), then the fastest of
+// five runs is taken: one run varies by 3 times on a shared machine. 16 times the text may take at most 32 times as
+// long (quadratic would be 256); measured 11 to 29 times alone, and once 34 under npm test's other files, so the pair
+// is measured up to three times and one under 32 passes (quadratic fails all three). It runs in a worker stopped after
+// 60 seconds: a test's timeout does not stop synchronous code (a test busy for 8 seconds passed a 1 second timeout),
+// and a reader that rescans a parameter list for each parameter was still reading after 240 seconds.
+const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads');
+(async () => {
+  const { declarations } = await import(${JSON.stringify(new URL('../src/code.mjs', import.meta.url).href)});
+  const shapes = { ${Object.entries(shapes).map(([name, make]) => `${JSON.stringify(name)}: ${make}`).join(',\n')} };
+  for (const [name, make] of Object.entries(shapes)) {
     const time = (n) => {
       const text = make(n);
+      declarations('a.ts', text, { params: true });
       let best = Infinity;
       for (let k = 0; k < 5; k++) { const t = process.hrtime.bigint(); declarations('a.ts', text, { params: true }); best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6); }
+      parentPort.postMessage({ name, n, ms: best });
       return best;
     };
     const tries = [];
     for (let k = 0; k < 3 && !tries.some(([s, b]) => b < s * 32); k++) tries.push([time(20_000), time(320_000)]);
-    assert.ok(tries.some(([s, b]) => b < s * 32), `${name}: ${tries.map(([s, b]) => `${s.toFixed(1)}ms at 20,000, ${b.toFixed(1)}ms at 320,000`).join('; ')}`);
+    parentPort.postMessage({ name, tries });
   }
+  parentPort.postMessage(null);
+})();`;
+
+test('params: linear time in the length of a parameter list, its nesting and its file', async () => {
+  const done = [];
+  const times = []; // each size as it is measured, for a worker stopped before a pair is done
+  const said = () => done.map(({ name, tries }) => `${name}: ${tries.map(([s, b]) => `${s.toFixed(1)}ms at 20,000, ${b.toFixed(1)}ms at 320,000`).join('; ')}`).join('\n');
+  const worker = new Worker(TIMED(LONG_SHAPES), { eval: true });
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`not done in 60 seconds; measured: ${times.map(({ name, n, ms }) => `${name} ${ms.toFixed(1)}ms at ${n}`).join(', ')}`)), 60_000);
+      worker.on('message', (m) => { if (!m) { clearTimeout(timer); resolve(); } else if (m.tries) done.push(m); else times.push(m); });
+      worker.on('error', (e) => { clearTimeout(timer); reject(e); });
+    });
+  } finally {
+    await worker.terminate();
+  }
+  assert.equal(done.length, Object.keys(LONG_SHAPES).length);
+  assert.ok(done.every(({ tries }) => tries.some(([s, b]) => b < s * 32)), said());
 });
