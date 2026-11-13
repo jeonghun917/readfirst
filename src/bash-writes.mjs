@@ -447,7 +447,7 @@ const LOOPS = /^(?:while|until|for|select)$/u;
 // in the loop, which starts each turn from the same place.
 const turning = (state) => Boolean(state.blocks?.some((b) => LOOPS.test(b.kind) && (state.paren ?? 0) <= b.paren));
 const copyVars = (vars) => new Map([...vars].map(([k, v]) => [k, { ...v }]));
-const snapshot = (state) => ({ base: state.base, why: state.why, vars: copyVars(state.vars), fns: new Set(state.fns ?? []), fnDepth: state.fnDepth ?? 0, blocks: (state.blocks ?? []).map((b) => ({ ...b, changed: new Set(b.changed) })), chain: state.chain ?? null, dirs: [...(state.dirs ?? [])], cdText: state.cdText });
+const snapshot = (state) => ({ base: state.base, why: state.why, vars: copyVars(state.vars), fns: new Set(state.fns ?? []), fnInfo: new Map(state.fnInfo ?? []), fnBody: state.fnBody, fnDepth: state.fnDepth ?? 0, blocks: (state.blocks ?? []).map((b) => ({ ...b, changed: new Set(b.changed) })), chain: state.chain ?? null, dirs: [...(state.dirs ?? [])], cdText: state.cdText });
 // Makes what changed since `from` (the state before a part of the command that may not run) not known: each variable
 // whose value differs, or whose name is in `changed` (changed by an earlier branch), and the folder when it moved.
 function unsure(state, from, why, changed = new Set(), moved = false) {
@@ -464,10 +464,36 @@ function unsure(state, from, why, changed = new Set(), moved = false) {
 }
 // Another branch of a block starts (`else`, `elif`, a case arm): it runs instead of the branch before it, so it starts
 // from what was there before the block, and what that branch changed is kept in `changed` for the block's end.
-function branchAgain(state, top) {
+// fall: the arm before ended with `;&` or `;;&`, so this one may also run after it: it starts from either, and what
+// differs between the two is not known (until 2026-11-13 it started from before the case alone).
+function branchAgain(state, top, fall = false) {
   for (const [k, v] of state.vars) { const o = top.at.vars.get(k); if (!o || o.value !== v.value || o.why !== v.why) top.changed.add(k); }
   top.moved ||= state.base !== top.at.base;
-  Object.assign(state, { base: top.at.base, why: top.at.why, vars: copyVars(top.at.vars) });
+  if (fall) unsure(state, top.at, 'is set only on some paths through the command (inside case)');
+  else Object.assign(state, { base: top.at.base, why: top.at.why, vars: copyVars(top.at.vars) });
+}
+// The head of a case (`case W in`) at the start of some shell text, and the words before it that open other things
+// (`{`, `(`, `if`, `while`, `do`, `time` ...: `if case $v in a) cd /a;; esac; then`), as segments for eachCommand
+// to read in turn (the words before, if any; the head; the rest, with the segment's operator `op`), or null. Until
+// 2026-11-13 a head after `{`, `if` or a wrapper, or a nested one after an arm's pattern (`a) case $y in b) cd /b`), was
+// not split off, so its arms were read as plain commands.
+function caseHead(text, op) {
+  const h = blank(text).match(/^(\s*(?:[({]\s*|(?:do|then|else|elif|if|while|until|!|time|command|builtin|sudo|nohup)\s+)*)(case\s[^]*?\sin)(?=\s+\S)/u);
+  if (!h) return null;
+  const head = [{ text: text.slice(h[1].length, h[0].length), op: ';' }, { text: text.slice(h[0].length), op }];
+  return h[1].trim() ? [{ text: text.slice(0, h[1].length), op: '' }, ...head] : head;
+}
+// Whether calling a function the command defines may move where relative paths start: its body runs a cd-like command
+// (cd, pushd, popd, source, `.`, eval, exec, builtin, command), a command named by a variable, or a function that
+// may; or it was defined twice, or is not known. Until 2026-11-13 every call made the folder not known, though most
+// functions only run commands (`run() { npm test; }; run; echo > log`).
+const CD_LIKE = /^(?:cd|pushd|popd|source|\.|eval|exec|builtin|command)$/u;
+function mayCd(state, name, seen = new Set()) {
+  const info = state.fnInfo?.get(name);
+  if (!info || info.cd) return true;
+  seen.add(name);
+  // A command named by a variable (`"$@"`, `$cmd`) is kept with its unknown part between \0s (shellWord): it may be cd.
+  return [...info.cmds].some((c) => CD_LIKE.test(c) || c.startsWith('$') || c.includes(HOLE) || (state.fns?.has(c) && !seen.has(c) && mayCd(state, c, seen)));
 }
 // How a segment runs, from its words before opening() and the operators around it: { pipe, maybe }. It also keeps the
 // blocks the segment opens and closes (state.blocks: what was there before each, to make what it changed not known
@@ -489,8 +515,8 @@ function howItRuns(state, raw, before, after) {
   state.blocks ??= [];
   const top = state.blocks.at(-1);
   if (OPENS.test(first)) {
-    state.blocks.push({ kind: first, at: snapshot({ ...state, blocks: [] }), changed: new Set(), moved: false, paren: state.paren ?? 0 });
-    if (first === 'case') state.arm = true;
+    // arm: a case waits for its next arm's pattern (each case its own: one nested in an arm has arms of its own).
+    state.blocks.push({ kind: first, at: snapshot({ ...state, blocks: [] }), changed: new Set(), moved: false, paren: state.paren ?? 0, arm: first === 'case', fall: false });
   } else if (top?.kind === 'if' && /^(?:else|elif)$/u.test(first)) branchAgain(state, top);
   else if (top && CLOSES.test(first)) {
     state.blocks.pop();
@@ -514,24 +540,30 @@ function eachCommand(shell, state, visit, tail = () => {}) {
   const inSub = (list) => list.some((o) => o.sub);
   // `case W in a) cd /a;;` is one segment up to the first `;`: its head `case W in` opens the block, and the rest is
   // the first arm. Until 2026-11-13 the arm was not read: `a)` stood where the command name should be, so a cd in an
-  // arm was not followed and a write after `esac` was named in the folder from before it.
-  const list = segmentsAndOps(shell).flatMap((s) => {
-    const h = blank(s.text).match(/^(\s*\(*\s*(?:(?:do|then|else|!)\s+)*case\s[^]*?\sin)(?=\s+\S)/u);
-    return h ? [{ text: s.text.slice(0, h[1].length), op: ';' }, { text: s.text.slice(h[1].length), op: s.op }] : [s];
-  });
-  for (const seg of list) {
+  // arm was not followed and a write after `esac` was named in the folder from before it. The words before a head
+  // (`{`, `if`, `time`: caseHead) are read on their own first, so each opens what it opens.
+  const queue = segmentsAndOps(shell).flatMap((s) => caseHead(s.text, s.op) ?? [s]);
+  while (queue.length) {
+    const seg = queue.shift();
     const { op } = seg;
     let { text } = seg;
     // An arm starts after `case W in` and after each `;;` (which leaves an empty segment): its `pattern)` is taken off,
-    // and it starts again from before the case, as `else` does.
+    // and it starts again from before the case, as `else` does; after `;&` or `;;&` (an empty segment before a single
+    // &) it may also run after the arm before it. What follows a pattern may itself begin a case (`a) case $y in b)`).
     const top = state.blocks?.at(-1);
-    if (top?.kind === 'case' && !text.trim()) state.arm = true;
-    else if (top?.kind === 'case' && state.arm && !/^\s*esac\b/u.test(text)) {
+    if (top?.kind === 'case' && !text.trim()) { top.arm = true; if (op === '&') top.fall = true; continue; }
+    if (top?.kind === 'case' && top.arm && !/^\s*esac\b/u.test(text)) {
       const pattern = blank(text).match(/^\s*\(?[^()]*\)/u);
       // A pattern with alternatives (`a|b)`) was split at its `|`: the part before it is pattern, not a command.
       if (!pattern && op === '|') continue;
-      if (pattern) { branchAgain(state, top); text = text.slice(pattern[0].length); }
-      state.arm = false;
+      top.arm = false;
+      if (pattern) {
+        branchAgain(state, top, top.fall);
+        top.fall = false;
+        const nested = caseHead(text.slice(pattern[0].length), op);
+        if (nested) { queue.unshift(...nested); continue; }
+        text = text.slice(pattern[0].length);
+      }
     }
     const p = parens(text, outer.length);
     const subBefore = ticks || inSub(outer);
@@ -559,31 +591,55 @@ function follow(state, ws, { pipe = false, maybe = false } = {}) {
   // A pipeline's stage runs in a subshell: what it sets or where it goes does not stay.
   if (pipe) return follow(snapshot(state), ws);
   state.fns ??= new Set();
+  state.fnInfo ??= new Map();
+  // time, command and builtin run what follows in this shell: `command cd /a`, `builtin cd /a` and `time { cd /a; }`
+  // move it (until 2026-11-13 they were not read as a cd). `command -v cd` only asks where cd is.
+  let at = 0;
+  while (/^(?:time|command|builtin)$/u.test(unquote(ws[at] ?? ''))) { at++; while (/^-p$/u.test(ws[at] ?? '')) at++; }
+  if (at) {
+    if (/^-[vV]$/u.test(ws[at] ?? '')) return false;
+    const group = (ws[at] ?? '').replace(/^\{/u, '');
+    ws = (ws[at] ?? '').startsWith('{') ? (group ? [group, ...ws.slice(at + 1)] : ws.slice(at + 1)) : ws.slice(at);
+  }
   // An assignment has no command name: `E=/s/eval` is not `eval` (it lost every variable for a while on 2026-11-13).
   const cmd = ASSIGN.test(ws[0] ?? '') ? '' : unquote(ws[0] ?? '').split('/').pop();
   const lose = (name, why) => state.vars.set(name, { value: null, why, part: `$${name}`, exported: Boolean(state.vars.get(name)?.exported) });
   const loseAll = (why) => { for (const k of state.vars.keys()) lose(k, why); };
-  // A function's { } body runs when it is called, not where it is written: skipped here; a call makes every variable
-  // not known.
+  // A function's { } body runs when it is called, not where it is written: skipped here, and the command each line of
+  // it starts with is kept (state.fnBody), for mayCd at the call; a call makes every variable not known.
   if (state.fnDepth > 0) {
+    const first = unquote(unwrap(opening(ws))[0] ?? '');
+    if (first && !first.startsWith('}')) state.fnBody?.cmds.add(first);
     for (const w of ws) { if (w === '{' || w.endsWith('{')) state.fnDepth++; if (w === '}' || w.startsWith('}')) state.fnDepth--; }
     return true;
   }
   const def = ws[0] === 'function' && NAME.test((ws[1] ?? '').replace(/\(\)$/u, '')) ? ws[1].replace(/\(\)$/u, '') : (ws[0] ?? '').match(/^([A-Za-z_][\w-]*)\(\)/u)?.[1];
   if (def) {
+    // A name defined twice is not known: which body runs depends on where the call is.
+    state.fnBody = { cd: state.fns.has(def), cmds: new Set() };
+    state.fnInfo.set(def, state.fnBody);
     state.fns.add(def);
+    // The body's first command may be on the same line as the name: `f() { cd /z; }`.
+    const open = ws.findIndex((w) => w === '{' || w.endsWith('{') || w === '(' || w.endsWith('('));
+    const first = open >= 0 ? unquote(ws[open + 1] ?? '') : '';
+    if (first && !first.startsWith('}')) state.fnBody.cmds.add(first);
     const braces = ws.reduce((d, w) => d + (w === '{' || w.endsWith('{') ? 1 : 0) - (w === '}' || w.startsWith('}') ? 1 : 0), 0);
     state.fnDepth = Math.max(0, braces);
     return true;
   }
-  // The function's body may cd too: where relative paths start is not known after the call either (until 2026-11-13
-  // `f() { cd /z; }; f; echo x > g` named g in the folder from before the call).
+  // The function's body may cd too (mayCd): then where relative paths start is not known after the call either (until
+  // 2026-11-13 `f() { cd /z; }; f; echo x > g` named g in the folder from before the call).
   if (state.fns.has(cmd)) {
     loseAll(`${cmd}, a function this command defines, may change it`);
-    if (state.base != null) { state.base = null; state.why = { part: cmd, why: `${cmd}, a function this command defines, may cd`, prefix: '' }; }
+    if (state.base != null && mayCd(state, cmd)) { state.base = null; state.why = { part: cmd, why: `${cmd}, a function this command defines, may cd`, prefix: '' }; }
     return false;
   }
-  if (/^(?:eval|source|\.)$/u.test(cmd)) { loseAll(`${cmd} may change it`); return false; }
+  // The file source and `.` read may cd, as may what eval runs.
+  if (/^(?:eval|source|\.)$/u.test(cmd)) {
+    loseAll(`${cmd} may change it`);
+    if (state.base != null) { state.base = null; state.why = { part: [cmd, ...ws.slice(1, 2)].join(' '), why: `${cmd} may cd`, prefix: '' }; }
+    return false;
+  }
   if (cmd === 'printf') { const v = ws.indexOf('-v'); if (v > 0 && NAME.test(ws[v + 1] ?? '')) lose(ws[v + 1], `printf -v sets ${ws[v + 1]} when it runs`); return false; }
   if (cmd === 'mapfile' || cmd === 'readarray') {
     const names = withoutRedirects(ws.slice(1)).filter((w, k, all) => NAME.test(w) && !/^-[dnOsuCc]$/u.test(all[k - 1] ?? ''));
@@ -687,7 +743,7 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   // $PWD where it starts.
   // A fresh start has no blocks open and no functions (Object.assign from a here-document's walk once carried its
   // `for` into the walk of the whole command, 2026-11-13).
-  const start = () => { const v = copyVars(vars); if (cwd != null) v.set('PWD', { value: cwd, exported: true }); return { base: cwd, why: cwd == null ? why : null, vars: v, fns: new Set(), fnDepth: 0, blocks: [], chain: null, dirs: [], paren: 0 }; };
+  const start = () => { const v = copyVars(vars); if (cwd != null) v.set('PWD', { value: cwd, exported: true }); return { base: cwd, why: cwd == null ? why : null, vars: v, fns: new Set(), fnInfo: new Map(), fnDepth: 0, blocks: [], chain: null, dirs: [], paren: 0 }; };
   const state = start();
   const here = (w) => { try { return isAbsolute(w) ? existsSync(w) : state.base != null && existsSync(resolve(state.base, w)); } catch { return false; } };
   // A glob with one * in its last part (dir/*.yml), relative to where the command runs; anything wider is not expanded.
