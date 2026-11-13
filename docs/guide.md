@@ -194,6 +194,10 @@ Each rule and risk in the notes carries a fixed id (`rule:<id>`, or `risk:<group
 edit about to be made does to it: touched (and by which name or line), not touched, or not judged (it names nothing
 readfirst can find in the code; a Bash command writes the file and there is no edit to compare; the edit changes too
 much of the file to place within the hook's budget; or judging the edit failed, with the error).
+In a Bash command, the variables the command sets for itself are followed (`S=/a; cd $S && sed -i ... f` writes
+/a/f). A write whose place the command cannot tell before it runs (a variable from outside it such as `$TMPDIR`, a
+`$( )`, a loop variable) is named with the part that is not known; the gate refuses that call once and lets it through
+when it is made again.
 The gate also asks for `readfirst find` before new code: an edit that declares a function or type its file did not
 have, in a repository with a map, before `readfirst find` has run there in the session, is refused once with the new
 names and the command to run. Made again, it goes through, and the Stop hook counts it.

@@ -33,7 +33,7 @@ import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom, unshownRisks } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
-import { bashReads, bashWrites } from './bash-writes.mjs';
+import { bashReads, shellWrites } from './bash-writes.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { definitions, find, findText, meets, words } from './find.mjs';
@@ -508,8 +508,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const cwd = event.cwd ?? process.cwd();
     const tool = event.tool_name ?? '';
     const file = event.tool_input?.file_path;
+    // A variable the command does not set has the value Claude Code's environment gives it, which the hook shares:
+    // $TMPDIR and $HOME are known paths, not unknown ones.
+    // Not OLDPWD: the hook's own is not the folder the Bash shell was in before (review of 2026-11-13); the command's cd
+    // sets it, and before that it is not known.
+    const env = new Map(Object.entries(process.env).filter(([k]) => k !== 'OLDPWD').map(([k, v]) => [k, { value: v, exported: true }]));
+    const written = tool === 'Bash' ? shellWrites(event.tool_input?.command, cwd, { vars: env }) : null;
     const targets = [...new Set((/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
-      : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : []).map(physical))];
+      : written ? written.files : []).map(physical))];
     const seen = readSeen(stateDir, event.session_id) ?? {};
     const before = { ...seen };
     const save = () => { try { addSeen(stateDir, event.session_id, before, seen); return true; } catch { return false; } };
@@ -532,7 +538,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     if (tool === 'Bash') {
       const known = new Map();
       const branches = new Map();
-      for (const r of bashReads(event.tool_input?.command, cwd)) {
+      for (const r of bashReads(event.tool_input?.command, cwd, { vars: env })) {
         if (!r.seen) continue;
         for (const abs of r.files.map(physical)) {
           const root = rootOf(abs, known);
@@ -540,12 +546,34 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
         }
       }
     }
+    // Writes whose place the command cannot tell before it runs (a variable from outside it, a $( ), a loop variable;
+    // shellWrites): named, never dropped (until 2026-11-13 they were left out without a word), unless they are known to
+    // be outside every repository (couldLandIn). With --gate the call is refused once with them
+    // (`unknown:<the command's hash>`) and goes through when made again. Each repository they could land in gets the
+    // session's start mark, so the Stop hook checks the files that change there.
+    const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos, Date.now() + budget / 5) : [];
+    const unknownKey = unplaced.length ? `unknown:${createHash('sha1').update(String(event.tool_input.command)).digest('hex').slice(0, 12)}` : null;
+    const askUnknown = Boolean(unknownKey) && !before[unknownKey];
+    if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) if (!seen[`start:${r}`]) seen[`start:${r}`] = now; }
+    // Said once per command: made again, it goes through without the line.
+    // Five repositories are named for a write and the rest counted with where they are (below its folder, or the ones
+    // this session used): hundreds made a line no one reads (2026-11-13). All of them get the start mark above.
+    const landIn = (u) => {
+      const where = u.prefix ? `below ${u.prefix}` : 'that this session used';
+      // cut: five named, the rest counted with where they are (`where`)
+      const some = u.roots.length > 5 ? `${u.roots.slice(0, 5).join(', ')} and ${u.roots.length - 5} more ${where}` : u.roots.join(', ');
+      if (u.looked) return `could be in a repository below ${u.prefix}${u.roots.length ? ` (${some} and more: readfirst stopped looking at ${u.looked})` : ` (readfirst stopped looking at ${u.looked})`}`;
+      return u.roots.length ? `could be in ${some}` : 'could be in any repository: none is known to this session';
+    };
+    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${u.word}\` (${u.part}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
-      Object.assign(seen, reads);
-      save();
-      return null;
+      if (!(gate && askUnknown)) Object.assign(seen, reads);
+      const saved = save();
+      if (!unknownLine) return null;
+      if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: unknownLine } });
+      return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: unknownLine } });
     }
     const deadline = Date.now() + budget;
     const edited = new Map(targets.flatMap((abs) => { const e = editTexts(tool, event.tool_input, abs); return e ? [[abs, e]] : []; }));
@@ -562,17 +590,17 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const askFind = fresh.length > 0 && !askedAt;
     const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
-    if (gate && (notes.length || askFind)) seen[`denied:${sig}`] = now;
-    if (!(gate && (notes.length || late.length || askFind))) Object.assign(seen, reads);
+    if (gate && (notes.length || askFind || askUnknown)) seen[`denied:${sig}`] = now;
+    if (!(gate && (notes.length || late.length || askFind || askUnknown))) Object.assign(seen, reads);
     const saved = save();
     const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
-    if (!notes.length && !waiting.length && !lateLine && !findLine) return null;
+    if (!notes.length && !waiting.length && !lateLine && !findLine && !unknownLine) return null;
     // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes and,
-    // once per call, for new code written before `readfirst find`.
-    const text = [...notes, ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...waiting].join('\n\n');
+    // once per call, for new code written before `readfirst find` and for writes it cannot place.
+    const text = [...notes, ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...(unknownLine ? [unknownLine] : []), ...waiting].join('\n\n');
     // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
     // the notes as context instead.
-    if (gate && (notes.length || lateLine || askFind) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    if (gate && (notes.length || lateLine || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch {
     return null;
@@ -597,6 +625,78 @@ function rootOf(abs, known = new Map()) {
   while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
   if (!known.has(dir)) known.set(dir, repoOf(dir));
   return known.get(dir);
+}
+
+// The repositories each write a Bash command cannot place could land in (shellWrites' unknown), whatever folder the
+// session runs in. With no known start (`prefix` ''), any repository the session knows (the call folder's and those of
+// the files it marked), or any at all when it knows none. With a prefix: the repository holding that folder; else the
+// repositories below it, which a partly known path (`$S/w-$rev/f`) can reach: those the session knows, those the
+// command itself makes (`made`: git worktree add, clone, init) and those found on disk (reposUnder). A new path mktemp
+// makes (`fresh`) has nothing below it: only the repository holding its folder counts. A write with none is outside
+// every repository and dropped: a temporary folder, a scratch folder with no checkout in it. Until 2026-11-13 the
+// repository was the call's folder alone, so a session started above its repositories (`cd $R/repo && echo > src/f`)
+// was never asked, and every write to $TMPDIR or a mktemp folder was.
+// A part not known inside one folder name (`within`: `/tmp/zz-$r/f`) narrows that to the folders whose name fits its
+// known letters (/tmp/zz-*) and what is below them: it walked all of /tmp, 12 s, and named every repository there
+// (2026-11-13). The walks share 2000 folders and the time until `until`.
+// Returns [{ ...unknown, roots }], roots empty when no repository is known at all (it could be any).
+function couldLandIn(unknown, seen, cwd, made = [], until = Infinity) {
+  const walk = { left: 2000, until };
+  const known = new Map();
+  const roots = new Set();
+  const here = repoOf(cwd);
+  if (here) roots.add(here);
+  for (const k of Object.keys(seen)) {
+    const m = k.match(/^(?:start:(.+)|touched:(.+)|(?:shown|read):[^:]*:(.+)|(\/.+))$/su);
+    if (!m) continue;
+    if (m[1]) { roots.add(m[1]); continue; }
+    const root = rootOf(m[2] ?? m[3] ?? m[4], known);
+    if (root) roots.add(root);
+  }
+  const out = [];
+  for (const u of unknown) {
+    if (!u.prefix) { out.push({ ...u, roots: [...roots] }); continue; }
+    const dir = u.prefix.endsWith('/') ? u.prefix : `${u.prefix}/`;
+    const own = rootOf(join(dir, 'x'), known);
+    if (own) { out.push({ ...u, roots: [own] }); continue; }
+    // A new mktemp path, or a file whose name alone is not known (`$S/out-$k.txt`), is in that folder: nothing below.
+    if (u.fresh || u.direct) continue;
+    // The first folder name below dir a repository is in ('' for dir itself: a checkout the command makes whose own name
+    // is not known), and whether it fits `within`.
+    const w = u.within;
+    const fits = (name) => !w || name === '' || (name.length >= w.pre.length + w.post.length && name.startsWith(w.pre) && name.endsWith(w.post));
+    const under = (r) => `${r}/`.startsWith(dir) && fits(`${r}/`.slice(dir.length).split('/')[0]);
+    let starts = [dir];
+    if (w) { try { starts = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && fits(e.name)).map((e) => join(dir, e.name)); } catch { starts = []; } }
+    const disk = { found: [], cut: null };
+    for (const s of starts) { const r = reposUnder(s, walk); disk.found.push(...r.found); if (r.cut) { disk.cut = r.cut; break; } }
+    const where = [...new Set([...[...roots].filter(under), ...made.filter(under), ...disk.found])];
+    if (where.length || disk.cut) out.push({ ...u, roots: where, ...(disk.cut ? { looked: disk.cut } : {}) });
+  }
+  return out;
+}
+
+// The checkouts (a folder with a .git in it) in a folder and below it, five deep, from a walk of at most `walk.left`
+// folders (shared by the walks of one call) and until `walk.until`; node_modules and .git are not entered. cut: the
+// folder the walk stopped in when it reached either, so the caller counts a repository as possible there rather than
+// none.
+function reposUnder(dir, walk = { left: 2000, until: Infinity }) {
+  const found = [];
+  // The root stays `/`: stripped to '' it could not be read, and a write under `/$D` was dropped without a word (review
+  // of 2026-11-13).
+  const queue = [[dir === '/' ? '/' : dir.replace(/\/$/u, ''), 0]];
+  while (queue.length) {
+    const [d, depth] = queue.shift();
+    // cut: the walk stops after `walk.left` folders or at `walk.until`; `cut` names where, and couldLandIn then keeps
+    // the write as possible
+    if (--walk.left < 0 || Date.now() > walk.until) return { found, cut: d };
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    if (entries.some((e) => e.name === '.git')) { found.push(d); continue; }
+    if (depth >= 5) continue;
+    for (const e of entries) if (e.isDirectory() && e.name !== 'node_modules') queue.push([join(d, e.name), depth + 1]);
+  }
+  return { found, cut: null };
 }
 
 // Once per session for each repository edited: map edits waiting a week or ten merges on its upkeep branch
@@ -752,8 +852,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
