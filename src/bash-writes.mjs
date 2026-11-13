@@ -660,15 +660,18 @@ function follow(state, ws, { pipe = false, maybe = false, body = false } = {}) {
   // time, command and builtin run what follows in this shell: `command cd /a`, `builtin cd /a` and `time { cd /a; }`
   // move it (until 2026-11-13 they were not read as a cd). `command -v cd` only asks where cd is.
   // A { } group or a ( ) subshell after them: what is inside is the command (parens keeps the subshell's folder), and
-  // it may begin with them again: `time (time (cd /a; ...))` (only the first was taken off until 2026-11-13).
-  for (let wrapped = false; ;) {
+  // it may begin with them again: `time (time (cd /a; ...))` (only the first was taken off until 2026-11-13). One at a
+  // time, as parens counts them: not the ( of (( )), which is arithmetic (`time ((cd a))` is no cd), and not a ( after
+  // a {, which parens does not open (`time { time (cd a); }` named a)/h for a while on 2026-11-13).
+  for (let wrapped = false, grouped = false; ;) {
     if (/^(?:time|command|builtin)$/u.test(unquote(ws[0] ?? ''))) {
       wrapped = true;
       ws = ws.slice(1);
       while (/^-p$/u.test(ws[0] ?? '')) ws = ws.slice(1);
       if (/^-[vV]$/u.test(ws[0] ?? '')) return false;
-    } else if (wrapped && /^[{(]/u.test(ws[0] ?? '')) {
-      const group = ws[0].replace(/^[{(]+/u, '');
+    } else if (wrapped && (/^\{/u.test(ws[0] ?? '') || (!grouped && /^\((?!\()/u.test(ws[0] ?? '')))) {
+      grouped ||= ws[0].startsWith('{');
+      const group = ws[0].slice(1);
       ws = group ? [group, ...ws.slice(1)] : ws.slice(1);
     } else break;
   }

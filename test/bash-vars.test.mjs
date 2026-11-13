@@ -456,6 +456,11 @@ test('a { or } that is an argument, `f ( )`, and time ( inside time (', () => {
   assert.deepEqual(s('( (cd /a); echo x > f ); echo y > g'), ['/r/f', '/r/g']);
   assert.deepEqual(s('( ((x)) && cd /a; echo x > f ); echo y > g'), ['/r/g', 'cd /a']);
   assert.deepEqual(s('if ((x)); then cd /a; fi; echo > f'), ['cd /a']);
+  // After time, (( )) is arithmetic and a ( inside a { } group is that group's own subshell: neither cd moves the
+  // folder after it (taking every ( off named a))/h and a)/h).
+  assert.deepEqual(s('time ((cd a)); echo > h'), ['/r/h']);
+  assert.deepEqual(s('time { time (cd a); }; echo > h'), ['/r/h']);
+  assert.deepEqual(s('time { time { cd a; }; }; echo > h'), ['/r/a/h']);
 });
 
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
