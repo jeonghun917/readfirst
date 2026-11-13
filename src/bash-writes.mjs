@@ -931,8 +931,12 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   // >&, with a number or - after it (`2>&1`, `>&2`, `>&-`), copies or closes a descriptor; with a word after it and no
   // number before it (`>&log`) it writes that file, as &> does; after a number (`2>&log`) the shell stops with
   // "ambiguous redirect" and writes nothing.
+  // A segment the shell cannot parse writes nothing: digits glued right after a < or > are a descriptor where a target
+  // was due (`echo a>1>f`, `cat<1>h`: "syntax error near unexpected token `1'"), and a > with no target after it.
+  // (bash then runs none of the command, not only this segment: that is not read here.)
   const redirects = (segment) => {
     const b = blank(segment);
+    const targets = [];
     for (let i = 0; i < b.length; i++) {
       if (b[i] === '\\') { i++; continue; }
       if (b[i] !== '<' && b[i] !== '>' && b[i] !== '&') continue;
@@ -942,14 +946,17 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
       let from = i;
       while (from > 0 && /\d/u.test(b[from - 1])) from--;
       const fd = from < i && (from === 0 || /[\s;&|()<>]/u.test(b[from - 1]));
+      if (fd && from > 0 && /[<>]/u.test(b[from - 1])) return;
       i += op.length - 1;
       if (!op.includes('>')) continue; // <, <<, <<<, <&: read
       // A target ends at the ) that closes a $( ) (`"$(sort a > b.txt)"` writes b.txt) and at the next operator
       // (`>f3>f4`). Quoted parts and escaped characters run on in the word: `"$S"/f.txt`, `a\&b.js`.
       const t = segment.slice(i + 1).match(/^\s*((?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|\$\(\((?:[^()]|\([^()]*\))*\)\)|\$\((?:[^()]|\([^()]*\))*\)|[^\s;&|)<>'"\\])+)/u);
+      if (!t && !/^\s*[)'"]/u.test(segment.slice(i + 1))) return;
       if (!t || (op === '>&' && (fd || /^(?:\d+|-|\$.*)$/u.test(t[1])))) continue;
-      add(dq(t[1]));
+      targets.push(t[1]);
     }
+    targets.forEach((x) => add(dq(x)));
   };
   // how: { pipe, maybe } from howItRuns.
   const writesIn = (segment, how) => {

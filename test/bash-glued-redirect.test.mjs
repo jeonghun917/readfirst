@@ -4,6 +4,10 @@
 // tokens of their own wherever they stand, from one list that splitting words, finding redirects and dropping them
 // from arguments all use. Each operator is tested glued and spaced, beside look-alikes that only compare or quote.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import { bashReads, bashWrites } from '../src/bash-writes.mjs';
 
@@ -44,9 +48,36 @@ test('a descriptor copied or closed is no file, glued or not', () => {
   assert.deepEqual(writes('echo hi 2>&1 >k'), ['/w/k']);
 });
 
+test('a segment the shell cannot parse writes nothing', () => {
+  // bash 5.2: "syntax error near unexpected token `1'" (digits right after an operator are a descriptor) and `newline'.
+  for (const c of ['echo a>1>f', 'cat<1>h', 'echo a>>1>i', 'echo a>']) assert.deepEqual(writes(c), [], c);
+  // After >& the digits are the descriptor copied, and the next > writes: bash makes f and g.
+  assert.deepEqual(writes('echo a 2>&1>f'), ['/w/f']);
+  assert.deepEqual(writes('echo a>&1>g'), ['/w/g']);
+  assert.deepEqual(writes('echo a >1 2>k'), ['/w/1', '/w/k'], 'spaced, 1 is a target');
+});
+
 test('look-alikes that only compare, quote or read write nothing', () => {
   for (const c of ['[[ a>b ]]', '[[ a > b ]]', 'if [[ a>b ]]; then :; fi', 'echo $((a>b))', 'echo $((a > b))', "echo 'a>b'", 'echo "a>b"', 'echo a\\>b', 'cat<in', 'cat <in', 'cat<<<x', 'diff <(sort a) <(sort b)', 'node -e "if(a>b)x()"', 'cat <<EOF\nx>y\nEOF']) {
     assert.deepEqual(writes(c), [], c);
+  }
+});
+
+// Every command above that bash can run on its own, run by bash in an empty folder: the files it makes are the files
+// readfirst names, no more and no fewer.
+const AGAINST_BASH = [
+  'echo hi>f.txt', 'echo hi > f.txt', 'echo hi>>f.txt', 'echo hi>|f.txt', 'echo hi&>f.txt', 'echo hi&>>f.txt',
+  'echo hi 2>f.txt', 'echo hi>&f.txt', 'echo hi >& f.txt', 'cat<>f.txt', 'echo hi>file', 'ls>out', 'echo>f', 'x=1>f',
+  'echo a2>e', 'echo a=>b; echo a->c', 'echo ->c', 'echo a>f3>f4', 'echo hi>&2', 'echo hi 2>&1', 'echo hi>&-',
+  'echo hi 2>&1echo', 'echo hi 2>&1 >k', 'echo a>1>f', 'echo a>>1>i', 'echo a>', 'echo a 2>&1>f', 'echo a>&1>g',
+  'echo a >1 2>k', '[[ a>b ]]', '[[ a > b ]]', 'if [[ a>b ]]; then :; fi', 'echo $((a>b))', 'echo $((a > b))',
+  "echo 'a>b'", 'echo "a>b"', 'echo a\\>b', 'cat<<<x', 'cat <<EOF\nx>y\nEOF',
+];
+test('against bash: the files each command makes are the files readfirst names', { skip: spawnSync('bash', ['-c', 'true']).status !== 0 && 'no bash here' }, () => {
+  for (const c of AGAINST_BASH) {
+    const dir = mkdtempSync(join(tmpdir(), 'readfirst-glued-'));
+    spawnSync('bash', ['-c', c], { cwd: dir, stdio: 'ignore', timeout: 5000, env: { PATH: process.env.PATH } });
+    assert.deepEqual(bashWrites(c, dir).map((f) => f.slice(dir.length + 1)).sort(), readdirSync(dir).sort(), c);
   }
 });
 
