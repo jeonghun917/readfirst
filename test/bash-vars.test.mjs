@@ -417,6 +417,47 @@ test('a function written `f ()` or with its { on the next line, and a subshell a
   assert.deepEqual(s('if [[ a > b ]]; then echo y > g; fi'), ['/r/g']);
 });
 
+test('a { or } that is an argument, `f ( )`, and time ( inside time (', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => u.part)]; };
+  // { and } open and close a group only where a command starts. `echo {` in a body was counted as one deeper, so the
+  // group after the function was taken for its body and its cd was lost (h was /r/h).
+  assert.deepEqual(s('f ()\n{\n  echo {\n}\n{ cd /b; }\necho > h'), ['/b/h']);
+  assert.deepEqual(s('f() { echo {; }; { cd /b; }; echo > h'), ['/b/h']);
+  assert.deepEqual(s('f() { echo a{b,c} x{; }\ncd /b; echo > h'), ['/b/h']);
+  // The look-alikes: a } that is an argument closes nothing, and one after fi or done closes the body.
+  assert.deepEqual(s('f() {\n  echo }\n  cd /a\n}\necho > h'), ['/r/h']);
+  assert.deepEqual(s('f() { if x; then echo; fi }\ncd /b; echo > h'), ['/b/h']);
+  assert.deepEqual(s('f() { for x in a; do echo; done }\ncd /b; echo > h'), ['/b/h']);
+  // A group inside a body is the body's (its { was taken off before it was counted, so its } ended the body early and
+  // the cd after it ran where it was written: h was /c/h).
+  assert.deepEqual(s('f() {\n  { echo; }\n  cd /c\n}\necho > h'), ['/r/h']);
+  assert.deepEqual(s('f() {\n  { echo; }\n  cd /c\n}\nf; echo > h'), ['f']);
+  // `f ( )` is a definition as `f ()` is (it was read as a call of f, so the call's cd was lost and h was /r/h).
+  assert.deepEqual(s('f ( ) { cd /a; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('f( ) { cd /a; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('g() { :; }; f ( ) { cd /a; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('f ( ) { echo hi; }; f; echo > h'), ['/r/h']);
+  assert.deepEqual(s('f() { echo hi; }; f ( ); echo > h'), ['/r/h']);
+  // The body's first command is read as any line of it is: `if cd /a` runs cd (`if` was kept as the command, so the
+  // call was taken not to cd and h was /r/h). A ( ) body is a subshell: its cd stays inside.
+  assert.deepEqual(s('f() { if cd /a; then :; fi; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('f() { if true; then :; fi; }; f; echo > h'), ['/r/h']);
+  assert.deepEqual(s('f() (cd /a); f; echo > h'), ['/r/h']);
+  // time ( inside time ( is a subshell too: its cd was not followed (f was /r/f).
+  assert.deepEqual(s('time (time (cd /a; echo x > f)); echo y > g'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('time ( time ( cd /a; echo x > f ) ); echo y > g'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('time -p (time -p (cd /a; echo x > f)); echo y > g'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('time (time cd /a; echo x > f); echo y > g'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('time { time { cd /a; }; }; echo y > g'), ['/a/g']);
+  // The look-alikes: one time ( keeps working, a ( ) inside one is still its own, and (( )) is still arithmetic.
+  assert.deepEqual(s('time (cd /a; echo x > f); echo y > g'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('time (cd /a); echo y > g'), ['/r/g']);
+  assert.deepEqual(s('time (time (cd /a); echo x > f); echo y > g'), ['/r/f', '/r/g']);
+  assert.deepEqual(s('( (cd /a); echo x > f ); echo y > g'), ['/r/f', '/r/g']);
+  assert.deepEqual(s('( ((x)) && cd /a; echo x > f ); echo y > g'), ['/r/g', 'cd /a']);
+  assert.deepEqual(s('if ((x)); then cd /a; fi; echo > f'), ['cd /a']);
+});
+
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
   n++;
   const root = repo();

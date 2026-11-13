@@ -386,13 +386,19 @@ function parens(segment, open) {
   // The ( of a subshell opens after the words that open a loop's or an if's body too: `do (cd h && ...)`, after the
   // words that open its condition (`if (cd /a; ...); then`: its cd was taken past the `)`, and after `until` or `elif`
   // the `)` stuck to the folder, `/a)/g`), and after `time` (`time (cd /a; ...)` lost its cd inside it), until 2026-11-13.
-  let i = b.match(/^\s*(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)*/u)[0].length;
-  // (( )) is arithmetic, not two subshells, after those words too: `if ((x)); then cd /a; fi` was read as two
-  // subshells whose ) put back the state from before the if, so the if and its cd were taken as sure (2026-11-13).
-  if (b.startsWith('((', i)) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 };
-  const at = i;
-  while (i < b.length && (b[i] === '(' || /\s/u.test(b[i]))) i++;
-  const lead = (b.slice(at, i).match(/\(/gu) ?? []).length;
+  // Those words may stand inside such a ( too: `time (time (cd /a; ...))` opens two (the inner one was taken for a
+  // ( that opens and closes inside the segment, so its cd was not followed, until 2026-11-13).
+  let i = 0;
+  let lead = 0;
+  for (;;) {
+    i += b.slice(i).match(/^\s*(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)*/u)[0].length;
+    // (( )) is arithmetic, not two subshells, after those words too: `if ((x)); then cd /a; fi` was read as two
+    // subshells whose ) put back the state from before the if, so the if and its cd were taken as sure (2026-11-13).
+    if (b.startsWith('((', i)) { if (!lead) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 }; break; }
+    if (b[i] !== '(') break;
+    lead++;
+    i++;
+  }
   let depth = open + lead;
   let local = 0;
   let end = -1;
@@ -498,6 +504,52 @@ function mayCd(state, name, seen = new Set()) {
   // A command named by a variable (`"$@"`, `$cmd`) is kept with its unknown part between \0s (shellWord): it may be cd.
   return [...info.cmds].some((c) => CD_LIKE.test(c) || c.startsWith('$') || c.includes(HOLE) || (state.fns?.has(c) && !seen.has(c) && mayCd(state, c, seen)));
 }
+// A function definition at the start of some words (`f()`, `f ()`, `f ( )`, `f(){`, `function f`, `function f ()`):
+// its name and the words after the `()`, or null. Until 2026-11-13 `f ( )` was not one: `f ( ) { cd /a; }; f` was
+// read as a call of f and a group that runs where it is written.
+function definition(ws) {
+  const named = ws[0] === 'function' ? 1 : 0;
+  const m = (ws[named] ?? '').match(/^([A-Za-z_][\w-]*)(.*)$/su);
+  if (!m) return null;
+  let tail = m[2];
+  let j = named + 1;
+  while (tail.length < 2 && j < ws.length) {
+    const joined = tail + ws[j];
+    if (!'()'.startsWith(joined) && !joined.startsWith('()')) break;
+    tail = joined;
+    j++;
+  }
+  if (!tail.startsWith('()') && !(named && !tail)) return null;
+  return { name: m[1], rest: [tail.slice(2), ...ws.slice(j)].filter(Boolean) };
+}
+// How much some words open { } groups (`depth`: each { less each }), and whether their first word is a `{` (`opens`).
+// `{` and `}` are words of the shell's syntax only where a command could start: first, after `(`, `do`, `then`, `!`,
+// `time`, a function's `()`, a `)` that closes, or the end of a block (`fi }`); anywhere else they are arguments.
+// Until 2026-11-13 every word that began with } or ended with { was counted: `echo {` in a function's body made it
+// one deeper, so the { } group after the function was taken for its body and its cd was not followed.
+function braces(ws) {
+  const q = [...ws];
+  let depth = 0;
+  let at = true;
+  const opens = q[0] === '{';
+  while (q.length) {
+    let w = q.shift();
+    if (at) {
+      w = w.replace(/^\(+/u, '');
+      if (!w) continue;
+      if (w === '{') { depth++; continue; }
+      if (/^\}(?:$|[)<>])/u.test(w)) { depth--; at = /^\}\)*$/u.test(w); continue; }
+      if (KEYWORDS.test(w) || CLOSES.test(w)) continue;
+      if (w === 'time') { while (q[0] === '-p') q.shift(); continue; }
+      const def = definition([w, ...q]);
+      if (def) { q.splice(0, q.length, ...def.rest); continue; }
+    }
+    // After a word that closes more ( than it opens (`/a)`), a command may start; after any other word an argument.
+    const b = blank(w);
+    at = (b.match(/\)/gu) ?? []).length > (b.match(/\(/gu) ?? []).length;
+  }
+  return { depth, opens };
+}
 // How a segment runs, from its words before opening() and the operators around it: { pipe, maybe }. It also keeps the
 // blocks the segment opens and closes (state.blocks: what was there before each, to make what it changed not known
 // at its end; `else`, `elif` and each case arm start again from before the block).
@@ -511,7 +563,12 @@ function howItRuns(state, raw, before, after) {
   // as the body (it was read as a { } group that runs where it is written, so its cd moved the folder with no call,
   // until 2026-11-13). Here, where the { is still on the words. A blank or comment line between them is no command and
   // leaves it waiting (it took the wait away, so the body after `f ()`, a comment and `{` ran where it was written).
-  if (state.fnAwait && raw.length) { state.fnAwait = false; if ((raw[0] ?? '').startsWith('{')) state.fnDepth = 1; }
+  // `body`: the segment is part of a function's body, which follow does not run. The depth is counted here, on the
+  // words before opening() takes a leading { off them (`braces`).
+  let body = (state.fnDepth ?? 0) > 0;
+  const group = raw.length && (body || state.fnAwait) ? braces(raw) : null;
+  if (state.fnAwait && raw.length) { state.fnAwait = false; body = group.opens; }
+  if (body && group) state.fnDepth = Math.max(0, (state.fnDepth ?? 0) + group.depth);
   let ws = raw;
   for (;;) {
     const head = (ws[0] ?? '').replace(/^[({]+/u, '');
@@ -531,7 +588,7 @@ function howItRuns(state, raw, before, after) {
     unsure(state, top.at, `is set only on some paths through the command (inside ${top.kind})`, top.changed, top.moved);
   }
   const maybe = before === '||';
-  return { pipe, maybe };
+  return { pipe, maybe, body };
 }
 // Each command of some shell text, with the subshells around it: visit(p, raw, how, op) gets parens()' view of the
 // segment, its words, how it runs (howItRuns) and the operator after it; tail(text) gets what follows a `)` that closes
@@ -595,20 +652,25 @@ function eachCommand(shell, state, visit, tail = () => {}) {
   return state;
 }
 
-function follow(state, ws, { pipe = false, maybe = false } = {}) {
+function follow(state, ws, { pipe = false, maybe = false, body = false } = {}) {
   // A pipeline's stage runs in a subshell: what it sets or where it goes does not stay.
-  if (pipe) return follow(snapshot(state), ws);
+  if (pipe) return follow(snapshot(state), ws, { body });
   state.fns ??= new Set();
   state.fnInfo ??= new Map();
   // time, command and builtin run what follows in this shell: `command cd /a`, `builtin cd /a` and `time { cd /a; }`
   // move it (until 2026-11-13 they were not read as a cd). `command -v cd` only asks where cd is.
-  let at = 0;
-  while (/^(?:time|command|builtin)$/u.test(unquote(ws[at] ?? ''))) { at++; while (/^-p$/u.test(ws[at] ?? '')) at++; }
-  if (at) {
-    if (/^-[vV]$/u.test(ws[at] ?? '')) return false;
-    // A { } group or a ( ) subshell after them: what is inside is the command (parens keeps the subshell's folder).
-    const group = (ws[at] ?? '').replace(/^[{(]/u, '');
-    ws = /^[{(]/u.test(ws[at] ?? '') ? (group ? [group, ...ws.slice(at + 1)] : ws.slice(at + 1)) : ws.slice(at);
+  // A { } group or a ( ) subshell after them: what is inside is the command (parens keeps the subshell's folder), and
+  // it may begin with them again: `time (time (cd /a; ...))` (only the first was taken off until 2026-11-13).
+  for (let wrapped = false; ;) {
+    if (/^(?:time|command|builtin)$/u.test(unquote(ws[0] ?? ''))) {
+      wrapped = true;
+      ws = ws.slice(1);
+      while (/^-p$/u.test(ws[0] ?? '')) ws = ws.slice(1);
+      if (/^-[vV]$/u.test(ws[0] ?? '')) return false;
+    } else if (wrapped && /^[{(]/u.test(ws[0] ?? '')) {
+      const group = ws[0].replace(/^[{(]+/u, '');
+      ws = group ? [group, ...ws.slice(1)] : ws.slice(1);
+    } else break;
   }
   // An assignment has no command name: `E=/s/eval` is not `eval` (it lost every variable for a while on 2026-11-13).
   const cmd = ASSIGN.test(ws[0] ?? '') ? '' : unquote(ws[0] ?? '').split('/').pop();
@@ -616,26 +678,28 @@ function follow(state, ws, { pipe = false, maybe = false } = {}) {
   const loseAll = (why) => { for (const k of state.vars.keys()) lose(k, why); };
   // A function's { } body runs when it is called, not where it is written: skipped here, and the command each line of
   // it starts with is kept (state.fnBody), for mayCd at the call; a call makes every variable not known.
-  if (state.fnDepth > 0) {
-    const first = unquote(unwrap(opening(ws))[0] ?? '');
+  // howItRuns counts how deep the body is (`body`: this segment is in it).
+  const firstOf = (line) => unquote(unwrap(opening(line))[0] ?? '');
+  if (body) {
+    const first = firstOf(ws);
     if (first && !first.startsWith('}')) state.fnBody?.cmds.add(first);
-    for (const w of ws) { if (w === '{' || w.endsWith('{')) state.fnDepth++; if (w === '}' || w.startsWith('}')) state.fnDepth--; }
     return true;
   }
-  // `name ()` with a space is a definition as `name()` is (it was read as a call of name until 2026-11-13).
-  const def = ws[0] === 'function' && NAME.test((ws[1] ?? '').replace(/\(\)$/u, '')) ? ws[1].replace(/\(\)$/u, '') : ws[1] === '()' && /^[A-Za-z_][\w-]*$/u.test(ws[0] ?? '') ? ws[0] : (ws[0] ?? '').match(/^([A-Za-z_][\w-]*)\(\)/u)?.[1];
+  // `name ()` and `name ( )` with spaces are definitions as `name()` is (`definition`; until 2026-11-13 `name ()` was
+  // read as a call of name, and `name ( )` until later that day).
+  const def = definition(ws);
   if (def) {
     // A name defined twice is not known: which body runs depends on where the call is.
-    state.fnBody = { cd: state.fns.has(def), cmds: new Set() };
-    state.fnInfo.set(def, state.fnBody);
-    state.fns.add(def);
-    // The body's first command may be on the same line as the name: `f() { cd /z; }`.
-    const open = ws.findIndex((w) => w === '{' || w.endsWith('{') || w === '(' || w.endsWith('('));
-    const first = open >= 0 ? unquote(ws[open + 1] ?? '') : '';
+    state.fnBody = { cd: state.fns.has(def.name), cmds: new Set() };
+    state.fnInfo.set(def.name, state.fnBody);
+    state.fns.add(def.name);
+    // The body's first command may be on the same line as the name: `f() { cd /z; }`, read as a line of the body is
+    // (`f() { if cd /z; then` runs cd: until 2026-11-13 `if` was kept, so a call of f was taken not to cd). A ( ) body
+    // is a subshell: its cd never moves the caller (`f() (cd /z)`).
+    const first = (def.rest[0] ?? '').startsWith('{') ? firstOf(def.rest) : '';
     if (first && !first.startsWith('}')) state.fnBody.cmds.add(first);
-    const braces = ws.reduce((d, w) => d + (w === '{' || w.endsWith('{') ? 1 : 0) - (w === '}' || w.startsWith('}') ? 1 : 0), 0);
-    state.fnDepth = Math.max(0, braces);
-    state.fnAwait = open < 0; // the body has not begun on this line
+    state.fnDepth = Math.max(0, braces(ws).depth);
+    state.fnAwait = !def.rest.length; // the body has not begun on this line
     return true;
   }
   // The function's body may cd too (mayCd): then where relative paths start is not known after the call either (until
