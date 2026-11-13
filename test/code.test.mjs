@@ -340,10 +340,16 @@ test('params: linear time in the length of a parameter list, its nesting and its
     'a long chain of types': (n) => `function f(m: ${'Map<string, '.repeat(n / 24)}1${'>'.repeat(n / 24)}, url) {\n}`,
   };
   for (const [name, make] of Object.entries(shapes)) {
-    const time = (n) => { const text = make(n); const t = process.hrtime.bigint(); declarations('a.ts', text, { params: true }); return Number(process.hrtime.bigint() - t) / 1e6; };
-    time(20_000);
-    const small = Math.max(time(20_000), 1);
+    // The fastest of five runs at each size: one run varies by 3 times on a shared machine. 16 times the text may take
+    // at most 32 times as long (quadratic would be 256); measured 11 to 29 times.
+    const time = (n) => {
+      const text = make(n);
+      let best = Infinity;
+      for (let k = 0; k < 5; k++) { const t = process.hrtime.bigint(); declarations('a.ts', text, { params: true }); best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6); }
+      return best;
+    };
+    const small = time(20_000);
     const big = time(320_000);
-    assert.ok(big < small * 40, `${name}: ${small.toFixed(1)}ms at 20,000, ${big.toFixed(1)}ms at 320,000`);
+    assert.ok(big < small * 32, `${name}: ${small.toFixed(1)}ms at 20,000, ${big.toFixed(1)}ms at 320,000`);
   }
 });
