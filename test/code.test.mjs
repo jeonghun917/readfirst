@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { closeOf, declarations, lex, scopeOf, scriptBlocks, tokens } from '../src/code.mjs';
+import { closeOf, countSteps, declarations, lex, scopeOf, scriptBlocks, tokens } from '../src/code.mjs';
 
 const L = (...a) => a.join('\n');
 const bounds = (path, body, opts) => declarations(path, body, opts).map((d) => `${d.name}:${d.line}-${d.end}`).join(' ');
@@ -331,15 +331,28 @@ test('params: a function of this package with a parameter list has params, and a
   assert.ok(ds.filter((d) => d.what === 'class').every((d) => !d.params));
 });
 
+// Texts of n characters that a reader doing the work twice over would read in time growing with n's square.
+const LONG_SHAPES = {
+  'a long list': (n) => `function f(${Array.from({ length: n / 8 }, (_, i) => `a${i}`).join(', ')}) {\n}`,
+  'deep nesting': (n) => `function f(x = ${'('.repeat(n / 4)}1${')'.repeat(n / 4)}, y) {\n}`,
+  'a bracket left open': (n) => `function f(${'('.repeat(n / 2)}`,
+  'many functions': (n) => Array.from({ length: n / 40 }, (_, i) => `function f${i}(a, { b }) {\n}`).join('\n'),
+  'a long chain of types': (n) => `function f(m: ${'Map<string, '.repeat(n / 24)}1${'>'.repeat(n / 24)}, url) {\n}`,
+};
+
+test('params: linear steps in the length of a parameter list, its nesting and its file', () => {
+  // The steps the reader takes (countSteps), not the time: the count is the same on every machine and every run, so
+  // small texts do. 16 times the text took 15.7 to 17.1 times the steps (a long list: its names grow a digit); a
+  // reader that rescans a parameter list for each parameter took 248 times, as quadratic work would (256).
+  for (const [name, make] of Object.entries(LONG_SHAPES)) {
+    const count = (n) => { const text = make(n); countSteps(true); declarations('a.ts', text, { params: true }); return countSteps(false); };
+    const [small, big] = [count(2_000), count(32_000)];
+    assert.ok(small > 0 && big < small * 20, `${name}: ${small} steps at 2,000 characters, ${big} at 32,000 (${(big / small).toFixed(1)} times)`);
+  }
+});
+
 test('params: linear time in the length of a parameter list, its nesting and its file', () => {
-  const shapes = {
-    'a long list': (n) => `function f(${Array.from({ length: n / 8 }, (_, i) => `a${i}`).join(', ')}) {\n}`,
-    'deep nesting': (n) => `function f(x = ${'('.repeat(n / 4)}1${')'.repeat(n / 4)}, y) {\n}`,
-    'a bracket left open': (n) => `function f(${'('.repeat(n / 2)}`,
-    'many functions': (n) => Array.from({ length: n / 40 }, (_, i) => `function f${i}(a, { b }) {\n}`).join('\n'),
-    'a long chain of types': (n) => `function f(m: ${'Map<string, '.repeat(n / 24)}1${'>'.repeat(n / 24)}, url) {\n}`,
-  };
-  for (const [name, make] of Object.entries(shapes)) {
+  for (const [name, make] of Object.entries(LONG_SHAPES)) {
     // The fastest of five runs at each size: one run varies by 3 times on a shared machine. 16 times the text may take
     // at most 32 times as long (quadratic would be 256); measured 11 to 29 times alone, and once 34 under npm test's
     // other files, so the pair is measured up to three times and one under 32 passes (quadratic fails all three).
