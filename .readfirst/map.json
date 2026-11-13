@@ -123,7 +123,7 @@
           ]
         },
         {
-          "text": "init --agent, setup and hook --install (installHook, addAgentLine, setupAgents) add to files people edit by hand, often with comments (JSONC). A file that does not parse as plain JSON is never rewritten and never stops the rest: init goes on and prints what to add by hand (hookSnippet, `SNIPPETS` in src/agents.mjs). Until 0.26.4 (readfirst#130) init stopped at a .claude/settings.json with comments and wrote nothing after it. A new file that init or setup touches needs a test with a commented copy in the middle of the list.",
+          "text": "init --agent, setup and hook --install (installHook, addAgentLine, setupAgents) add to files people edit by hand, often with comments (JSONC). A file that does not parse as plain JSON is never rewritten and never stops the rest: init goes on and prints what to add by hand (hookSnippet, `SNIPPETS` in src/agents.mjs). Until 0.26.4 (readfirst#130) init stopped at a .claude/settings.json with comments and wrote nothing after it. A new file that init or setup touches needs a test with a commented copy in the middle of the list. installHook also adds Bash to the matcher of a readfirst PreToolUse entry that does not cover it (an install from before the hook read Bash commands), and touches nothing else there, its command included: the old matcher is replaced in the file's own text when it is written there once, else the file is written out as JSON (test/install-matcher.test.mjs).",
           "files": [
             "src/cli.mjs",
             "src/agents.mjs"
