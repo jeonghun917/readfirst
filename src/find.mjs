@@ -124,12 +124,16 @@ function listsOf(path, body) {
     const toks = tokens(rows, d.line - 1, d.end);
     const eq = toks.findIndex((t) => t.k === 'punct' && t.v === '=');
     const value = eq < 0 ? [] : toks.slice(eq + 1);
-    if (!value.some((t) => t.k === 'punct' && (t.v === '[' || t.v === '{'))) continue;
+    // A pattern of alternatives (`/\b(?:password|token)\b/`, re.compile(r"password|token")) is a list too: the
+    // names it holds are its alternatives. An escaped \| is a character, not an alternative.
+    const plain = (t) => (t.k === 'val' && t.text && t.endLine === t.line && !/\s/u.test(t.text) ? t.text.replace(/\\./gu, ' ') : null);
+    const alternatives = (t) => { const p = plain(t); return p !== null && p.includes('|') ? p.split('|') : null; };
+    if (!value.some((t) => (t.k === 'punct' && (t.v === '[' || t.v === '{')) || alternatives(t))) continue;
     const values = [];
     value.forEach((t, k) => {
       // A name is a string with no space in it ('node-fetch', 'api.stripe.com'): a sentence or a file's text in a
       // string is something else, and a table of test fixtures would otherwise match every query.
-      if (t.k === 'val' && t.text && t.endLine === t.line && !/\s/u.test(t.text)) values.push(t.text.replace(/\\./gu, ' '));
+      if (plain(t) !== null) values.push(...(alternatives(t) ?? [plain(t)]));
       else if (t.k === 'word' && value[k + 1]?.v === ':' && ['{', ','].includes(value[k - 1]?.v)) values.push(t.v);
     });
     if (values.length < 2) continue;

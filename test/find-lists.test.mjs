@@ -15,6 +15,8 @@ const FILES = {
   'src/limits.js': "export const RATE_LIMITS = { github: 5000, 'api.stripe.com': 100, slack: 1 };\n",
   'src/throttle.py': 'THROTTLED = {"github": 60, "slack": 1}\n',
   'src/redact.js': "const SECRET_WORDS = ['password', 'token', 'apiKey'];\nmodule.exports.SENSITIVE = ['password', 'private_key'];\n",
+  'src/scrub.js': "const WORD = /\\b(?:password|secret|api_?key)\\b/iu;\nconst SEP = /\\s*\\|\\s*/u;\n",
+  'src/scrub.py': 'import re\nSECRET_RE = re.compile(r"password|private_key")\n',
   'src/plain.js': "const N = 3;\nconst ONE = ['only'];\nfunction inner() { const local = ['axios', 'got']; return local; }\nrun({ list: ['axios', 'got'] });\nconst MESSAGES = ['axios failed to connect', 'got no answer'];\n",
 };
 const files = Object.keys(FILES);
@@ -34,7 +36,12 @@ test('a constant list is found by its name and its comment, and so are tables an
   assert.ok(hits('http client').includes('list HTTP_CLIENTS src/net/clients.js'));
   assert.ok(hits('http libraries').includes('list HTTP_LIBS tools/libs.py'));
   assert.deepEqual(hits('github slack').filter((h) => h.startsWith('list')).sort(), ['list RATE_LIMITS src/limits.js', 'list THROTTLED src/throttle.py'], 'object keys and dict keys');
-  assert.deepEqual(hits('password').filter((h) => h.startsWith('list')).sort(), ['list SECRET_WORDS src/redact.js', 'list SENSITIVE src/redact.js']);
+  assert.deepEqual(hits('password').filter((h) => h.startsWith('list')).sort(), ['list SECRET_RE src/scrub.py', 'list SECRET_WORDS src/redact.js', 'list SENSITIVE src/redact.js', 'list WORD src/scrub.js']);
+});
+
+test('a pattern of alternatives is a list of the names it holds; an escaped | is not an alternative', () => {
+  assert.ok(hits('secret').includes('list WORD src/scrub.js'));
+  assert.equal(find({ query: 'sep', files: ['src/scrub.js'], read }).searched.lists, 1, 'WORD only, not SEP');
 });
 
 test('a single value, a list of one, a list inside a function, a call argument and a list of sentences are not lists to find', () => {
