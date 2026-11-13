@@ -450,6 +450,8 @@ test('arithmetic: $(( )), $[ ] and (( )) wherever they open compare and compute;
   assert.deepEqual(s('[[ a > b ]] > f'), ['/r/f']);
   // A $( ) inside $(( )) is counted, not read again by closeOf: 2,000 of `$( $((1 ` ran out of stack.
   assert.doesNotThrow(() => shellWrites('echo $( $((1 '.repeat(2000), '/r'));
+  // Inside quotes too: `echo "` and 8,000 of `$(( ` threw on main (RangeError), and the hook let the call through.
+  assert.doesNotThrow(() => shellWrites(`echo "${'$(( '.repeat(8000)}`, '/r'));
 });
 
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
