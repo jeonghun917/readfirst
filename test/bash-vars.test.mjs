@@ -380,6 +380,24 @@ test('command, builtin and time cd, source, case heads after {, if or a wrapper,
   assert.deepEqual(s('f() { npm test; }; f() { cd /z; }; f; echo > h'), ['f']);
 });
 
+test('a function written `f ()` or with its { on the next line, and a subshell after time', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => u.part)]; };
+  // `name ()` with a space is a function too (it was read as the command f, so the call's cd was lost and h was /r/h).
+  assert.deepEqual(s('f () { cd /a; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('f () { echo hi; }; f; echo > h'), ['/r/h']);
+  assert.deepEqual(s('function f () { cd /a; }; f; echo > h'), ['f']);
+  // A body whose { is on the line after the name runs when it is called, not where it is written (its cd was run at the
+  // definition, so h was /a/h with no call).
+  assert.deepEqual(s('f ()\n{\n  cd /a\n}\necho > h'), ['/r/h']);
+  assert.deepEqual(s('f()\n{\n  cd /a\n}\necho > h'), ['/r/h']);
+  assert.deepEqual(s('f ()\n{ cd /a\n}\nf\necho > h'), ['f']);
+  assert.deepEqual(s('f()\n{\n  npm test\n}\nf\necho > h'), ['/r/h']);
+  // time ( ... ) is a subshell: its cd moves what is inside it, and what follows its ) starts from before it.
+  assert.deepEqual(s('time (cd /a; echo x > f); echo y > g'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('time -p ( cd /a; echo x > f ); echo y > g'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('time ( echo x > f ); echo y > g'), ['/r/f', '/r/g']);
+});
+
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
   n++;
   const root = repo();
