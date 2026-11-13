@@ -54,6 +54,56 @@ export function toNew(changes, at) {
   return at + shift;
 }
 
+// The change from one text of a file to another, in parsePatch's shape, for an edit that has not been made yet (the
+// PreToolUse hook knows the file and what the edit puts in it, and has no git diff of it): the shortest line diff
+// (Myers), written out as -U0 hunks and read by parsePatch, so judge reads it as it reads `git diff`.
+export function textChange(before, after) {
+  const a = String(before ?? '').split('\n');
+  const b = String(after ?? '').split('\n');
+  // The edit script, from the furthest-reaching path of each number of differences d (the classic O((N+M)D) walk).
+  const max = a.length + b.length;
+  const v = new Map([[1, 0]]);
+  const trace = [];
+  let found = false;
+  for (let d = 0; d <= max && !found; d++) {
+    trace.push(new Map(v));
+    for (let k = -d; k <= d; k += 2) {
+      let x = k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1)) ? v.get(k + 1) ?? 0 : (v.get(k - 1) ?? 0) + 1;
+      let y = x - k;
+      while (x < a.length && y < b.length && a[x] === b[y]) { x++; y++; }
+      v.set(k, x);
+      if (x >= a.length && y >= b.length) { found = true; break; }
+    }
+  }
+  // Back from the end: each step is a kept line, a removed one or an added one.
+  const ops = [];
+  let [x, y] = [a.length, b.length];
+  for (let d = trace.length - 1; d >= 0 && (x > 0 || y > 0); d--) {
+    const vd = trace[d];
+    const k = x - y;
+    const down = k === -d || (k !== d && (vd.get(k - 1) ?? -1) < (vd.get(k + 1) ?? -1));
+    const pk = down ? k + 1 : k - 1;
+    const px = vd.get(pk) ?? 0;
+    const py = px - pk;
+    while (x > px && y > py) { ops.push(['=', a[x - 1]]); x--; y--; }
+    if (d > 0) { if (down) { ops.push(['+', b[y - 1]]); y--; } else { ops.push(['-', a[x - 1]]); x--; } }
+  }
+  ops.reverse();
+  // Hunks with no context, numbered as git numbers them (a hunk with no lines on one side starts at the line before it).
+  const out = [];
+  let [oldN, newN] = [1, 1];
+  for (let i = 0; i < ops.length;) {
+    if (ops[i][0] === '=') { oldN++; newN++; i++; continue; }
+    const [oldStart, newStart] = [oldN, newN];
+    const body = [];
+    while (i < ops.length && ops[i][0] !== '=') { body.push(`${ops[i][0]}${ops[i][1]}`); if (ops[i][0] === '-') oldN++; else newN++; i++; }
+    const oldCount = oldN - oldStart;
+    const newCount = newN - newStart;
+    out.push(`@@ -${oldCount ? oldStart : oldStart - 1},${oldCount} +${newCount ? newStart : newStart - 1},${newCount} @@`, ...body);
+  }
+  return parsePatch(out.join('\n'));
+}
+
 // `git diff` output for many files, as path -> changes. A deleted or binary file is `whole`: all of it counts as touched.
 export function parseGitDiff(out) {
   const files = new Map();

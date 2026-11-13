@@ -190,6 +190,9 @@ touches a file whose notes Claude Code has not seen is refused with the notes as
 through when it is made again. Notes count as seen on the branch they were seen on, and a `readfirst read` that
 Claude Code ran in Bash counts too, when its whole output came back: one sent to `/dev/null`, a file or a pipe
 (`| head`), or cut by `--limit`, does not.
+Each rule and risk in the notes carries a fixed id (`rule:<id>`, or `risk:<group>:<8 hex>` from its text) and what the
+edit about to be made does to it: touched (and by which name or line), not touched, or not judged (it names nothing
+readfirst can find in the code, or a Bash command writes the file and there is no edit to compare).
 The gate also asks for `readfirst find` before new code: an edit that declares a function or type its file did not
 have, in a repository with a map, before `readfirst find` has run there in the session, is refused once with the new
 names and the command to run. Made again, it goes through, and the Stop hook counts it.

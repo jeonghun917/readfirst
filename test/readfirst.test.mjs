@@ -320,8 +320,9 @@ test('hook: the read list goes to Claude Code as context once per file per sessi
   assert.equal(out.hookSpecificOutput.permissionDecision, undefined, 'it informs, it does not decide');
   const ctx = out.hookSpecificOutput.additionalContext;
   assert.match(ctx, /^readfirst notes for src\/billing\/charge.ts/u);
-  assert.match(ctx, /Rule no-double-charge: a charge runs once per order \(why: refunds are manual\)/u);
-  assert.match(ctx, /Risk: amounts are in cents/u);
+  // Each rule and risk carries its id and what the edit does to it (test/gate-note-states.test.mjs), then its text.
+  assert.match(ctx, /Rule no-double-charge \[rule:no-double-charge · [^\]]+\]: a charge runs once per order \(why: refunds are manual\)/u);
+  assert.match(ctx, /Risk \[risk:src-billing:[0-9a-f]{8} · [^\]]+\]: amounts are in cents/u);
   assert.match(ctx, /Check to run after the change: npm test/u);
 
   assert.equal(runHook(ev(), { stateDir, now: 2000 }), null, 'the same file in the same session is not repeated');
@@ -333,14 +334,14 @@ test('hook: the read list goes to Claude Code as context once per file per sessi
 
   // A Bash command that writes a file gets the same notes (agents edit with sed -i and redirects as often as with Edit).
   const bash = (command, session) => runHook(ev({ tool_name: 'Bash', tool_input: { command }, session_id: session }), { stateDir });
-  assert.match(JSON.parse(bash(`sed -i 's/a/b/' src/billing/charge.ts`, 'b1')).hookSpecificOutput.additionalContext, /Risk: amounts are in cents/u);
+  assert.match(JSON.parse(bash(`sed -i 's/a/b/' src/billing/charge.ts`, 'b1')).hookSpecificOutput.additionalContext, /Risk \[[^\]]+\]: amounts are in cents/u);
   assert.match(JSON.parse(bash(`cd ${root} && echo x >> src/billing/charge.ts`, 'b2')).hookSpecificOutput.additionalContext, /Rule no-double-charge/u);
   assert.equal(bash('grep -n charge src/billing/charge.ts > /tmp/out.txt', 'b3'), null, 'reading into a scratch file is not a write to the repository');
   // --gate: the first call that touches an unread file is refused with the notes; the same call then goes through.
   const gated = (session) => runHook(ev({ session_id: session }), { stateDir, gate: true });
   const denied = JSON.parse(gated('g1')).hookSpecificOutput;
   assert.equal(denied.permissionDecision, 'deny');
-  assert.match(denied.permissionDecisionReason, /Risk: amounts are in cents/u);
+  assert.match(denied.permissionDecisionReason, /Risk \[[^\]]+\]: amounts are in cents/u);
   assert.equal(gated('g1'), null, 'the second try goes through');
 
   // install keeps what is there and adds the hook once

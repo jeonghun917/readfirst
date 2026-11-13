@@ -56,10 +56,10 @@ test('hook: every note line is given, in order, with no "N more" pointer', () =>
   const risks = range(15).map((i) => ({ text: `risk number ${i}`, files: ['src/a.js'] }));
   const { root } = repo({ 'src/a.js': 'x\n', '.readfirst/map.json': MAP({ risks, checks: [{ run: 'npm test', why: 'the tests' }] }) });
   const said = context(runHook(JSON.stringify({ session_id: 'c2', cwd: root, tool_name: 'Edit', tool_input: { file_path: join(root, 'src/a.js') } }), { stateDir: state() })).additionalContext;
-  for (const i of range(15)) assert.match(said, new RegExp(`Risk: risk number ${i}$`, 'mu'));
+  for (const i of range(15)) assert.match(said, new RegExp(`Risk \\[[^\\]]+\\]: risk number ${i}$`, 'mu'));
   assert.doesNotMatch(said, /more in `npx readfirst read/u);
   // What to do comes before what to know.
-  assert.ok(said.indexOf('Check to run after the change: npm test') < said.indexOf('Risk: risk number 0'), said);
+  assert.ok(said.indexOf('Check to run after the change: npm test') < said.search(/Risk \[[^\]]+\]: risk number 0$/mu), said);
 });
 
 test('read: every test and user is listed unless --limit is given, and a cut list says how many it left out', () => {
