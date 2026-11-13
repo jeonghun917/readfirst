@@ -31,12 +31,24 @@ export function shellWord(word, vars = new Map()) {
   const hole = (text, why, part = text, under) => { unknown.push({ text, part, why, ...(under !== undefined ? { under } : {}) }); return `${HOLE}${text}${HOLE}`; };
   // The expansion that starts with the $ at i: [its text, the index past it].
   const dollar = (i) => {
+    // $(( )) is arithmetic, worked out when it runs.
+    if (s.startsWith('$((', i)) {
+      let depth = 0;
+      let e = s.length;
+      for (let k = i + 1; k < s.length; k++) { if (s[k] === '(') depth++; else if (s[k] === ')' && --depth === 0) { e = k + 1; break; } }
+      return [hole(s.slice(i, e), 'it is arithmetic, worked out when it runs'), e];
+    }
     if (s[i + 1] === '(') {
       const end = closeOf(s, i);
       const e = end < 0 ? s.length : end;
-      const under = mktempUnder(s.slice(i + 2, e - 1), vars);
-      return [hole(s.slice(i, e), under === undefined ? 'it is the output of a command, known only when it runs' : 'a new name mktemp makes when it runs', s.slice(i, e), under ?? undefined), e];
+      const under = end < 0 ? undefined : mktempUnder(s.slice(i + 2, e - 1), vars);
+      // One the command was split inside (at a | or ; in it) is shown with … for the rest.
+      const part = end < 0 ? `${s.slice(i, e).trimEnd()} …)` : s.slice(i, e);
+      return [hole(s.slice(i, e), under === undefined ? 'it is the output of a command, known only when it runs' : 'a new name mktemp makes when it runs', part, under ?? undefined), e];
     }
+    // $'...' (escapes worked out by the shell) is not read here; $"..." is "..." translated, read as "...".
+    if (s[i + 1] === "'") { let k = i + 2; while (k < s.length && s[k] !== "'") k += s[k] === '\\' ? 2 : 1; const e = Math.min(k + 1, s.length); return [hole(s.slice(i, e), "a $'...' string is not worked out here"), e]; }
+    if (s[i + 1] === '"') return ['', i + 1];
     const m = s.slice(i).match(/^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/u);
     if (m) {
       const name = m[1] ?? m[2];
@@ -48,7 +60,7 @@ export function shellWord(word, vars = new Map()) {
     if (/[0-9@*#?$!-]/u.test(s[i + 1] ?? '')) return [hole(s.slice(i, i + 2), 'it is set by whoever runs the command'), i + 2];
     return ['$', i + 1];
   };
-  const tick = (i) => { const k = s.indexOf('`', i + 1); const e = k < 0 ? s.length : k + 1; return [hole(s.slice(i, e), 'it is the output of a command, known only when it runs'), e]; };
+  const tick = (i) => { const k = s.indexOf('`', i + 1); const e = k < 0 ? s.length : k + 1; return [hole(s.slice(i, e), 'it is the output of a command, known only when it runs', k < 0 ? `${s.slice(i, e).trimEnd()} …\`` : s.slice(i, e)), e]; };
   let text = '';
   for (let i = 0; i < s.length;) {
     const c = s[i];
@@ -271,7 +283,10 @@ function options(args, spec) {
 // docs)` was split inside the $( ), and its src and `docs)` were named as the files sed writes (2026-11-10). Such a word
 // holds a $ or a backtick, so add() leaves it out: what it expands to is not known here.
 // A backslash keeps the next character in the word: `my\ file.txt` is one word (it was two until 2026-11-13).
-const words = (segment) => segment.match(/(?:\\.|'[^']*'|"(?:\\.|[^"\\])*"|\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`|[^\s'"`\\])+/gu) ?? [];
+// A $( ), backtick or "..." the segment ends inside (the command was split at a | ; or && inside it:
+// `S=$(echo b | tr b c)`) runs to the segment's end as one word, so `S=$(echo b` is still read as an assignment, of a
+// value not known; until 2026-11-13 it was not, and S kept its old value.
+const words = (segment) => segment.match(/(?:\\.|'[^']*'|"(?:\\.|[^"\\])*"|\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`|\$\((?:[^()]|\([^()]*\))*$|`[^`]*$|"(?:\\.|[^"\\])*$|[^\s'"`\\])+/gu) ?? [];
 // Where `cd target` moves from `from`: null when that cannot be known (a variable: `cd $D`, `cd "$(dirname x)"`), and
 // relative paths after it are then not named at all rather than named under the wrong folder (2026-11-08: `cd $D`
 // made the hook show `$D/a.test.js`).
@@ -360,6 +375,8 @@ function withoutComments(text) {
 // next segment). A ) with nothing open is not counted (a case pattern `a)`), and a pair that opens and closes inside
 // the segment ($( ), (( ))) changes nothing.
 function parens(segment, open) {
+  // (( )) is arithmetic, not two subshells.
+  if (/^\s*\(\(/u.test(segment)) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 };
   const b = blank(segment);
   let i = 0;
   while (i < b.length && (b[i] === '(' || /\s/u.test(b[i]))) i++;
@@ -400,20 +417,102 @@ const segments = (shell) => segmentsAndOps(shell).map((s) => s.text);
 // sets nothing after it. Returns true when the command did only that.
 // Until 2026-11-13 variables had no value: after `S=/a; cd $S` relative writes were not named at all, and a write to
 // `$F` was dropped, both without a word (every write into a worktree in readfirst's own sessions went that way).
-const ASSIGN = /^([A-Za-z_]\w*)=/u;
+// A value is believed only where the command surely sets it (review of #181, 2026-11-13: each of these left the old
+// value named as if sure): a pipeline's stage runs in a subshell and sets nothing after it (`pipe`); an assignment after
+// `||`, or inside if/for/while/until/case (`maybe`: state.depth), may not run, so a value it changes is not known; `+=`
+// appends; eval, source and `.` may change any variable, and so may calling a function the command defines; printf -v,
+// mapfile, readarray, getopts, let and (( )) set the names they are given to values not known here. A value over
+// 4096 characters is not followed.
+const ASSIGN = /^([A-Za-z_]\w*)(\+?)=/u;
 const DECLARE = /^(?:export|declare|typeset|local|readonly)$/u;
 const NAME = /^[A-Za-z_]\w*$/u;
+const OPENS = /^(?:if|while|until|for|case|select)$/u;
+const CLOSES = /^(?:fi|done|esac)$/u;
 const copyVars = (vars) => new Map([...vars].map(([k, v]) => [k, { ...v }]));
-const snapshot = (state) => ({ base: state.base, why: state.why, vars: copyVars(state.vars) });
-function follow(state, ws) {
-  const cmd = unquote(ws[0] ?? '').split('/').pop();
+const snapshot = (state) => ({ base: state.base, why: state.why, vars: copyVars(state.vars), fns: new Set(state.fns ?? []), fnDepth: state.fnDepth ?? 0, depth: state.depth ?? 0 });
+// How a segment runs, from its words before opening() and the operators around it: { pipe, maybe }. Also counts the
+// blocks it opens and closes in state.depth (an `if` line's own condition always runs: depth goes up after it).
+// An operator inside a $( ) or backticks (the shell text was split there: `S=$(echo b | tr b c)`) is not this
+// command's: the caller passes '' for it (Walk).
+function howItRuns(state, raw, before, after) {
+  const pipe = /^\|&?$/u.test(before ?? '') || /^\|&?$/u.test(after ?? '');
+  const first = (raw[0] ?? '').replace(/^[({]+/u, '') || raw[1] || '';
+  const maybe = (state.depth ?? 0) > 0 || before === '||';
+  if (OPENS.test(first)) state.depth = (state.depth ?? 0) + 1;
+  else if (CLOSES.test(first)) state.depth = Math.max(0, (state.depth ?? 0) - 1);
+  return { pipe, maybe };
+}
+// Each command of some shell text, with the subshells around it: visit(p, raw, how, op) gets parens()' view of the
+// segment, its words, how it runs (howItRuns) and the operator after it; tail(text) gets what follows a `)` that closes
+// a subshell. A ( ) restores the folder and variables of before it at its `)`. An operator inside a $( ) or backticks
+// (still open on the stack of `outer`, or by an odd number of backticks) is not taken as a pipe, `||` or `;` of the
+// command around it: `S=$(echo b | tr b c)` is an assignment, not a pipeline stage.
+function eachCommand(shell, state, visit, tail = () => {}) {
+  const outer = [];
+  let before = '';
+  let ticks = false;
+  const inSub = (list) => list.some((o) => o.sub);
+  for (const { text, op } of segmentsAndOps(shell)) {
+    const p = parens(text, outer.length);
+    const subBefore = ticks || inSub(outer);
+    if ((blank(text).match(/(?<!\\)`/gu) ?? []).length % 2) ticks = !ticks;
+    for (let k = 0; k < p.lead; k++) outer.push(snapshot(state));
+    const subAfter = ticks || p.opened > 0 || inSub(outer.slice(0, outer.length - p.closes));
+    const raw = words(p.body);
+    visit(p, raw, howItRuns(state, raw, subBefore ? '' : before, subAfter ? '' : op), op);
+    for (let k = 0; k < p.closes; k++) Object.assign(state, outer.pop());
+    tail(p.tail);
+    for (let k = 0; k < p.opened; k++) outer.push({ ...snapshot(state), sub: true });
+    before = op;
+  }
+  return state;
+}
+
+function follow(state, ws, { pipe = false, maybe = false } = {}) {
+  // A pipeline's stage runs in a subshell: what it sets or where it goes does not stay.
+  if (pipe) return follow(snapshot(state), ws);
+  state.fns ??= new Set();
+  // An assignment has no command name: `E=/s/eval` is not `eval` (it lost every variable for a while on 2026-11-13).
+  const cmd = ASSIGN.test(ws[0] ?? '') ? '' : unquote(ws[0] ?? '').split('/').pop();
+  const lose = (name, why) => state.vars.set(name, { value: null, why, part: `$${name}`, exported: Boolean(state.vars.get(name)?.exported) });
+  const loseAll = (why) => { for (const k of state.vars.keys()) lose(k, why); };
+  // A function's { } body runs when it is called, not where it is written: skipped here; a call makes every variable
+  // not known.
+  if (state.fnDepth > 0) {
+    for (const w of ws) { if (w === '{' || w.endsWith('{')) state.fnDepth++; if (w === '}' || w.startsWith('}')) state.fnDepth--; }
+    return true;
+  }
+  const def = ws[0] === 'function' && NAME.test((ws[1] ?? '').replace(/\(\)$/u, '')) ? ws[1].replace(/\(\)$/u, '') : (ws[0] ?? '').match(/^([A-Za-z_][\w-]*)\(\)/u)?.[1];
+  if (def) {
+    state.fns.add(def);
+    const braces = ws.reduce((d, w) => d + (w === '{' || w.endsWith('{') ? 1 : 0) - (w === '}' || w.startsWith('}') ? 1 : 0), 0);
+    state.fnDepth = Math.max(0, braces);
+    return true;
+  }
+  if (state.fns.has(cmd)) { loseAll(`${cmd}, a function this command defines, may change it`); return false; }
+  if (/^(?:eval|source|\.)$/u.test(cmd)) { loseAll(`${cmd} may change it`); return false; }
+  if (cmd === 'printf') { const v = ws.indexOf('-v'); if (v > 0 && NAME.test(ws[v + 1] ?? '')) lose(ws[v + 1], `printf -v sets ${ws[v + 1]} when it runs`); return false; }
+  if (cmd === 'mapfile' || cmd === 'readarray') {
+    const names = withoutRedirects(ws.slice(1)).filter((w, k, all) => NAME.test(w) && !/^-[dnOsuCc]$/u.test(all[k - 1] ?? ''));
+    lose(names.at(-1) ?? 'MAPFILE', `${cmd} fills it when it runs`);
+    return false;
+  }
+  if (cmd === 'getopts' && NAME.test(ws[2] ?? '')) { lose(ws[2], `getopts sets ${ws[2]} when it runs`); return false; }
+  if (cmd === 'let' || cmd.startsWith('((')) {
+    for (const m of ws.join(' ').matchAll(/([A-Za-z_]\w*)\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)|([A-Za-z_]\w*)\s*(?:\+\+|--)|(?:\+\+|--)\s*([A-Za-z_]\w*)/gu)) {
+      const n = m[1] ?? m[2] ?? m[3];
+      lose(n, `${n} is worked out by arithmetic when it runs`);
+    }
+    return true;
+  }
   if (CD.test(cmd)) {
     const arg = ws[1] === undefined ? null : shellWord(ws[1], state.vars);
     const before = state.base;
-    state.base = stepTo(state.base, cmd, arg?.text);
+    state.base = maybe ? null : stepTo(state.base, cmd, arg?.text);
+    if (maybe && before != null) state.why = { part: [cmd, ...ws.slice(1, 2)].join(' '), why: `${cmd} runs only on some paths through the command`, prefix: '' };
     // prefix: the absolute folder known to hold where it went (`cd /r/$X` is under /r), '' when nothing is known; fresh:
     // it went into a new folder mktemp made there (`cd $(mktemp -d)`), so nothing is below it yet.
-    if (state.base == null) {
+    if (state.base == null && !maybe) {
       const known = arg?.text.includes(HOLE) ? arg.text.slice(0, arg.text.indexOf(HOLE)) : '';
       const first = arg?.unknown[0];
       const made = !known && first?.under != null ? (isAbsolute(first.under) ? first.under : before != null ? resolve(before, first.under) : null) : null;
@@ -436,13 +535,24 @@ function follow(state, ws) {
   const exported = cmd === 'export' || (declare && ws.slice(1).some((w) => /^-\w*x/u.test(w)));
   for (const w of declare ? ws.slice(1) : ws) {
     const m = w.match(ASSIGN);
-    if (!m) { if (exported && state.vars.get(w)) state.vars.get(w).exported = true; continue; }
+    // `export S` with no value marks S for the shells it starts, set now or later (`export S; S=/a; bash -c ...`).
+    if (!m) { if (exported && NAME.test(w)) { const old = state.vars.get(w); state.vars.set(w, old ? { ...old, exported: true } : { value: null, why: `${w} is not set by the command`, part: `$${w}`, exported: true }); } continue; }
+    const [name, append] = [m[1], m[2] === '+'];
+    const old = state.vars.get(name);
+    // Once exported, a variable stays exported when it is set again.
+    const keep = exported || Boolean(old?.exported);
     const v = shellWord(w.slice(m[0].length), state.vars);
     // A value that starts with a path mktemp makes keeps where it is made (`R=$(mktemp -d)`, `T=$R/w`).
     const first = v.unknown[0];
-    const made = first && v.text.startsWith(`${HOLE}${first.text}${HOLE}`) ? first.under : undefined;
+    const made = !append && first && v.text.startsWith(`${HOLE}${first.text}${HOLE}`) ? first.under : undefined;
     const under = made == null ? undefined : isAbsolute(made) ? made : state.base != null ? resolve(state.base, made) : undefined;
-    state.vars.set(m[1], v.unknown.length ? { value: null, why: first.why, part: first.part, exported, ...(under != null ? { under } : {}) } : { value: v.text, exported });
+    let next = v.unknown.length ? { value: null, why: first.why, part: first.part, exported: keep, ...(under != null ? { under } : {}) } : { value: v.text, exported: keep };
+    // S+=x adds to what S holds.
+    if (append) next = old?.value != null && next.value != null ? { value: old.value + next.value, exported: keep } : old?.value == null && old ? { ...old, exported: keep } : next.value == null ? next : { value: null, why: `${name} is not set by the command`, part: `$${name}`, exported: keep };
+    if (next.value != null && next.value.length > 4096) next = { value: null, why: `${name} is too long to follow`, part: `$${name}`, exported: keep };
+    // On a path that may not run, the value is known only when it is the one already there.
+    if (maybe && !(old && old.value != null && old.value === next.value)) next = { value: null, why: `${name} is set only on some paths through the command`, part: `$${name}`, exported: keep };
+    state.vars.set(name, next);
   }
   return true;
 }
@@ -461,7 +571,9 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   const unknown = [];
   // The variables it starts with (the hook passes its own environment: Claude Code starts it with the session's), and
   // $PWD where it starts.
-  const start = () => { const v = copyVars(vars); if (cwd != null) v.set('PWD', { value: cwd, exported: true }); return { base: cwd, why: cwd == null ? why : null, vars: v }; };
+  // A fresh start has no blocks open and no functions (Object.assign from a here-document's walk once carried its
+  // `for` into the walk of the whole command, 2026-11-13).
+  const start = () => { const v = copyVars(vars); if (cwd != null) v.set('PWD', { value: cwd, exported: true }); return { base: cwd, why: cwd == null ? why : null, vars: v, fns: new Set(), fnDepth: 0, depth: 0 }; };
   const state = start();
   const here = (w) => { try { return isAbsolute(w) ? existsSync(w) : state.base != null && existsSync(resolve(state.base, w)); } catch { return false; } };
   // A glob with one * in its last part (dir/*.yml), relative to where the command runs; anything wider is not expanded.
@@ -497,11 +609,12 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     if (h) {
       const u = holes.get(h[1]);
       const made = p.startsWith(HOLE) && u?.under != null ? (isAbsolute(u.under) ? u.under : state.base != null ? resolve(state.base, u.under) : null) : null;
-      // direct: what is not known sits inside the file's own name, next to known letters of it (`out-$k.txt`), so the
-      // file is in the prefix folder itself, not below it. A whole part (`/s/$r`) may hold a / and is not direct.
+      // direct: what is not known sits inside the file's own name, after known letters of it (`out-$k.txt`), so the
+      // file is in the prefix folder itself, not below it. A part that starts a name (`/s/$r`, `$n.txt`) may hold a
+      // whole path and is not direct.
       const q = p.replace(/\0[^\0]*\0/gu, HOLE);
       const lastSlash = q.lastIndexOf('/');
-      const direct = !made && q.indexOf(HOLE) > lastSlash && q.slice(lastSlash + 1).replaceAll(HOLE, '').length > 0;
+      const direct = !made && q.indexOf(HOLE) > lastSlash + 1;
       missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: made ? `${made.replace(/\/$/u, '')}/` : knownPrefix(p.slice(0, p.indexOf(HOLE))), ...(made ? { fresh: true } : {}), ...(direct ? { direct: true } : {}) });
       return;
     }
@@ -516,18 +629,7 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   };
   // Where relative paths start, and what the variables are, after some shell text (here-documents already taken out
   // of it). A cd or an assignment inside ( ) ends at its `)`.
-  const stateAt = (text) => {
-    const st = start();
-    const outer = [];
-    for (const s of segments(text)) {
-      const p = parens(s, outer.length);
-      for (let k = 0; k < p.lead; k++) outer.push(snapshot(st));
-      follow(st, opening(words(p.body)));
-      for (let k = 0; k < p.closes; k++) Object.assign(st, outer.pop());
-      for (let k = 0; k < p.opened; k++) outer.push(snapshot(st));
-    }
-    return st;
-  };
+  const stateAt = (text) => { const st = start(); return eachCommand(text, st, (p, raw, how) => follow(st, opening(raw), how)); };
   // Shell text read inside this command (a here-document or a `bash -c` string), from where it runs and with the
   // variables it sees.
   const inner = (text, innerVars) => {
@@ -568,18 +670,20 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     for (const m of blank(segment).matchAll(/(?<![\w=-])\d*>>?\|?(?!\s*&)/gu)) {
       // A target ends at the ) that closes a $( ): `"$(sort a > b.txt)"` writes b.txt. Quoted parts and escaped
       // characters run on in the word: `"$S"/f.txt`, `a\&b.js`.
-      const t = segment.slice(m.index + m[0].length).match(/^\s*((?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|[^\s;&|)'"\\])+)/u);
+      const t = segment.slice(m.index + m[0].length).match(/^\s*((?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|\$\(\((?:[^()]|\([^()]*\))*\)\)|\$\((?:[^()]|\([^()]*\))*\)|[^\s;&|)'"\\])+)/u);
       if (t) add(dq(t[1]));
     }
   };
-  const writesIn = (segment) => {
-    const opened = opening(words(segment));
-    // Arithmetic and tests compare with > and <: `(( x > 0 ))`, `[[ a > b ]]` write nothing.
-    if (/^(?:\(\(|\[\[)/u.test(opened[0] ?? '') || /^\s*(?:\(\(|\[\[)/u.test(segment)) return;
+  // how: { pipe, maybe } from howItRuns.
+  const writesIn = (segment, how) => {
+    const raw = words(segment);
+    const opened = opening(raw);
+    // Arithmetic and tests compare with > and <: `(( x > 0 ))`, `[[ a > b ]]` write nothing; (( )) may set variables.
+    if (/^(?:\(\(|\[\[)/u.test(opened[0] ?? '') || /^\s*(?:\(\(|\[\[)/u.test(segment)) { if (/^\s*\(\(/u.test(segment)) follow(state, raw, how); return; }
     // A redirect writes first, with the folder and variables from before the command: `y="$(sort a > b.txt)"` writes
     // b.txt. cd and assignments then change what the commands after them see, and write nothing more.
     redirects(segment);
-    if (follow(state, opened)) return;
+    if (follow(state, opened, how)) return;
     const ws = unwrap(opened);
     const cmd = unquote(ws[0] ?? '').split('/').pop();
     const args = withoutRedirects(ws.slice(1)).map(dq);
@@ -600,6 +704,10 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
       while (i < args.length && args[i].startsWith('-')) {
         if (args[i] === '-C') { dir = join(dir, args[i + 1] ?? ''); cs.push(args[i + 1] ?? ''); i += 2; } else if (args[i] === '-c') i += 2; else i++;
       }
+      // An absolute -C folder is where git runs, not a folder under this one: join made `git -C /w checkout -- f` a
+      // write to ./w/f, which once variables were followed showed this repository's notes for a path that does not
+      // exist (2026-11-13).
+      if (cs.some((c) => isAbsolute(c))) dir = resolve('/', ...cs);
       if (/^(?:checkout|restore)$/u.test(args[i] ?? '')) gitPaths(args.slice(i), (w) => here(join(dir, w))).forEach((p) => add(join(dir, p)));
       // A checkout the command makes (worktree add, clone, init): a write below it lands in a repository, though none
       // is there yet when the hook runs (`git worktree add $S/w-$rev` then a write into $S/w-$rev).
@@ -624,15 +732,7 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   // showed another repository's notes for a write in this one, and the `)` stuck to the last word made `f.txt)` the
   // file (2026-11-09).
   // Variables set inside ( ) end there too: in `(S=/a; ...); echo > $S/g` the second $S is not the command's.
-  const outer = []; // the folder and variables each open subshell started with
-  for (const segment of segments(shell)) {
-    const p = parens(segment, outer.length);
-    for (let k = 0; k < p.lead; k++) outer.push(snapshot(state));
-    writesIn(p.body);
-    for (let k = 0; k < p.closes; k++) Object.assign(state, outer.pop());
-    redirects(p.tail);
-    for (let k = 0; k < p.opened; k++) outer.push(snapshot(state));
-  }
+  eachCommand(shell, state, (p, raw, how) => writesIn(p.body, how), redirects);
   repos.delete('');
   return { files: [...found], unknown, repos: [...repos] };
 }
@@ -651,16 +751,13 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
   // cd and the variables the command sets are followed as bashWrites follows them (`S=/a; cd $S && readfirst read f`);
   // `vars`: those it starts with (the hook's environment).
   const state = { base: cwd, why: null, vars: copyVars(vars) };
-  const outer = [];
   const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' '));
-  for (const { text, op } of segmentsAndOps(shell)) {
-    const p = parens(text, outer.length);
-    for (let k = 0; k < p.lead; k++) outer.push(snapshot(state));
-    const opened = opening(words(p.body));
+  eachCommand(shell, state, (p, raw, how, op) => {
+    const opened = opening(raw);
     const ws = unwrap(opened).map((w) => shellWord(w, state.vars).text);
     const at = ws.findIndex((w) => /^(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)$/u.test(w));
     const base = state.base;
-    if (follow(state, opened)) { /* a cd or an assignment */ }
+    if (follow(state, opened, how)) { /* a cd or an assignment */ }
     else if (at >= 0 && ws[at + 1] === 'read' && ws.slice(0, at).every((w) => /^(?:\S*\/)?(?:npx|node)$|^(?:--yes|-y)$/u.test(w))) {
       const files = [];
       let root = null;
@@ -694,8 +791,6 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
       const abs = files.filter((f) => !f.includes(HOLE) && !/[*?]/u.test(f)).map((f) => (isAbsolute(f) ? f : from == null ? null : resolve(from, f))).filter(Boolean);
       if (abs.length) out.push({ files: abs, seen: !thrown && !limit, why: thrown ? 'its output was sent elsewhere' : limit ? '--limit cut the list' : null });
     }
-    for (let k = 0; k < p.closes; k++) Object.assign(state, outer.pop());
-    for (let k = 0; k < p.opened; k++) outer.push(snapshot(state));
-  }
+  });
   return out;
 }

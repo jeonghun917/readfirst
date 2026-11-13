@@ -90,6 +90,9 @@ test('variables from the environment, mktemp, $OLDPWD and the checkouts a comman
   assert.deepEqual(s('echo > /s/out-$k.txt').unknown.map((u) => [u.prefix, u.direct]), [['/s', true]]);
   assert.deepEqual(s('echo > /s/$r').unknown.map((u) => [u.prefix, u.direct]), [['/s/', undefined]]);
   assert.deepEqual(s('S=/s && git worktree add $S/w-x main && git clone u /c/d && git -C /a init sub').repos, ['/s/w-x', '/c/d', '/a/sub']);
+  // git -C with an absolute folder runs there (it was joined under the command's folder: /r/s/w/f.js).
+  assert.deepEqual(s('S=/s && git -C $S/w checkout -- f.js').files, ['/s/w/f.js']);
+  assert.deepEqual(s('git -C sub checkout -- f.js').files, ['/r/sub/f.js']);
 });
 
 test('readfirst read through a variable the command set counts as a read of that file', () => {
@@ -162,6 +165,42 @@ test('hook --gate from outside: a repository the session already used is where a
   assert.equal(hook(outside, stateDir, `echo x > ${parent}/$X/f.txt`, true, session).permissionDecision, 'deny');
   assert.equal(hook(outside, stateDir, `echo x > ${outside}/$X/f.txt`, true, session), null);
   assert.ok(readFileSync(join(stateDir, `readfirst-hook-${session}.lines`), 'utf8').includes(`"start:${root}"`), 'the Stop hook checks that repository');
+});
+
+// A value is believed only where the command surely sets it (review of this change, 2026-11-13: each of these named the
+// old value as if sure). Unknown parts are shown as they are.
+test('values changed where the reader cannot follow are not known: $( ) split at |, +=, eval, branches, pipes, functions', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return r.files.length ? r.files : r.unknown.map((u) => u.part); };
+  // A: a $( ) or backticks the command is split inside (at its | ; &&) is still an assignment, of a value not known.
+  assert.deepEqual(s('S=/a; S=$(echo b | tr b c); echo x > $S/f'), ['$(echo b …)']);
+  assert.deepEqual(s('S=/a; S=`echo b | tr b c`; echo x > $S/f'), ['`echo b …`']);
+  assert.deepEqual(s('S=/a; S="$(echo b | tr b c)"; echo x > $S/f'), ['$(echo b …)']);
+  assert.deepEqual(s('S=/a; S=$(cd /z && pwd); echo x > $S/f'), ['$(cd /z …)']);
+  assert.deepEqual(s('cd $(echo b | tr b c) && echo x > f'), ['$(echo b …)']);
+  // B: other ways of setting a value.
+  assert.deepEqual(s('S=/a; S+=/b; echo x > $S/f'), ['/a/b/f'], '+= appends');
+  for (const c of ["S=/a; eval 'S=/b'; echo x > $S/f", 'S=/a; printf -v S %s /b; echo x > $S/f', 'S=/a; . env.sh; echo x > $S/f',
+    'S=/a; source env.sh; echo x > $S/f', 'S=/a; mapfile S < l; echo x > $S/f', 'S=/a; let S=3; echo x > $S/f', 'S=/a; ((S=3)); echo x > $S/f',
+    'S=/a; f(){ S=/b; }; f; echo x > $S/f', 'if x; then S=/a; else S=/b; fi; echo x > $S/f', 'true || S=/a; echo x > $S/f']) {
+    assert.deepEqual(s(c), ['$S'], c);
+  }
+  // A pipeline's stage runs in a subshell: its assignment does not stay.
+  assert.deepEqual(s('S=/z; S=/a | cat; echo x > $S/f'), ['/z/f']);
+  assert.deepEqual(s('S=/z; echo | S=/a; echo x > $S/f'), ['/z/f']);
+  // && chains run in order: the value is known.
+  assert.deepEqual(s('mkdir -p /a && S=/a && echo x > $S/f'), ['/a/f']);
+  // An assignment is not the command its value ends in: E=/s/eval is not eval.
+  assert.deepEqual(s('E=/s/eval && echo x > $E/out.txt'), ['/s/eval/out.txt']);
+  assert.deepEqual(s('S=/a; F=/x/source; echo x > $S/f'), ['/a/f']);
+  // A here-document inside a loop: the loop it is read in does not stay open for the rest of the command.
+  assert.deepEqual(s("E=/s && for m in a b; do cp x $E/mut/ && python3 - <<'EOF'\nprint(1)\nEOF\ndone"), ['/s/mut/']);
+  // C: export keeps its mark when the value is set later or again.
+  assert.deepEqual(s("export S; S=/a; bash -c 'echo x > $S/f'"), ['/a/f']);
+  assert.deepEqual(s("export S=/a; S=/b; bash -c 'echo x > $S/f'"), ['/b/f']);
+  // $'...', $(( )) and $PWD.
+  assert.deepEqual(s("echo x > $'a b'"), ["$'a b'"]);
+  assert.deepEqual(s('echo x > $((1+1)).txt'), ['$((1+1))']);
+  assert.deepEqual(s('cd /a; S=$PWD; echo x > $S/f'), ['/a/f']);
 });
 
 // The owner's rule (2026-11-13): no refusal for a write outside every repository. $TMPDIR is the hook's own, a mktemp
