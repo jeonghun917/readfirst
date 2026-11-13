@@ -360,12 +360,13 @@ export function diffLang(asked, labelLangs) {
 export const itemId = (kind, key, text) => (kind === 'rule' ? `rule:${key}` : `risk:${key ?? 'none'}:${createHash('sha1').update(String(text)).digest('hex').slice(0, 8)}`);
 // ids (the PreToolUse hook): each rule and risk also carries its fixed id (itemId) and what the change does to it, from
 // judge's `trigger` on its row: touched (by the names or lines given), not touched, or not judged (it names nothing
-// readfirst can find, or there is no change to judge it against: a file a Bash command writes).
+// readfirst can find; there is no change to judge it against: a file a Bash command writes; or noteStates gave the
+// reason in `unjudged`: judging failed, or the edit was too large to place).
 export function brief(list, { ids = false } = {}) {
   const lines = [];
   const all = (list.targets ?? []).length;
   const forSome = (row) => (all > 1 && row.for && row.for.length < all ? ` [${row.for.join(', ')}]` : '');
-  const state = (t) => (!t ? 'not judged: no edit to judge it against' : !t.triggered ? `not touched: ${t.why}` : t.about?.length ? `touched by ${t.by.join(', ')}` : 'not judged: it names nothing readfirst can find in the code');
+  const state = (t) => (!t ? 'not judged: no edit to judge it against' : t.unjudged ? `not judged: ${t.unjudged}` : !t.triggered ? `not touched: ${t.why}` : t.about?.length ? `touched by ${t.by.join(', ')}` : 'not judged: it names nothing readfirst can find in the code');
   const tag = (id, row) => (ids ? ` [${id} · ${state(row.trigger)}]` : '');
   for (const d of list.deprecated ?? []) lines.push(`Being replaced: group ${d.group}${d.use ? `; use ${d.use} instead` : ''} (${d.why}). Do not add to it.${forSome(d)}`);
   for (const t of list.together ?? []) lines.push(`Change together: when this file changes, also change ${t.also.join(' or ')} (${t.why}). verify fails otherwise.${forSome(t)}`);
@@ -383,6 +384,23 @@ export function brief(list, { ids = false } = {}) {
   if (lines.length || known.length || (list.dependents ?? []).length) for (const u of list.unseen ?? []) lines.push(`Not seen by readfirst: ${u.why}`);
   for (const d of list.dependents ?? []) lines.push(`Another repository depends on this: ${d.repo}${d.paths.length ? ` (${d.paths.join(', ')})` : ''} (${d.why}).${forSome(d)}`);
   return [...lines, ...known];
+}
+
+// The states the hook's notes give (brief with ids), from `judge`, run by `run`. A judge that throws leaves every item
+// "not judged" with that reason, never "no edit" (there was one) and never without notes. `unplaced`: files whose edit
+// textChange could not place in its budget; an item it did not find touched elsewhere is not judged, with that reason.
+export function noteStates(list, run, unplaced = []) {
+  const rows = [...(list.rules ?? []), ...(list.risks ?? [])];
+  try { run(); } catch (e) {
+    const why = `judging the edit failed (${String(e?.message ?? e).split('\n')[0]})`;
+    for (const r of rows) r.trigger = { unjudged: why };
+    return list;
+  }
+  if (unplaced.length) {
+    const why = `the edit changes too much of ${unplaced.join(', ')} to place within the hook's budget`;
+    for (const r of rows) if (!r.trigger || !r.trigger.triggered) r.trigger = { unjudged: why };
+  }
+  return list;
 }
 
 // Which files the PreToolUse hook has seen in a session, by absolute path: the Stop hook verifies those. A session can
@@ -667,11 +685,12 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = 
     // The change each edited file is about to get, judged as `readfirst diff` judges a commit: the file is read as it
     // will be. A judge that fails leaves the notes as they were, with no state (the hook says nothing rather than
     // fail, and it must not drop the notes).
-    const changes = new Map(done.flatMap((p) => { const e = edited.get(join(root, p)); return e ? [[p, textChange(e.before, e.after)]] : []; }));
-    if (changes.size) {
-      const after = (p) => { const e = edited.get(join(root, p)); return e ? e.after : readText(root)(p); };
-      try { judge(list, { changes, read: after, files: all, imports: map ? ctx.edges() : [] }); } catch { /* the notes without states */ }
-    }
+    // An edit too large to place in the time left (textChange's budget) is not judged by guessing: its items say so.
+    const changes = new Map(done.flatMap((p) => { const e = edited.get(join(root, p)); return e ? [[p, textChange(e.before, e.after, { deadline })]] : []; }));
+    const unplaced = [...changes].filter(([, c]) => c.unplaced).map(([p]) => p);
+    for (const p of unplaced) changes.delete(p);
+    const after = (p) => { const e = edited.get(join(root, p)); return e ? e.after : readText(root)(p); };
+    noteStates(list, () => { if (changes.size) judge(list, { changes, read: after, files: all, imports: map ? ctx.edges() : [] }); }, unplaced);
     const lines = brief(list, { ids: true });
     if (ctx.broken.length) lines.unshift(brokenMapLine(ctx.broken));
     for (const p of done) { seen[join(root, p)] = now; seen[`shown:${branchOf(root, branches)}:${join(root, p)}`] = now; }

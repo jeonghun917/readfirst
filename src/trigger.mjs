@@ -57,48 +57,91 @@ export function toNew(changes, at) {
 // The change from one text of a file to another, in parsePatch's shape, for an edit that has not been made yet (the
 // PreToolUse hook knows the file and what the edit puts in it, and has no git diff of it): the shortest line diff
 // (Myers), written out as -U0 hunks and read by parsePatch, so judge reads it as it reads `git diff`.
-export function textChange(before, after) {
-  const a = String(before ?? '').split('\n');
-  const b = String(after ?? '').split('\n');
-  // The edit script, from the furthest-reaching path of each number of differences d (the classic O((N+M)D) walk).
-  const max = a.length + b.length;
-  const v = new Map([[1, 0]]);
-  const trace = [];
-  let found = false;
-  for (let d = 0; d <= max && !found; d++) {
-    trace.push(new Map(v));
-    for (let k = -d; k <= d; k += 2) {
-      let x = k === -d || (k !== d && (v.get(k - 1) ?? -1) < (v.get(k + 1) ?? -1)) ? v.get(k + 1) ?? 0 : (v.get(k - 1) ?? 0) + 1;
-      let y = x - k;
-      while (x < a.length && y < b.length && a[x] === b[y]) { x++; y++; }
-      v.set(k, x);
-      if (x >= a.length && y >= b.length) { found = true; break; }
+// In linear space: each step finds the middle snake of the shortest path from both ends and splits the problem there
+// (Myers 1986, section 4b), so memory stays O(N+M); keeping every round's furthest points to walk back from the end,
+// as the first version did, took O(D·(N+M)) and ran a 5000-line Write out of heap, which killed the hook with no
+// answer. Time is O((N+M)·D) and has a budget: past `work` steps or the `deadline` (the hook's), the change is not
+// placed at all: `unplaced` (with `whole`), and the hook's notes say so for each item instead of guessing.
+export const DIFF_WORK = 20_000_000;
+export function textChange(before, after, { deadline = Infinity, work = DIFF_WORK } = {}) {
+  const lines = (s) => String(s ?? '').split('\n');
+  const [la, lb] = [lines(before), lines(after)];
+  // Lines as numbers: comparing two numbers is what the walk does most.
+  const ids = new Map();
+  const idOf = (l) => { let i = ids.get(l); if (i === undefined) { i = ids.size; ids.set(l, i); } return i; };
+  const a = Int32Array.from(la, idOf);
+  const b = Int32Array.from(lb, idOf);
+  const removed = new Uint8Array(a.length);
+  const added = new Uint8Array(b.length);
+  let spent = 0;
+  const over = () => spent > work || (deadline !== Infinity && Date.now() > deadline);
+  const OVER = Symbol('over');
+  const size = a.length + b.length + 2;
+  const vf = new Int32Array(2 * size + 1);
+  const vb = new Int32Array(2 * size + 1);
+  // The middle snake of a[aLo, aHi) against b[bLo, bHi), both non-empty with different first and last lines: its start
+  // and end, as offsets from (aLo, bLo).
+  const middleSnake = (aLo, aHi, bLo, bHi) => {
+    const [n, m] = [aHi - aLo, bHi - bLo];
+    const delta = n - m;
+    const odd = (delta & 1) !== 0;
+    const max = Math.ceil((n + m) / 2);
+    vf[size + 1] = 0;
+    vb[size + 1] = 0;
+    for (let d = 0; d <= max; d++) {
+      spent += 2 * d + 2;
+      if ((d & 63) === 0 && over()) throw OVER;
+      for (let k = -d; k <= d; k += 2) {
+        let x = k === -d || (k !== d && vf[size + k - 1] < vf[size + k + 1]) ? vf[size + k + 1] : vf[size + k - 1] + 1;
+        let y = x - k;
+        const [x0, y0] = [x, y];
+        while (x < n && y < m && a[aLo + x] === b[bLo + y]) { x++; y++; }
+        spent += x - x0;
+        vf[size + k] = x;
+        // The path from the end on the same diagonal (delta - k there) has made d - 1 steps.
+        const kb = delta - k;
+        if (odd && kb >= -(d - 1) && kb <= d - 1 && x + vb[size + kb] >= n) return [x0, y0, x, y];
+      }
+      for (let k = -d; k <= d; k += 2) {
+        let x = k === -d || (k !== d && vb[size + k - 1] < vb[size + k + 1]) ? vb[size + k + 1] : vb[size + k - 1] + 1;
+        let y = x - k;
+        const [x0, y0] = [x, y];
+        while (x < n && y < m && a[aHi - 1 - x] === b[bHi - 1 - y]) { x++; y++; }
+        spent += x - x0;
+        vb[size + k] = x;
+        const kf = delta - k;
+        if (!odd && kf >= -d && kf <= d && x + vf[size + kf] >= n) return [n - x, m - y, n - x0, m - y0];
+      }
     }
+    throw new Error('textChange: no middle snake'); // cannot happen: d = max always meets
+  };
+  // Marks the removed lines of a and the added lines of b. Equal ends are kept first, so every split has a difference
+  // on both sides of it, and a one-line edit costs no walk at all.
+  const stack = [[0, a.length, 0, b.length]];
+  try {
+    while (stack.length) {
+      let [aLo, aHi, bLo, bHi] = stack.pop();
+      while (aLo < aHi && bLo < bHi && a[aLo] === b[bLo]) { aLo++; bLo++; }
+      while (aLo < aHi && bLo < bHi && a[aHi - 1] === b[bHi - 1]) { aHi--; bHi--; }
+      if (aLo === aHi) { added.fill(1, bLo, bHi); continue; }
+      if (bLo === bHi) { removed.fill(1, aLo, aHi); continue; }
+      const [x, y, u, v] = middleSnake(aLo, aHi, bLo, bHi);
+      stack.push([aLo + u, aHi, bLo + v, bHi], [aLo, aLo + x, bLo, bLo + y]);
+    }
+  } catch (e) {
+    if (e !== OVER) throw e;
+    return { lines: new Set(), text: [], at: [], hunks: [], whole: true, unplaced: true };
   }
-  // Back from the end: each step is a kept line, a removed one or an added one.
-  const ops = [];
-  let [x, y] = [a.length, b.length];
-  for (let d = trace.length - 1; d >= 0 && (x > 0 || y > 0); d--) {
-    const vd = trace[d];
-    const k = x - y;
-    const down = k === -d || (k !== d && (vd.get(k - 1) ?? -1) < (vd.get(k + 1) ?? -1));
-    const pk = down ? k + 1 : k - 1;
-    const px = vd.get(pk) ?? 0;
-    const py = px - pk;
-    while (x > px && y > py) { ops.push(['=', a[x - 1]]); x--; y--; }
-    if (d > 0) { if (down) { ops.push(['+', b[y - 1]]); y--; } else { ops.push(['-', a[x - 1]]); x--; } }
-  }
-  ops.reverse();
-  // Hunks with no context, numbered as git numbers them (a hunk with no lines on one side starts at the line before it).
+  // Hunks with no context, numbered as git numbers them (a hunk with no lines on one side starts at the line before
+  // it), removed lines before added ones.
   const out = [];
-  let [oldN, newN] = [1, 1];
-  for (let i = 0; i < ops.length;) {
-    if (ops[i][0] === '=') { oldN++; newN++; i++; continue; }
-    const [oldStart, newStart] = [oldN, newN];
+  for (let i = 0, j = 0; i < a.length || j < b.length;) {
+    if (i < a.length && j < b.length && !removed[i] && !added[j]) { i++; j++; continue; }
+    const [oldStart, newStart] = [i + 1, j + 1];
     const body = [];
-    while (i < ops.length && ops[i][0] !== '=') { body.push(`${ops[i][0]}${ops[i][1]}`); if (ops[i][0] === '-') oldN++; else newN++; i++; }
-    const oldCount = oldN - oldStart;
-    const newCount = newN - newStart;
+    while (i < a.length && removed[i]) body.push(`-${la[i++]}`);
+    while (j < b.length && added[j]) body.push(`+${lb[j++]}`);
+    const [oldCount, newCount] = [i + 1 - oldStart, j + 1 - newStart];
     out.push(`@@ -${oldCount ? oldStart : oldStart - 1},${oldCount} +${newCount ? newStart : newStart - 1},${newCount} @@`, ...body);
   }
   return parsePatch(out.join('\n'));
