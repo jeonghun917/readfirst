@@ -339,6 +339,7 @@ const LONG_SHAPES = {
   'a bracket left open': (n) => `function f(${'('.repeat(n / 2)}`,
   'many functions': (n) => Array.from({ length: n / 40 }, (_, i) => `function f${i}(a, { b }) {\n}`).join('\n'),
   'a long chain of types': (n) => `function f(m: ${'Map<string, '.repeat(n / 24)}1${'>'.repeat(n / 24)}, url) {\n}`,
+  'nested declarations': (n) => `${'class A { m(b) {'.repeat(n / 20)}${'} }'.repeat(n / 20)}`,
 };
 
 test('params: linear steps in the length of a parameter list, its nesting and its file', () => {
@@ -361,7 +362,7 @@ test('params: linear steps in the length of a parameter list, its nesting and it
 // (quadratic would be 256); the pair is measured up to three times and one under 32 passes (quadratic fails all
 // three). It runs in a worker stopped after 60 seconds: a test's timeout does not stop synchronous code (a test busy
 // for 8 seconds passed a 1 second timeout), and a reader that rescans a parameter list for each parameter was still
-// reading after 240 seconds.
+// reading after 240 seconds. CPU time is the whole process's: nothing else may run in this process while it is timed.
 const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads');
 (async () => {
   const { declarations } = await import(${JSON.stringify(new URL('../src/code.mjs', import.meta.url).href)});

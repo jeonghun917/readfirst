@@ -628,9 +628,11 @@ export function declarations(path, body, { members = false, params = false } = {
     }
     s.top = top;
   }
-  // Nesting, from what the walk found around each.
-  const depthOf = (d) => { let n = 0; for (let a = d.around; a; a = a.around) n++; return n; };
-  for (const s of found) { s.depth = depthOf(s); s.parent = s.around?.name ?? null; s.parentLine = s.around?.line ?? null; }
+  // Nesting, from what the walk found around each. What is around a declaration starts before it or on its line and
+  // ends no earlier, so it comes first in `found` and has its depth already: one step each, where walking the whole
+  // chain for each declaration took the square of the nesting (a file nested 49,000 deep took 7 seconds).
+  const depthOf = (d) => { let n = 0; for (let a = d.around; a; a = a.around) { if (counting) steps++; n++; } return n; };
+  for (const s of found) { s.depth = s.around ? (s.around.depth ?? depthOf(s.around)) + 1 : 0; s.parent = s.around?.name ?? null; s.parentLine = s.around?.line ?? null; }
   for (const s of found) { delete s.around; delete s.startsLine; }
   return found;
 }
