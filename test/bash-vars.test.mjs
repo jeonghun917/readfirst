@@ -408,6 +408,13 @@ test('a function written `f ()` or with its { on the next line, and a subshell a
   assert.deepEqual(s('if false; then :; elif (cd /a); then echo y > g; fi'), ['/r/g']);
   assert.deepEqual(s('if time (cd /a; echo x > f); then echo y > g; fi'), ['/a/f', '/r/g']);
   assert.deepEqual(s('if cd /a; then echo y > g; fi'), ['/a/g']);
+  // (( )) after those words is arithmetic, not two subshells (read as subshells, its ) put back the state from before
+  // the if, so the if and what it changed were taken as sure), and its > compares (it named a file 0).
+  assert.deepEqual(s('if ((x)); then cd /a; fi; echo > f'), ['cd /a']);
+  assert.deepEqual(s('while ((i<3)); do cd sub; echo x > f; done'), ['cd sub']);
+  assert.deepEqual(s('if (( x )); then S=/a; fi; echo > $S/f'), ['$S']);
+  assert.deepEqual(s('if (( x > 0 )); then echo y > g; fi'), ['/r/g']);
+  assert.deepEqual(s('if [[ a > b ]]; then echo y > g; fi'), ['/r/g']);
 });
 
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {

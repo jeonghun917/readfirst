@@ -382,13 +382,14 @@ function withoutComments(text) {
 // next segment). A ) with nothing open is not counted (a case pattern `a)`), and a pair that opens and closes inside
 // the segment ($( ), (( ))) changes nothing.
 function parens(segment, open) {
-  // (( )) is arithmetic, not two subshells.
-  if (/^\s*\(\(/u.test(segment)) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 };
   const b = blank(segment);
   // The ( of a subshell opens after the words that open a loop's or an if's body too: `do (cd h && ...)`, after the
   // words that open its condition (`if (cd /a; ...); then`: its cd was taken past the `)`, and after `until` or `elif`
   // the `)` stuck to the folder, `/a)/g`), and after `time` (`time (cd /a; ...)` lost its cd inside it), until 2026-11-13.
   let i = b.match(/^\s*(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)*/u)[0].length;
+  // (( )) is arithmetic, not two subshells, after those words too: `if ((x)); then cd /a; fi` was read as two
+  // subshells whose ) put back the state from before the if, so the if and its cd were taken as sure (2026-11-13).
+  if (b.startsWith('((', i)) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 };
   const at = i;
   while (i < b.length && (b[i] === '(' || /\s/u.test(b[i]))) i++;
   const lead = (b.slice(at, i).match(/\(/gu) ?? []).length;
@@ -885,7 +886,10 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     const raw = words(segment);
     const opened = opening(raw);
     // Arithmetic and tests compare with > and <: `(( x > 0 ))`, `[[ a > b ]]` write nothing; (( )) may set variables.
-    if (/^(?:\(\(|\[\[)/u.test(opened[0] ?? '') || /^\s*(?:\(\(|\[\[)/u.test(segment)) { if (/^\s*\(\(/u.test(segment)) follow(state, raw, how); return; }
+    // After if, while and the like too (`if (( x > 0 ))` named a file 0: opening took the (( off with the if).
+    let k = 0;
+    while (KEYWORDS.test(raw[k] ?? '')) k++;
+    if (/^(?:\(\(|\[\[)/u.test(opened[0] ?? '') || /^(?:\(\(|\[\[)/u.test(raw[k] ?? '')) { if ((raw[k] ?? '').startsWith('((')) follow(state, raw.slice(k), how); return; }
     // A redirect writes first, with the folder and variables from before the command: `y="$(sort a > b.txt)"` writes
     // b.txt. cd and assignments then change what the commands after them see, and write nothing more.
     redirects(segment);
