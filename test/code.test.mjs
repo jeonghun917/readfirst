@@ -353,10 +353,13 @@ test('params: linear steps in the length of a parameter list, its nesting and it
 });
 
 // The time, for the work the steps do not count (a builtin's: a slice per token was 600 times slower at 16 times the
-// text, with the same steps). Each size is read once first (the first read compiles the reader), then the fastest of
-// five runs is taken: one run varies by 3 times on a shared machine. 16 times the text may take at most 32 times as
-// long (quadratic would be 256); measured 11 to 29 times alone, and once 34 under npm test's other files, so the pair
-// is measured up to three times and one under 32 passes (quadratic fails all three). It runs in a worker stopped after
+// text, with the same steps). The time is the process's CPU time, not the clock's: on a CPU shared with other work a
+// short read can fit in one turn on the CPU while a long one always waits out the others' turns, which doubled the
+// ratio (pinned to one CPU beside a busy loop, a long chain of types measured 36 times by the clock in the median, 23
+// by CPU time; 9 of 30 runs failed by the clock, none by CPU time). Each size is read once first (the first read
+// compiles the reader), then the fastest of five runs is taken. 16 times the text may take at most 32 times as long
+// (quadratic would be 256); the pair is measured up to three times and one under 32 passes (quadratic fails all
+// three). It runs in a worker stopped after
 // 60 seconds: a test's timeout does not stop synchronous code (a test busy for 8 seconds passed a 1 second timeout),
 // and a reader that rescans a parameter list for each parameter was still reading after 240 seconds.
 const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads');
@@ -368,7 +371,7 @@ const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads')
       const text = make(n);
       declarations('a.ts', text, { params: true });
       let best = Infinity;
-      for (let k = 0; k < 5; k++) { const t = process.hrtime.bigint(); declarations('a.ts', text, { params: true }); best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6); }
+      for (let k = 0; k < 5; k++) { const t = process.cpuUsage(); declarations('a.ts', text, { params: true }); const u = process.cpuUsage(t); best = Math.min(best, (u.user + u.system) / 1e3); }
       parentPort.postMessage({ name, n, ms: best });
       return best;
     };
