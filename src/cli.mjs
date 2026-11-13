@@ -549,12 +549,20 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // be outside every repository (couldLandIn). With --gate the call is refused once with them
     // (`unknown:<the command's hash>`) and goes through when made again. Each repository they could land in gets the
     // session's start mark, so the Stop hook checks the files that change there.
-    const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos) : [];
+    const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos, Date.now() + budget / 5) : [];
     const unknownKey = unplaced.length ? `unknown:${createHash('sha1').update(String(event.tool_input.command)).digest('hex').slice(0, 12)}` : null;
     const askUnknown = Boolean(unknownKey) && !before[unknownKey];
     if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) if (!seen[`start:${r}`]) seen[`start:${r}`] = now; }
     // Said once per command: made again, it goes through without the line.
-    const landIn = (u) => (u.looked ? `could be in a repository below ${u.prefix}${u.roots.length ? ` (${u.roots.join(', ')} and more: readfirst stopped looking at ${u.looked})` : ` (readfirst stopped looking at ${u.looked})`}` : u.roots.length ? `could be in ${u.roots.join(', ')}` : 'could be in any repository: none is known to this session');
+    // Five repositories are named for a write and the rest counted with where they are (below its folder, or the ones
+    // this session used): hundreds made a line no one reads (2026-11-13). All of them get the start mark above.
+    const landIn = (u) => {
+      const where = u.prefix ? `below ${u.prefix}` : 'that this session used';
+      // cut: five named, the rest counted with where they are (`where`)
+      const some = u.roots.length > 5 ? `${u.roots.slice(0, 5).join(', ')} and ${u.roots.length - 5} more ${where}` : u.roots.join(', ');
+      if (u.looked) return `could be in a repository below ${u.prefix}${u.roots.length ? ` (${some} and more: readfirst stopped looking at ${u.looked})` : ` (readfirst stopped looking at ${u.looked})`}`;
+      return u.roots.length ? `could be in ${some}` : 'could be in any repository: none is known to this session';
+    };
     const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${u.word}\` (${u.part}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
     if (!targets.length) {
       const root = repoOf(cwd);
@@ -626,8 +634,12 @@ function rootOf(abs, known = new Map()) {
 // every repository and dropped: a temporary folder, a scratch folder with no checkout in it. Until 2026-11-13 the
 // repository was the call's folder alone, so a session started above its repositories (`cd $R/repo && echo > src/f`)
 // was never asked, and every write to $TMPDIR or a mktemp folder was.
+// A part not known inside one folder name (`within`: `/tmp/zz-$r/f`) narrows that to the folders whose name fits its
+// known letters (/tmp/zz-*) and what is below them: it walked all of /tmp, 12 s, and named every repository there
+// (2026-11-13). The walks share 2000 folders and the time until `until`.
 // Returns [{ ...unknown, roots }], roots empty when no repository is known at all (it could be any).
-function couldLandIn(unknown, seen, cwd, made = []) {
+function couldLandIn(unknown, seen, cwd, made = [], until = Infinity) {
+  const walk = { left: 2000, until };
   const known = new Map();
   const roots = new Set();
   const here = repoOf(cwd);
@@ -647,25 +659,33 @@ function couldLandIn(unknown, seen, cwd, made = []) {
     if (own) { out.push({ ...u, roots: [own] }); continue; }
     // A new mktemp path, or a file whose name alone is not known (`$S/out-$k.txt`), is in that folder: nothing below.
     if (u.fresh || u.direct) continue;
-    const under = (r) => `${r}/`.startsWith(dir);
-    const disk = reposUnder(dir);
+    // The first folder name below dir a repository is in ('' for dir itself: a checkout the command makes whose own name
+    // is not known), and whether it fits `within`.
+    const w = u.within;
+    const fits = (name) => !w || name === '' || (name.length >= w.pre.length + w.post.length && name.startsWith(w.pre) && name.endsWith(w.post));
+    const under = (r) => `${r}/`.startsWith(dir) && fits(`${r}/`.slice(dir.length).split('/')[0]);
+    let starts = [dir];
+    if (w) { try { starts = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory() && fits(e.name)).map((e) => join(dir, e.name)); } catch { starts = []; } }
+    const disk = { found: [], cut: null };
+    for (const s of starts) { const r = reposUnder(s, walk); disk.found.push(...r.found); if (r.cut) { disk.cut = r.cut; break; } }
     const where = [...new Set([...[...roots].filter(under), ...made.filter(under), ...disk.found])];
     if (where.length || disk.cut) out.push({ ...u, roots: where, ...(disk.cut ? { looked: disk.cut } : {}) });
   }
   return out;
 }
 
-// The checkouts (a folder with a .git in it) in a folder and below it, from a walk of at most `limit` folders, five
-// deep; node_modules and .git are not entered. cut: the folder the walk stopped in when it reached the limit, so the
-// caller counts a repository as possible there rather than none.
-function reposUnder(dir, limit = 2000) {
+// The checkouts (a folder with a .git in it) in a folder and below it, five deep, from a walk of at most `walk.left`
+// folders (shared by the walks of one call) and until `walk.until`; node_modules and .git are not entered. cut: the
+// folder the walk stopped in when it reached either, so the caller counts a repository as possible there rather than
+// none.
+function reposUnder(dir, walk = { left: 2000, until: Infinity }) {
   const found = [];
   const queue = [[dir.replace(/\/$/u, ''), 0]];
-  let walked = 0;
   while (queue.length) {
     const [d, depth] = queue.shift();
-    // cut: the walk stops at `limit` folders; `cut` names where, and couldLandIn then keeps the write as possible
-    if (++walked > limit) return { found, cut: d };
+    // cut: the walk stops after `walk.left` folders or at `walk.until`; `cut` names where, and couldLandIn then keeps
+    // the write as possible
+    if (--walk.left < 0 || Date.now() > walk.until) return { found, cut: d };
     let entries;
     try { entries = readdirSync(d, { withFileTypes: true }); } catch { continue; }
     if (entries.some((e) => e.name === '.git')) { found.push(d); continue; }

@@ -42,7 +42,8 @@ test('what the command cannot know is listed as unknown, never dropped', () => {
   assert.deepEqual(unknown('ls > $OUT'), ['$OUT']);
   assert.deepEqual(unknown('cd $D && echo x > f.txt'), ['$D']);
   assert.deepEqual(unknown('S=$(mktemp -d); echo x > $S/f'), ['$(mktemp -d)']);
-  assert.deepEqual(unknown('for f in a b; do echo x > $f.txt; done'), ['$f']);
+  assert.deepEqual(unknown('for f in $L; do echo x > $f.txt; done'), ['$f']);
+  assert.deepEqual(unknown('for f in *.js; do echo x > $f.txt; done'), ['$f'], 'a glob list: what it matches when it runs');
   assert.deepEqual(unknown('echo x > "$(git rev-parse --show-toplevel)/f"'), ['$(git rev-parse --show-toplevel)']);
   assert.deepEqual(shellWrites('cd $D && echo x > f.txt', '/r').unknown[0].why, 'D is not set by the command');
   // A write the command names in full is still named; only the unknown one is listed.
@@ -85,7 +86,7 @@ test('variables from the environment, mktemp, $OLDPWD and the checkouts a comman
   assert.deepEqual(s('F=$(mktemp -p /q); echo > $F').unknown.map((u) => [u.prefix, u.fresh]), [['/q/', true]]);
   assert.deepEqual(s('F=$(mktemp x.XXX); echo > $F').unknown.map((u) => [u.prefix, u.fresh]), [['/r/', true]], 'a template with no folder: where the command is');
   assert.deepEqual(s('cd /a && cd /b && echo > $OLDPWD/f').files, ['/a/f']);
-  assert.deepEqual(s('for r in a b; do echo > /s/w-$r/f; done').unknown.map((u) => [u.prefix, u.fresh]), [['/s', undefined]], 'a loop variable: not new');
+  assert.deepEqual(s('for r in $L; do echo > /s/w-$r/f; done').unknown.map((u) => [u.prefix, u.fresh]), [['/s', undefined]], 'a loop variable: not new');
   // Not known only inside a file's name: the file is in that folder. A whole part may hold a /: it could be below.
   assert.deepEqual(s('echo > /s/out-$k.txt').unknown.map((u) => [u.prefix, u.direct]), [['/s', true]]);
   assert.deepEqual(s('echo > /s/$r').unknown.map((u) => [u.prefix, u.direct]), [['/s/', undefined]]);
@@ -216,17 +217,94 @@ test('hook --gate from outside: $TMPDIR and mktemp writes are quiet; a loop writ
   const scratch = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-scratch-'));
   mkdirSync(join(scratch, 'w-main'));
   writeFileSync(join(scratch, 'w-main/.git'), 'gitdir: /elsewhere\n');
-  const asked = hook(outside, fresh(), `S=${scratch}; for rev in a b; do cp t.js $S/w-$rev/test/; done`);
+  const asked = hook(outside, fresh(), `S=${scratch}; for rev in $REVS; do cp t.js $S/w-$rev/test/; done`);
   assert.equal(asked.permissionDecision, 'deny');
   assert.match(asked.permissionDecisionReason, /\$rev: rev is a loop variable; could be in [^)]*w-main/u);
-  // An empty scratch folder where the command itself makes the worktree: asked too.
+  // A literal list is followed: w-a and w-b are not checkouts, so the writes are outside every repository.
+  assert.equal(hook(outside, fresh(), `S=${scratch}; for rev in a b; do cp t.js $S/w-$rev/test/; done`), null);
+  // An empty scratch folder where the command itself makes the worktree: asked too, with the list known or not.
   const empty = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-scratch-'));
-  const made = hook(outside, fresh(), `S=${empty}; for rev in a b; do git worktree add $S/w-$rev $rev; cp t.js $S/w-$rev/test/; done`);
-  assert.equal(made.permissionDecision, 'deny');
+  for (const list of ['$REVS', 'a b']) {
+    const made = hook(outside, fresh(), `S=${empty}; for rev in ${list}; do git worktree add $S/w-$rev $rev; cp t.js $S/w-$rev/test/; done`);
+    assert.equal(made?.permissionDecision, 'deny', list);
+  }
   // The same loop into an empty scratch folder that makes no checkout: outside every repository, quiet.
-  assert.equal(hook(outside, fresh(), `S=${empty}; for rev in a b; do cp t.js $S/out-$rev.txt; done`), null);
+  assert.equal(hook(outside, fresh(), `S=${empty}; for rev in $REVS; do cp t.js $S/out-$rev.txt; done`), null);
   // A file whose name alone is not known lands in the scratch folder itself, not in the worktree below it: quiet.
   assert.equal(hook(outside, fresh(), `for k in 1 2; do npm test > ${scratch}/run$k.txt; done`), null);
+});
+
+// Second review (2026-11-13): a value holds inside the block that sets it and is not known after a block or an && / ||
+// list that may not have run; a literal loop list is followed; `"a$"` keeps its $.
+test('blocks, && lists, loops, cd -, pushd and popd: a value is known exactly where it surely holds', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => u.part)]; };
+  // A $ before the closing quote is a plain $; $'...' and $"..." only open outside quotes.
+  assert.deepEqual(s('echo x > "a$"'), ['/r/a$']);
+  assert.deepEqual(s('echo x > "$"'), ['/r/$']);
+  assert.deepEqual(s('echo x > "$\'b\'"'), ["/r/$'b'"]);
+  // Inside an if or a loop, a value or a cd holds for what follows it there; after the block it is not known.
+  assert.deepEqual(s('if true; then S=/a; echo x > $S/f; fi'), ['/a/f']);
+  assert.deepEqual(s('for i in 1; do cd /a && sed -i s/a/b/ f.js; done'), ['/a/f.js']);
+  assert.deepEqual(s('if true; then S=/a; fi; echo x > $S/f'), ['$S']);
+  assert.deepEqual(s('S=/z; if x; then S=/a; else echo x > $S/f; fi'), ['/z/f'], 'else starts from before the if');
+  assert.deepEqual(s('S=/z; if x; then S=/a; else S=/a; fi; echo x > $S/f'), ['$S'], 'a branch changed it');
+  assert.deepEqual(s('S=/z; if x; then echo; fi; echo x > $S/f'), ['/z/f'], 'a block that changes nothing');
+  assert.deepEqual(s('case $x in a) S=/a;; b) echo x > $S/f;; esac'), ['$S'], 'case arms are alternatives');
+  // A ( after do, then or else opens a subshell: its cd runs, and ends at its ).
+  assert.deepEqual(s('for i in 1; do (cd h && node x > ../s.txt) & wait; done; echo > g'), ['/r/s.txt', '/r/g']);
+  // In a loop each turn starts where the last ended: a relative cd and a value built from itself are not known.
+  assert.deepEqual(s('for i in 1 2; do cd sub; echo x > f; done'), ['cd sub']);
+  assert.deepEqual(s('for i in 1 2; do S=$S/x; echo > $S/f; done'), ['$S']);
+  // A command after && or || may not run: what it changed is not known once the list ends; inside it, it is.
+  assert.deepEqual(s('[ -n "$X" ] && S=/a; echo x > $S/f'), ['$S']);
+  assert.deepEqual(s('test -d /a && cd /a; echo x > f'), ['cd /a']);
+  assert.deepEqual(s('test -d /a && cd /a && echo x > f'), ['/a/f']);
+  assert.deepEqual(s('cd /a && echo x > f; echo y > g'), ['/a/f', '/a/g'], 'the first command of a list always runs');
+  // The ; of a block's own syntax does not end the list around it, and a here-document's walk does not end it either.
+  assert.deepEqual(s('S=/s && for r in a b; do echo > $S/w-$r/f; done'), ['/s/w-a/f', '/s/w-b/f']);
+  assert.deepEqual(s("S=/s && cd $S && python3 - <<'EOF'\nopen('o.txt', 'w')\nEOF"), ['/s/o.txt']);
+  // A checkout made at a folder not known in full is somewhere below the known part; a file beside it is not in it.
+  assert.deepEqual(s('S=/s; git worktree add $S/w-$R x; echo > $S/out.txt'), ['/s/out.txt']);
+  // export -n takes the mark off: bash -c does not see it.
+  assert.deepEqual(s('S=/a; export S; export -n S; bash -c "echo x > \\$S/f"'), ['$S']);
+  // cd - goes back to $OLDPWD; popd to the folder pushd left.
+  assert.deepEqual(s('cd /a; cd /b; cd -; echo x > f'), ['/a/f']);
+  assert.deepEqual(s('pushd /a; pushd /b; popd; echo x > f'), ['/a/f']);
+  // A loop over a literal list writes once per value; a list the shell expands is not known.
+  assert.deepEqual(s('for r in a b; do echo x > /t/zz-$r/f.txt; done'), ['/t/zz-a/f.txt', '/t/zz-b/f.txt']);
+  assert.deepEqual(s('for r in a "b c"; do for k in 1 2; do echo > /t/$r-$k; done; done'), ['/t/a-1', '/t/a-2', '/t/b c-1', '/t/b c-2']);
+  assert.deepEqual(s('for r in a b; do echo; done; echo > /t/$r'), ['$r'], 'after the loop');
+  // A file in a checkout the command makes is not there yet: listed in that checkout.
+  assert.deepEqual(shellWrites('git worktree add /s/w main && cp t.js /s/w/test/', '/r').unknown.map((u) => [u.word, u.prefix]), [['/s/w/test/', '/s/w/']]);
+  // within: a part not known inside one folder name.
+  assert.deepEqual(shellWrites('echo x > /t/zz-$R/f.txt', '/r').unknown.map((u) => u.within), [{ dir: '/t/', pre: 'zz-', post: '' }]);
+  assert.deepEqual(shellWrites('echo x > /t/$A/$B/f.txt', '/r').unknown.map((u) => u.within), [undefined], 'more than one folder name');
+});
+
+// The hook from a folder outside every repository, with many repositories next to where a write goes (2026-11-13:
+// `/tmp/zz-$r/f.txt` walked all of /tmp, 12 s, and the refusal named hundreds of repositories).
+test('hook --gate: a part not known inside one folder name looks only at folders of that shape, fast, and names few', () => {
+  n++;
+  const outside = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-outside-'));
+  const many = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-many-'));
+  for (let k = 0; k < 300; k++) mkdirSync(join(many, `r${k}`, '.git'), { recursive: true });
+  const fresh = () => mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
+  const timed = (command) => { const t = Date.now(); const out = hook(outside, fresh(), command); return { out, ms: Date.now() - t }; };
+  for (const c of [`echo x > ${many}/zz-$R/f.txt`, `for r in a b; do echo x > ${many}/zz-$r/f.txt; done`]) {
+    const { out, ms } = timed(c);
+    assert.equal(out, null, c);
+    assert.ok(ms < 1000, `${c}: ${ms} ms`);
+  }
+  // A folder of that shape that is a repository: asked, and only it is named.
+  mkdirSync(join(many, 'zz-a', '.git'), { recursive: true });
+  const one = timed(`echo x > ${many}/zz-$R/f.txt`).out;
+  assert.equal(one?.permissionDecision, 'deny');
+  assert.match(one.permissionDecisionReason, new RegExp(`could be in ${join(many, 'zz-a').replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\)`, 'u'));
+  // A whole folder name not known: every repository below could be it; five are named and the rest counted.
+  const all = timed(`echo x > ${many}/$X/f.txt`);
+  assert.equal(all.out?.permissionDecision, 'deny');
+  assert.match(all.out.permissionDecisionReason, new RegExp(`and 296 more below ${many.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}/`, 'u'));
+  assert.ok(all.out.permissionDecisionReason.length < 1500, `${all.out.permissionDecisionReason.length} characters`);
 });
 
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
