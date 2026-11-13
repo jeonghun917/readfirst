@@ -382,11 +382,14 @@ function withoutComments(text) {
 // next segment). A ) with nothing open is not counted (a case pattern `a)`), and a pair that opens and closes inside
 // the segment ($( ), (( ))) changes nothing.
 function parens(segment, open) {
-  // (( )) is arithmetic, not two subshells.
-  if (/^\s*\(\(/u.test(segment)) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 };
   const b = blank(segment);
-  // The ( of a subshell opens after the words that open a loop's or an if's body too: `do (cd h && ...)`.
-  let i = b.match(/^\s*(?:(?:do|then|else|!)\s+)*/u)[0].length;
+  // The ( of a subshell opens after the words that open a loop's or an if's body too: `do (cd h && ...)`, after the
+  // words that open its condition (`if (cd /a; ...); then`: its cd was taken past the `)`, and after `until` or `elif`
+  // the `)` stuck to the folder, `/a)/g`), and after `time` (`time (cd /a; ...)` lost its cd inside it), until 2026-11-13.
+  let i = b.match(/^\s*(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)*/u)[0].length;
+  // (( )) is arithmetic, not two subshells, after those words too: `if ((x)); then cd /a; fi` was read as two
+  // subshells whose ) put back the state from before the if, so the if and its cd were taken as sure (2026-11-13).
+  if (b.startsWith('((', i)) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 };
   const at = i;
   while (i < b.length && (b[i] === '(' || /\s/u.test(b[i]))) i++;
   const lead = (b.slice(at, i).match(/\(/gu) ?? []).length;
@@ -504,6 +507,11 @@ function mayCd(state, name, seen = new Set()) {
 // command's: eachCommand passes '' for it.
 function howItRuns(state, raw, before, after) {
   const pipe = /^\|&?$/u.test(before ?? '') || /^\|&?$/u.test(after ?? '');
+  // A body whose { stands on the line after the name (`f()` then `{`) is the function's: follow reads the rest of it
+  // as the body (it was read as a { } group that runs where it is written, so its cd moved the folder with no call,
+  // until 2026-11-13). Here, where the { is still on the words. A blank or comment line between them is no command and
+  // leaves it waiting (it took the wait away, so the body after `f ()`, a comment and `{` ran where it was written).
+  if (state.fnAwait && raw.length) { state.fnAwait = false; if ((raw[0] ?? '').startsWith('{')) state.fnDepth = 1; }
   let ws = raw;
   for (;;) {
     const head = (ws[0] ?? '').replace(/^[({]+/u, '');
@@ -598,8 +606,9 @@ function follow(state, ws, { pipe = false, maybe = false } = {}) {
   while (/^(?:time|command|builtin)$/u.test(unquote(ws[at] ?? ''))) { at++; while (/^-p$/u.test(ws[at] ?? '')) at++; }
   if (at) {
     if (/^-[vV]$/u.test(ws[at] ?? '')) return false;
-    const group = (ws[at] ?? '').replace(/^\{/u, '');
-    ws = (ws[at] ?? '').startsWith('{') ? (group ? [group, ...ws.slice(at + 1)] : ws.slice(at + 1)) : ws.slice(at);
+    // A { } group or a ( ) subshell after them: what is inside is the command (parens keeps the subshell's folder).
+    const group = (ws[at] ?? '').replace(/^[{(]/u, '');
+    ws = /^[{(]/u.test(ws[at] ?? '') ? (group ? [group, ...ws.slice(at + 1)] : ws.slice(at + 1)) : ws.slice(at);
   }
   // An assignment has no command name: `E=/s/eval` is not `eval` (it lost every variable for a while on 2026-11-13).
   const cmd = ASSIGN.test(ws[0] ?? '') ? '' : unquote(ws[0] ?? '').split('/').pop();
@@ -613,7 +622,8 @@ function follow(state, ws, { pipe = false, maybe = false } = {}) {
     for (const w of ws) { if (w === '{' || w.endsWith('{')) state.fnDepth++; if (w === '}' || w.startsWith('}')) state.fnDepth--; }
     return true;
   }
-  const def = ws[0] === 'function' && NAME.test((ws[1] ?? '').replace(/\(\)$/u, '')) ? ws[1].replace(/\(\)$/u, '') : (ws[0] ?? '').match(/^([A-Za-z_][\w-]*)\(\)/u)?.[1];
+  // `name ()` with a space is a definition as `name()` is (it was read as a call of name until 2026-11-13).
+  const def = ws[0] === 'function' && NAME.test((ws[1] ?? '').replace(/\(\)$/u, '')) ? ws[1].replace(/\(\)$/u, '') : ws[1] === '()' && /^[A-Za-z_][\w-]*$/u.test(ws[0] ?? '') ? ws[0] : (ws[0] ?? '').match(/^([A-Za-z_][\w-]*)\(\)/u)?.[1];
   if (def) {
     // A name defined twice is not known: which body runs depends on where the call is.
     state.fnBody = { cd: state.fns.has(def), cmds: new Set() };
@@ -625,6 +635,7 @@ function follow(state, ws, { pipe = false, maybe = false } = {}) {
     if (first && !first.startsWith('}')) state.fnBody.cmds.add(first);
     const braces = ws.reduce((d, w) => d + (w === '{' || w.endsWith('{') ? 1 : 0) - (w === '}' || w.startsWith('}') ? 1 : 0), 0);
     state.fnDepth = Math.max(0, braces);
+    state.fnAwait = open < 0; // the body has not begun on this line
     return true;
   }
   // The function's body may cd too (mayCd): then where relative paths start is not known after the call either (until
@@ -875,7 +886,10 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     const raw = words(segment);
     const opened = opening(raw);
     // Arithmetic and tests compare with > and <: `(( x > 0 ))`, `[[ a > b ]]` write nothing; (( )) may set variables.
-    if (/^(?:\(\(|\[\[)/u.test(opened[0] ?? '') || /^\s*(?:\(\(|\[\[)/u.test(segment)) { if (/^\s*\(\(/u.test(segment)) follow(state, raw, how); return; }
+    // After if, while and the like too (`if (( x > 0 ))` named a file 0: opening took the (( off with the if).
+    let k = 0;
+    while (KEYWORDS.test(raw[k] ?? '')) k++;
+    if (/^(?:\(\(|\[\[)/u.test(opened[0] ?? '') || /^(?:\(\(|\[\[)/u.test(raw[k] ?? '')) { if ((raw[k] ?? '').startsWith('((')) follow(state, raw.slice(k), how); return; }
     // A redirect writes first, with the folder and variables from before the command: `y="$(sort a > b.txt)"` writes
     // b.txt. cd and assignments then change what the commands after them see, and write nothing more.
     redirects(segment);

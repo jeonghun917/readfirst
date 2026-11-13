@@ -380,6 +380,43 @@ test('command, builtin and time cd, source, case heads after {, if or a wrapper,
   assert.deepEqual(s('f() { npm test; }; f() { cd /z; }; f; echo > h'), ['f']);
 });
 
+test('a function written `f ()` or with its { on the next line, and a subshell after time', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => u.part)]; };
+  // `name ()` with a space is a function too (it was read as the command f, so the call's cd was lost and h was /r/h).
+  assert.deepEqual(s('f () { cd /a; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('f () { echo hi; }; f; echo > h'), ['/r/h']);
+  assert.deepEqual(s('function f () { cd /a; }; f; echo > h'), ['f']);
+  // A body whose { is on the line after the name runs when it is called, not where it is written (its cd was run at the
+  // definition, so h was /a/h with no call).
+  assert.deepEqual(s('f ()\n{\n  cd /a\n}\necho > h'), ['/r/h']);
+  assert.deepEqual(s('f()\n{\n  cd /a\n}\necho > h'), ['/r/h']);
+  assert.deepEqual(s('f ()\n{ cd /a\n}\nf\necho > h'), ['f']);
+  assert.deepEqual(s('f()\n{\n  npm test\n}\nf\necho > h'), ['/r/h']);
+  // A comment or blank line between the name and its { leaves the body still to come.
+  assert.deepEqual(s('f ()\n# the body\n{ cd /a\n}\nf; echo > h'), ['f']);
+  assert.deepEqual(s('f ()\n\n# c\n\n{\n cd /a\n}\necho > h'), ['/r/h']);
+  assert.deepEqual(s('f() { echo; }\n\n{ cd /b; }\necho > h'), ['/b/h']);
+  // time ( ... ) is a subshell: its cd moves what is inside it, and what follows its ) starts from before it.
+  assert.deepEqual(s('time (cd /a; echo x > f); echo y > g'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('time -p ( cd /a; echo x > f ); echo y > g'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('time ( echo x > f ); echo y > g'), ['/r/f', '/r/g']);
+  // So is a ( ) right after if, elif, while or until: its cd ends at its ) (it went on past it, and after until or elif
+  // the ) stuck to the folder: /a)/g).
+  assert.deepEqual(s('if (cd /a; echo x > f); then echo y > g; fi'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('while (cd /a; echo x > f); do echo y > g; done'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('until (cd /a); do echo y > g; done'), ['/r/g']);
+  assert.deepEqual(s('if false; then :; elif (cd /a); then echo y > g; fi'), ['/r/g']);
+  assert.deepEqual(s('if time (cd /a; echo x > f); then echo y > g; fi'), ['/a/f', '/r/g']);
+  assert.deepEqual(s('if cd /a; then echo y > g; fi'), ['/a/g']);
+  // (( )) after those words is arithmetic, not two subshells (read as subshells, its ) put back the state from before
+  // the if, so the if and what it changed were taken as sure), and its > compares (it named a file 0).
+  assert.deepEqual(s('if ((x)); then cd /a; fi; echo > f'), ['cd /a']);
+  assert.deepEqual(s('while ((i<3)); do cd sub; echo x > f; done'), ['cd sub']);
+  assert.deepEqual(s('if (( x )); then S=/a; fi; echo > $S/f'), ['$S']);
+  assert.deepEqual(s('if (( x > 0 )); then echo y > g; fi'), ['/r/g']);
+  assert.deepEqual(s('if [[ a > b ]]; then echo y > g; fi'), ['/r/g']);
+});
+
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
   n++;
   const root = repo();
