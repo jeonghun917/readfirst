@@ -463,6 +463,43 @@ test('a { or } that is an argument, `f ( )`, and time ( inside time (', () => {
   assert.deepEqual(s('time { time { cd a; }; }; echo > h'), ['/r/a/h']);
 });
 
+test('arithmetic: $(( )), $[ ] and (( )) wherever they open compare and compute; a > or | in them is no redirect or pipe', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => u.part)]; };
+  // Their > was a redirect: a file 0, 1, 2 or `0]` was named.
+  assert.deepEqual(s('echo $((1 > 0)) > n.txt'), ['/r/n.txt']);
+  assert.deepEqual(s('x=$(( 2 > 1 )); echo > $x.txt'), ['$(( 2 > 1 ))']);
+  assert.deepEqual(s('y=$((a>>2))'), []);
+  assert.deepEqual(s('echo $[1>0]'), []);
+  assert.deepEqual(s('echo $[ 1 > 0 ] > m'), ['/r/m']);
+  assert.deepEqual(s('echo "$((1 > 0))" > q'), ['/r/q']);
+  assert.deepEqual(s('echo $(( (1+2) > 0 )) > w'), ['/r/w']);
+  assert.deepEqual(s('time (( x > 0 )); echo y > g'), ['/r/g']);
+  // A $( ) inside arithmetic still holds commands, and one beside it is still read: these write.
+  assert.deepEqual(s('echo $(( $(cat f) > 1 )) > o'), ['/r/o']);
+  assert.deepEqual(s('echo $(echo hi > r)'), ['/r/r']);
+  assert.deepEqual(s('echo "$(( x ))" "$(echo y > v)"'), ['/r/v']);
+  // A (( )) command makes the names it sets not known in every walk: the folder a here-document's code starts in, and
+  // a `readfirst read` after a cd to one (both kept n's old value).
+  assert.deepEqual(s("n=a; ((n++)); cd $n; python3 - <<'E'\nopen('f','w')\nE"), ['$n']);
+  assert.deepEqual(s("n=a; cd $n; python3 - <<'E'\nopen('f','w')\nE"), ['/r/a/f']);
+  assert.deepEqual(bashReads('n=a; ((n++)); cd $n && readfirst read f', '/r'), []);
+  assert.deepEqual(bashReads('n=a; cd $n && readfirst read f', '/r').map((r) => r.files), [['/r/a/f']]);
+  // $(( is arithmetic only when its inner ( closes right before the outer one, as bash reads it: these are a $( )
+  // holding a subshell, and write (taken whole for arithmetic, they were lost); `$((echo hi > d))` is arithmetic.
+  assert.deepEqual(s('echo $((echo 1) > /t/b)'), ['/t/b']);
+  assert.deepEqual(s('echo $((cd /t); echo x > /t/e)'), ['/t/e']);
+  assert.deepEqual(s('echo $((cd /t; echo hi > /t/a) )'), ['/t/a']);
+  assert.deepEqual(s('x=$((echo 1);echo z > /t/f)'), ['/t/f']);
+  assert.deepEqual(s('echo $((echo hi > /t/d))'), []);
+  // A redirect after the )) of (( )) or the ]] of [[ ]] writes (it was dropped with what was inside).
+  assert.deepEqual(s('(( n )) > f'), ['/r/f']);
+  assert.deepEqual(s('[[ a > b ]] > f'), ['/r/f']);
+  // A $( ) inside $(( )) is counted, not read again by closeOf: 2,000 of `$( $((1 ` ran out of stack.
+  assert.doesNotThrow(() => shellWrites('echo $( $((1 '.repeat(2000), '/r'));
+  // Inside quotes too: `echo "` and 8,000 of `$(( ` threw on main (RangeError), and the hook let the call through.
+  assert.doesNotThrow(() => shellWrites(`echo "${'$(( '.repeat(8000)}`, '/r'));
+});
+
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
   n++;
   const root = repo();
