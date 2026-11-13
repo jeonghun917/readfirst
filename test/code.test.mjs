@@ -359,9 +359,9 @@ test('params: linear steps in the length of a parameter list, its nesting and it
 // by CPU time; 9 of 30 runs failed by the clock, none by CPU time). Each size is read once first (the first read
 // compiles the reader), then the fastest of five runs is taken. 16 times the text may take at most 32 times as long
 // (quadratic would be 256); the pair is measured up to three times and one under 32 passes (quadratic fails all
-// three). It runs in a worker stopped after
-// 60 seconds: a test's timeout does not stop synchronous code (a test busy for 8 seconds passed a 1 second timeout),
-// and a reader that rescans a parameter list for each parameter was still reading after 240 seconds.
+// three). It runs in a worker stopped after 60 seconds: a test's timeout does not stop synchronous code (a test busy
+// for 8 seconds passed a 1 second timeout), and a reader that rescans a parameter list for each parameter was still
+// reading after 240 seconds.
 const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads');
 (async () => {
   const { declarations } = await import(${JSON.stringify(new URL('../src/code.mjs', import.meta.url).href)});
