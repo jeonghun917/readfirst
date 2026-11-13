@@ -5,7 +5,7 @@
 // writes nothing.
 import { matcher, groupOf, MAP_PATH } from './map.mjs';
 import { isTest, OTHER_CODE } from './readlist.mjs';
-import { codeRows, declarations, reads } from './code.mjs';
+import { codeRows, declarations, reads, tokens } from './code.mjs';
 
 export const FIND_FORMAT = 'readfirst/find@1';
 
@@ -105,6 +105,38 @@ function readDefinitions(path, body) {
   out.header = headerOf(path, body, lines, decls);
   return out;
 }
+
+// The constants of a file that hold a list or a table of names (`const HTTP_CLIENTS = ['axios', 'got']`,
+// `RATE_LIMITS = {"slack": 1}`, `new Set([...])`): a value find's definitions leave out, though it is what another
+// list of the same names repeats. Each: the constant's name, line, comment and `values`, the names written in it:
+// its strings with no space in them and its object keys. Only constants of the file's top level (or what a module
+// exports) whose value has a bracket and at least two such names; a list inside a function is the function's.
+// Kept apart from `definitions`, which the find gate (newCode in src/cli.mjs) and the trigger engine also read: a new
+// list is not new code for them.
+function listsOf(path, body) {
+  if (!body || !reads(path)) return [];
+  const lines = body.split('\n');
+  const rows = codeRows(path, body);
+  const py = /\.py$/u.test(path);
+  const out = [];
+  for (const d of declarations(path, body, { members: true })) {
+    if (d.what !== 'var' || d.fn || d.depth || (d.member && !d.ofModule) || d.name.startsWith('#') || d.name.length < 3) continue;
+    const toks = tokens(rows, d.line - 1, d.end);
+    const eq = toks.findIndex((t) => t.k === 'punct' && t.v === '=');
+    const value = eq < 0 ? [] : toks.slice(eq + 1);
+    if (!value.some((t) => t.k === 'punct' && (t.v === '[' || t.v === '{'))) continue;
+    const values = [];
+    value.forEach((t, k) => {
+      // A name is a string with no space in it ('node-fetch', 'api.stripe.com'): a sentence or a file's text in a
+      // string is something else, and a table of test fixtures would otherwise match every query.
+      if (t.k === 'val' && t.text && t.endLine === t.line && !/\s/u.test(t.text)) values.push(t.text.replace(/\\./gu, ' '));
+      else if (t.k === 'word' && value[k + 1]?.v === ':' && ['{', ','].includes(value[k - 1]?.v)) values.push(t.v);
+    });
+    if (values.length < 2) continue;
+    out.push({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), values });
+  }
+  return out;
+}
 // The comment a file opens with, when it is not the comment of its first declaration: the lines of comment from the
 // first line (after a `#!` line) up to the first line of code or the first blank line after text.
 function headerOf(path, body, lines, decls) {
@@ -153,6 +185,7 @@ export function find({ query, files, imports = [], read = () => null, map = null
   // Every place a word can be found, with its own words.
   const items = [];
   let defs = 0;
+  let lists = 0;
   for (const f of code) {
     const test = isTest(f);
     const at = words(f.replace(/\.[^./]+$/u, ''));
@@ -162,6 +195,9 @@ export function find({ query, files, imports = [], read = () => null, map = null
     // they return).
     items.push({ kind: 'file', file: f, words: at, doc: words(found.header ?? ''), test });
     for (const d of found) { defs++; items.push({ kind: d.kind, name: d.name, file: f, line: d.line, words: words(d.name), path: at, doc: words(d.doc), test }); }
+    // A constant holding a list or table is found by its name and by the names written in it ("axios" in
+    // HTTP_CLIENTS), so a third list of the same HTTP libraries is not written beside two.
+    for (const l of listsOf(f, read(f))) { lists++; items.push({ kind: 'list', name: l.name, file: f, line: l.line, words: words(l.name), path: at, doc: words(l.doc), values: words(l.values.join(' ')), test }); }
   }
   for (const g of map?.groups ?? []) items.push({ kind: 'group', id: g.id, text: g.title, words: words(`${g.id} ${g.title}`) });
   for (const r of map?.rules ?? []) items.push({ kind: 'rule', id: r.id, text: r.rule, words: words(`${r.id} ${r.rule} ${r.why ?? ''}`) });
@@ -178,13 +214,15 @@ export function find({ query, files, imports = [], read = () => null, map = null
     // short and say less than what the code is for.
     const inName = asked.filter((q) => it.words.some((w) => meets(q, w)));
     const inDoc = asked.filter((q) => !inName.includes(q) && (it.doc ?? []).some((w) => meets(q, w)));
-    if (!inName.length && !inDoc.length) continue;
-    const inPath = asked.filter((q) => !inName.includes(q) && !inDoc.includes(q) && (it.path ?? []).some((w) => meets(q, w)));
-    const matched = [...inName, ...inDoc, ...inPath];
+    // The names a list holds count as its comment does: what it is about, below its own name.
+    const inValues = asked.filter((q) => !inName.includes(q) && !inDoc.includes(q) && (it.values ?? []).some((w) => meets(q, w)));
+    if (!inName.length && !inDoc.length && !inValues.length) continue;
+    const inPath = asked.filter((q) => !inName.includes(q) && !inDoc.includes(q) && !inValues.includes(q) && (it.path ?? []).some((w) => meets(q, w)));
+    const matched = [...inName, ...inDoc, ...inValues, ...inPath];
     // A name made only of the words asked for ("retryPayment" for "payment retry") is the closest match.
     const exact = it.words.length && it.words.every((w) => asked.some((q) => meets(q, w)));
-    const score = inName.reduce((s, q) => s + weight(q), 0) + inPath.reduce((s, q) => s + weight(q) / 2, 0) + inDoc.reduce((s, q) => s + weight(q) * 0.6, 0) + (exact ? 0.5 : 0);
-    scored.push({ it, matched, exact, score, inDoc });
+    const score = inName.reduce((s, q) => s + weight(q), 0) + inPath.reduce((s, q) => s + weight(q) / 2, 0) + [...inDoc, ...inValues].reduce((s, q) => s + weight(q) * 0.6, 0) + (exact ? 0.5 : 0);
+    scored.push({ it, matched, exact, score, inDoc, inValues });
   }
   // Most words matched first, then code before tests and code being replaced, then rarer words, then the most used.
   const order = (a, b) => b.matched.length - a.matched.length || Number(Boolean(a.it.test)) - Number(Boolean(b.it.test)) || Number(Boolean(replaced(a.it.file))) - Number(Boolean(replaced(b.it.file))) || b.score - a.score || (users.get(b.it.file) ?? 0) - (users.get(a.it.file) ?? 0) || String(a.it.file ?? a.it.id).localeCompare(String(b.it.file ?? b.it.id));
@@ -198,9 +236,9 @@ export function find({ query, files, imports = [], read = () => null, map = null
     format: FIND_FORMAT,
     query,
     words: asked,
-    searched: { files: code.length, definitions: defs, groups: map?.groups.length ?? 0, rules: map?.rules?.length ?? 0 },
+    searched: { files: code.length, definitions: defs, lists, groups: map?.groups.length ?? 0, rules: map?.rules?.length ?? 0 },
     // cut: `more` counts the rest of both lists, said as "…and N more (--limit)"
-    code: codeHits.slice(0, limit).map(({ it, matched, exact, inDoc }) => ({ kind: it.kind, ...(it.name ? { name: it.name } : {}), file: it.file, ...(it.line ? { line: it.line } : {}), group: group(it.file), usedBy: users.get(it.file) ?? 0, test: it.test, matched, exact, ...(inDoc.length ? { inComment: inDoc } : {}), ...(replaced(it.file) ? { deprecated: { use: replaced(it.file).use ?? null } } : {}) })),
+    code: codeHits.slice(0, limit).map(({ it, matched, exact, inDoc, inValues }) => ({ kind: it.kind, ...(it.name ? { name: it.name } : {}), file: it.file, ...(it.line ? { line: it.line } : {}), group: group(it.file), usedBy: users.get(it.file) ?? 0, test: it.test, matched, exact, ...(inDoc.length ? { inComment: inDoc } : {}), ...(inValues.length ? { inValues } : {}), ...(replaced(it.file) ? { deprecated: { use: replaced(it.file).use ?? null } } : {}) })),
     // cut: see above
     map: mapHits.slice(0, limit).map(({ it, matched }) => ({ kind: it.kind, ...(it.id ? { id: it.id } : {}), ...(it.group ? { group: it.group } : {}), text: it.text, matched })),
     more: { code: Math.max(0, codeHits.length - limit), map: Math.max(0, mapHits.length - limit) },
@@ -211,13 +249,13 @@ export function find({ query, files, imports = [], read = () => null, map = null
 export function findText(r) {
   const out = [`# Already in the code? "${r.query}"`, ''];
   if (!r.words.length) return `${out.join('\n')}Only words like "add", "new" or "helper" were given: say what it is about ("payment retry", "csv export").\n`;
-  out.push(`Searched ${r.searched.files} code files and ${r.searched.definitions} names${r.searched.groups ? `, and the map's ${r.searched.groups} groups and ${r.searched.rules} rules` : ''}, for: ${r.words.join(', ')}.`, '');
+  out.push(`Searched ${r.searched.files} code files and ${r.searched.definitions} names${r.searched.lists ? ` and ${r.searched.lists} constant lists` : ''}${r.searched.groups ? `, and the map's ${r.searched.groups} groups and ${r.searched.rules} rules` : ''}, for: ${r.words.join(', ')}.`, '');
   const where = (h) => `\`${h.file}${h.line ? `:${h.line}` : ''}\``;
   if (r.code.length) {
     out.push('## Code that may already do this', '');
     for (const h of r.code) {
       const what = h.kind === 'file' ? `${where(h)} (file)` : `\`${h.name}\` (${h.kind}) in ${where(h)}`;
-      const notes = [h.exact ? 'name matches' : `matches ${h.matched.join(', ')}${h.inComment?.length ? ` (${h.inComment.join(', ')} in its comment)` : ''}`, h.usedBy ? `used by ${h.usedBy} file(s)` : null, h.test ? 'a test' : null, h.deprecated ? `being replaced${h.deprecated.use ? `: use ${h.deprecated.use}` : ''}` : null, h.group ? `group ${h.group}` : null].filter(Boolean);
+      const notes = [h.exact ? 'name matches' : `matches ${h.matched.join(', ')}${h.inComment?.length ? ` (${h.inComment.join(', ')} in its comment)` : ''}${h.inValues?.length ? ` (${h.inValues.join(', ')} among the names it holds)` : ''}`, h.usedBy ? `used by ${h.usedBy} file(s)` : null, h.test ? 'a test' : null, h.deprecated ? `being replaced${h.deprecated.use ? `: use ${h.deprecated.use}` : ''}` : null, h.group ? `group ${h.group}` : null].filter(Boolean);
       out.push(`- ${what} — ${notes.join(' · ')}`);
     }
     if (r.more.code) out.push(`- …and ${r.more.code} more (\`--limit\`)`);
