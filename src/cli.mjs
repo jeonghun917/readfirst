@@ -916,10 +916,32 @@ export function installHook(root, { verify = false } = {}) {
     const stop = (settings.hooks.Stop ??= []);
     if (!has(stop)) { stop.push({ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }); added = true; }
   }
-  if (!added) return false;
+  // A readfirst hook installed before it read Bash commands (matcher Edit|Write|MultiEdit) never sees a file a command
+  // writes, nor a `readfirst read` or `find` run in Bash, and installing again left it so (2026-11-13). Bash is added
+  // to the matcher of each such entry; its command is left as it is (--gate stays the user's choice), and so is every
+  // other entry. A matcher is a pattern of tool names: none, '' or '*' already covers Bash.
+  const seesBash = (m) => {
+    if (typeof m !== 'string' || m === '' || m === '*') return true;
+    try { return new RegExp(`^(?:${m})$`, 'u').test('Bash'); } catch { return m.split('|').map((s) => s.trim()).includes('Bash'); }
+  };
+  const narrow = pre.filter((m) => !seesBash(m.matcher) && (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '') && !/--stop\b/u.test(h.command ?? '')));
+  const widened = narrow.map((m) => [m.matcher, `${m.matcher}|Bash`]);
+  for (const m of narrow) m.matcher = `${m.matcher}|Bash`;
+  if (!added && !widened.length) return false;
+  if (!added) {
+    // Only the matcher changes: the file keeps its own layout (and a byte order mark) when each old matcher is
+    // written once in it; otherwise it is written out as JSON, as for a new hook.
+    let text = readFileSync(at, 'utf8');
+    const once = widened.every(([from]) => text.split(JSON.stringify(from)).length === 2);
+    if (once) {
+      for (const [from, to] of widened) text = text.replace(JSON.stringify(from), () => JSON.stringify(to));
+      writeFileSync(at, text);
+      return 'matcher';
+    }
+  }
   mkdirSync(join(root, '.claude'), { recursive: true });
   writeFileSync(at, `${JSON.stringify(settings, null, 2)}\n`);
-  return true;
+  return added || 'matcher';
 }
 
 // The changes to `path` since the commit that last wrote `ref` into the map (git log -S), to the working tree, for
@@ -1093,7 +1115,9 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   if (cmd === 'hook') {
     let added;
     try { added = installHook(root, { verify: args.verify }); } catch (e) { throw new Error(`${e.message}; ${hookSnippet(args.verify)}`); }
-    io.out((added
+    io.out((added === 'matcher'
+      ? `added Bash to the readfirst hook's matcher in .claude/settings.json: it now also sees files a Bash command writes, and the \`readfirst read\` and \`find\` runs; its command was left as it was.\n`
+      : added
       ? `added the readfirst hook to .claude/settings.json: Claude Code now sees the read list before each edit${args.verify ? ', and cannot finish while a check for a file it edited fails (it gets one try to fix it)' : ''}.\n`
       : '.claude/settings.json already has the readfirst hook.\n') + placeHint());
     return 0;
