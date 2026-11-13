@@ -293,13 +293,15 @@ function parens(segment, open) {
   return { lead, body: end < 0 ? segment : segment.slice(0, end), closes, tail: end < 0 ? '' : segment.slice(tailAt), opened: local };
 }
 // Each command of some shell text with the operator after it ('' after the last): `|` and `|&` mean its output goes
-// to the next command, not to whoever ran it.
+// to the next command, not to whoever ran it, and `&` that the command runs in the background.
 const segmentsAndOps = (shell) => {
   const out = [];
   let at = 0;
   // No \s* before the separator: a blanked quote is all spaces and would be taken with it.
   // `>|` is a redirect, not a pipe; `|&` pipes stderr too and is one operator (2026-11-09).
-  for (const m of blank(shell).matchAll(/&&|\|\||;|(?<!>)\|&?|\n/gu)) { out.push({ text: shell.slice(at, m.index).trim(), op: m[0] }); at = m.index + m[0].length; }
+  // A single & ends a command too (`cmd & sed -i x f` once read sed as cmd's arguments, so its write was not seen,
+  // 2026-11-13); the & of &&, >&2, 2>&1, &>, <& and an escaped \& does not.
+  for (const m of blank(shell).matchAll(/&&|\|\||;|(?<!>)\|&?|(?<![>&<\\])&(?![&>])|\n/gu)) { out.push({ text: shell.slice(at, m.index).trim(), op: m[0] }); at = m.index + m[0].length; }
   out.push({ text: shell.slice(at).trim(), op: '' });
   return out;
 };
@@ -444,8 +446,7 @@ export function bashReads(command, cwd = process.cwd()) {
   for (const { text, op } of segmentsAndOps(shell)) {
     const p = parens(text, outer.length);
     for (let k = 0; k < p.lead; k++) outer.push(base);
-    const raw = unwrap(opening(words(p.body)));
-    const ws = raw.map(unquote);
+    const ws = unwrap(opening(words(p.body))).map(unquote);
     const cmd = (ws[0] ?? '').split('/').pop();
     const at = ws.findIndex((w) => /^(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)$/u.test(w));
     if (CD.test(cmd)) base = stepTo(base, cmd, ws[1]);
@@ -453,9 +454,10 @@ export function bashReads(command, cwd = process.cwd()) {
       const files = [];
       let root = null;
       let limit = false;
-      let thrown = op === '|' || op === '|&';
+      // A pipe takes its output; `&` (the segments split there) sends it to the background, where it need not come
+      // back with the call.
+      let thrown = op === '|' || op === '|&' || op === '&';
       const args = ws.slice(at + 2);
-      const rawArgs = raw.slice(at + 2);
       let names = false; // after `--` every word but a redirect is a file
       for (let i = 0; i < args.length; i++) {
         const w = args[i];
@@ -464,16 +466,6 @@ export function bashReads(command, cwd = process.cwd()) {
           if (/^(?:1|&)?>/u.test(w) && !/^(?:1)?>&/u.test(w)) thrown = true;
           if (w.length === redirect[0].length) i++;
           continue;
-        }
-        // `&` sends the command to the background: its output need not come back with the call, and the words after
-        // it are the next command (segments split at && || ; | and newlines, not at a single &).
-        if (w === '&') { thrown = true; break; }
-        // `f&` with no space before the & is the same: the word is f. `a\&b`, a quoted "a&b" and `>&2` are not.
-        if (/[^&>\\]&$/u.test(rawArgs[i]) && !/^['"]/u.test(rawArgs[i])) {
-          const last = unquote(rawArgs[i].slice(0, -1));
-          if (names || !last.startsWith('-')) files.push(last);
-          thrown = true;
-          break;
         }
         if (names) { files.push(w); continue; }
         if (w === '--') { names = true; continue; }
