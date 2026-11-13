@@ -61,11 +61,12 @@ test('any other error in the hook lets the call through and is kept: the Stop ho
   // A file_path that is not a string throws in the Edit path (path.isAbsolute).
   const edit = JSON.stringify({ session_id: 'f1', cwd, tool_name: 'Edit', tool_input: { file_path: 5 } });
   assert.equal(runHook(edit, { stateDir, gate: true, now: 1000 }), null, 'never fails closed');
+  assert.equal(runHook(edit, { stateDir, gate: true, now: 2000 }), null, 'the same error again: one error, not two');
   const stop = JSON.parse(runStopHook(JSON.stringify({ session_id: 'f1', cwd, stop_hook_active: false }), { stateDir, timeout: 30 }));
-  assert.match(stop.systemMessage, /the hook failed on 1 call\(s\) and let them through unchecked \(Edit:TypeError: The "path" argument must be of type string/u);
+  assert.match(stop.systemMessage, /the hook failed and let calls through unchecked, with 1 different error\(s\) \(Edit:TypeError: The "path" argument must be of type string/u);
   const report = hookReport({ stateDir });
-  assert.match(report, /- calls the hook failed on and let through unchecked: 1, in 1 session\(s\)/u);
-  assert.match(report, /Hook failures, most often first:\n- Edit:TypeError: The "path" argument must be of type string/u);
+  assert.match(report, /- errors the hook let calls through unchecked on: 1 different, in 1 session\(s\)/u);
+  assert.match(report, /Hook errors, in most sessions first:\n- Edit:TypeError: The "path" argument must be of type string.* \(1\)$/mu);
 });
 
 test('report lines written before these fields count them as zero', () => {
@@ -73,6 +74,6 @@ test('report lines written before these fields count them as zero', () => {
   writeFileSync(join(stateDir, ACTED_LOG), `${JSON.stringify({ session: 'old', shown: 1, asked: 1, acted: 1, notActed: [], resent: 0 })}\n`);
   const report = hookReport({ stateDir });
   assert.match(report, /hit an error reading \(refused once as writes it could not place\): 0, in 0 session\(s\)/u);
-  assert.match(report, /failed on and let through unchecked: 0, in 0 session\(s\)/u);
-  assert.doesNotMatch(report, /Hook failures/u);
+  assert.match(report, /errors the hook let calls through unchecked on: 0 different, in 0 session\(s\)/u);
+  assert.doesNotMatch(report, /Hook errors/u);
 });
