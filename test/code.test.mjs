@@ -341,15 +341,16 @@ test('params: linear time in the length of a parameter list, its nesting and its
   };
   for (const [name, make] of Object.entries(shapes)) {
     // The fastest of five runs at each size: one run varies by 3 times on a shared machine. 16 times the text may take
-    // at most 32 times as long (quadratic would be 256); measured 11 to 29 times.
+    // at most 32 times as long (quadratic would be 256); measured 11 to 29 times alone, and once 34 under npm test's
+    // other files, so the pair is measured up to three times and one under 32 passes (quadratic fails all three).
     const time = (n) => {
       const text = make(n);
       let best = Infinity;
       for (let k = 0; k < 5; k++) { const t = process.hrtime.bigint(); declarations('a.ts', text, { params: true }); best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6); }
       return best;
     };
-    const small = time(20_000);
-    const big = time(320_000);
-    assert.ok(big < small * 32, `${name}: ${small.toFixed(1)}ms at 20,000, ${big.toFixed(1)}ms at 320,000`);
+    const tries = [];
+    for (let k = 0; k < 3 && !tries.some(([s, b]) => b < s * 32); k++) tries.push([time(20_000), time(320_000)]);
+    assert.ok(tries.some(([s, b]) => b < s * 32), `${name}: ${tries.map(([s, b]) => `${s.toFixed(1)}ms at 20,000, ${b.toFixed(1)}ms at 320,000`).join('; ')}`);
   }
 });
