@@ -232,7 +232,14 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
 // Words of one command segment, quotes kept together; good enough for the shapes above, not a shell parser.
 // A command's words without its redirects: `< x`, `2>/dev/null`, `>&2` and the word after a bare operator. The
 // targets of > and >> are taken from the segment itself; the rest are not files this command's arguments name.
-const REDIRECT = /^(?:\d+|&)?(?:<<<|<>|>>|>\||<|>)/u;
+// The redirect operators as the shell reads them: each is a token of its own wherever it stands, glued to a word or not
+// (`echo hi>f` is echo, hi, >, f; `x=1>f` and `a->b` write too), and the digits of a word made only of digits right
+// before one are its file descriptor (`2>f`). words() splits them off, redirects() finds them in the segment and
+// withoutRedirects() drops them with their target, all from this one list: until 2026-11-13 redirects() took a > only
+// after a space or a digit, so `echo hi>file`, `ls>out` and `cat a>b` wrote nothing readfirst could see.
+const OPERATOR = String.raw`&>>|&>|<<<|<<-|<<|<>|<&|<|>>|>\||>&|>`;
+const REDIRECT = new RegExp(String.raw`^\d*(?:${OPERATOR})`, 'u');
+const OPERATOR_AT = new RegExp(OPERATOR, 'uy');
 function withoutRedirects(ws) {
   const out = [];
   for (let i = 0; i < ws.length; i++) {
@@ -293,7 +300,9 @@ function options(args, spec) {
 // A $( ), backtick or "..." the segment ends inside (the command was split at a | ; or && inside it:
 // `S=$(echo b | tr b c)`) runs to the segment's end as one word, so `S=$(echo b` is still read as an assignment, of a
 // value not known; until 2026-11-13 it was not, and S kept its old value.
-const words = (segment) => segment.match(/(?:\\.|'[^']*'|"(?:\\.|[^"\\])*"|\$\((?:[^()]|\([^()]*\))*\)|`[^`]*`|\$\((?:[^()]|\([^()]*\))*$|`[^`]*$|"(?:\\.|[^"\\])*$|[^\s'"`\\])+/gu) ?? [];
+// A redirect operator is a word of its own (OPERATOR), with the digits before it when they make a word alone (`2>`).
+const WORD = new RegExp(String.raw`\d*(?:${OPERATOR})|(?:\\.|'[^']*'|"(?:\\.|[^"\\])*"|\$\((?:[^()]|\([^()]*\))*\)|${'`'}[^${'`'}]*${'`'}|\$\((?:[^()]|\([^()]*\))*$|${'`'}[^${'`'}]*$|"(?:\\.|[^"\\])*$|[^\s'"${'`'}\\<>&]|&(?!>))+`, 'gu');
+const words = (segment) => segment.match(WORD) ?? [];
 // Where `cd target` moves from `from`: null when that cannot be known (a variable: `cd $D`, `cd "$(dirname x)"`), and
 // relative paths after it are then not named at all rather than named under the wrong folder (2026-11-08: `cd $D`
 // made the hook show `$D/a.test.js`).
@@ -873,12 +882,32 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself. &> and &>>
   // (stdout and stderr to a file) write too; the & before them once kept &> out.
   // 2> err.log, 1> out and >| write too (the digit and the | are part of the operator); 2>&1 and >&2 do not.
+  // Every operator of OPERATOR in the code of the segment (blank: not in quotes), glued to a word or not.
+  // >&, with a number or - after it (`2>&1`, `>&2`, `>&-`), copies or closes a descriptor; with a word after it and no
+  // number before it (`>&log`) it writes that file, as &> does; after a number (`2>&log`) the shell stops with
+  // "ambiguous redirect" and writes nothing.
   const redirects = (segment) => {
-    for (const m of blank(segment).matchAll(/(?<![\w=-])\d*>>?\|?(?!\s*&)/gu)) {
-      // A target ends at the ) that closes a $( ): `"$(sort a > b.txt)"` writes b.txt. Quoted parts and escaped
-      // characters run on in the word: `"$S"/f.txt`, `a\&b.js`.
-      const t = segment.slice(m.index + m[0].length).match(/^\s*((?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|\$\(\((?:[^()]|\([^()]*\))*\)\)|\$\((?:[^()]|\([^()]*\))*\)|[^\s;&|)'"\\])+)/u);
-      if (t) add(dq(t[1]));
+    const b = blank(segment);
+    for (let i = 0; i < b.length; i++) {
+      if (b[i] === '\\') { i++; continue; }
+      // A " blank left is one that does not close in this segment: the command was split inside a $( ) in it
+      // (`echo "x -> $(ls | tr a b)"`), and words() reads the rest as that quote, so its > is not a redirect.
+      // (Backticks are not blanked, so one left here may well close: `echo \`ls > f\`` still shows its >.)
+      if (b[i] === '"') break;
+      if (b[i] !== '<' && b[i] !== '>' && b[i] !== '&') continue;
+      OPERATOR_AT.lastIndex = i;
+      const op = OPERATOR_AT.exec(b)?.[0];
+      if (!op) continue;
+      let from = i;
+      while (from > 0 && /\d/u.test(b[from - 1])) from--;
+      const fd = from < i && (from === 0 || /[\s;&|()<>]/u.test(b[from - 1]));
+      i += op.length - 1;
+      if (!op.includes('>')) continue; // <, <<, <<<, <&: read
+      // A target ends at the ) that closes a $( ) (`"$(sort a > b.txt)"` writes b.txt) and at the next operator
+      // (`>f3>f4`). Quoted parts and escaped characters run on in the word: `"$S"/f.txt`, `a\&b.js`.
+      const t = segment.slice(i + 1).match(/^\s*((?:'[^']*'|"(?:\\.|[^"\\])*"|\\.|\$\(\((?:[^()]|\([^()]*\))*\)\)|\$\((?:[^()]|\([^()]*\))*\)|[^\s;&|)<>'"\\])+)/u);
+      if (!t || (op === '>&' && (fd || /^(?:\d+|-|\$.*)$/u.test(t[1])))) continue;
+      add(dq(t[1]));
     }
   };
   // how: { pipe, maybe } from howItRuns.
