@@ -42,7 +42,7 @@ test('a readfirst read run in Bash counts as read: the edit after it goes throug
 });
 
 test('a read whose output is thrown away, piped or cut is not a read: the edit is refused with the notes', () => {
-  for (const command of ['npx readfirst read src/a.js > /dev/null', 'npx readfirst read src/a.js >/dev/null 2>&1', 'npx readfirst read src/a.js &> /tmp/x.txt', 'npx readfirst read src/a.js | head -3', 'npx readfirst read src/a.js 2>&1 | tail -n 5', 'npx readfirst read src/a.js --limit 1', 'echo npx readfirst read src/a.js']) {
+  for (const command of ['npx readfirst read src/a.js > /dev/null', 'npx readfirst read src/a.js >/dev/null 2>&1', 'npx readfirst read src/a.js &> /tmp/x.txt', 'npx readfirst read src/a.js | head -3', 'npx readfirst read src/a.js 2>&1 | tail -n 5', 'npx readfirst read src/a.js --limit 1', 'npx readfirst read src/a.js &', 'echo npx readfirst read src/a.js']) {
     const { root } = repo();
     const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-gate-read-state-'));
     const id = session();

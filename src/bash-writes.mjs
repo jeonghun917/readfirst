@@ -429,7 +429,9 @@ export function bashWrites(command, cwd = process.cwd()) {
 
 // The files each `readfirst read` in a shell command asks for, and whether its whole output reaches whoever ran the
 // command: { files (absolute), seen, why }. Not seen when stdout goes to a file or /dev/null (`>`, `>>`, `1>`, `&>`),
-// into a pipe (`| head`, `| grep`: cut or filtered) or when --limit cuts the list. 2> and >&2 leave stdout where it is.
+// into a pipe (`| head`, `| grep`: cut or filtered), to the background (`&`) or when --limit cuts the list. 2> and >&2
+// leave stdout where it is. It is read from the command before it runs (a PreToolUse hook): a read that then fails
+// (npx cannot install, the file is not tracked) still counts.
 // The command is readfirst, readfirst@version or a path ending in readfirst.mjs, run directly or through npx or node,
 // followed by `read`; any other way of running it (an alias, a script, inside $( )) is not seen here. Relative paths
 // start where the cds before it moved to, or at --root when it is given, as `readfirst read` resolves them.
@@ -461,6 +463,9 @@ export function bashReads(command, cwd = process.cwd()) {
           if (w.length === redirect[0].length) i++;
           continue;
         }
+        // `&` sends the command to the background: its output need not come back with the call, and the words after
+        // it are the next command (segments split at && || ; | and newlines, not at a single &).
+        if (w === '&') { thrown = true; break; }
         if (names) { files.push(w); continue; }
         if (w === '--') { names = true; continue; }
         const opt = w.match(/^--([\w-]+)(=.*)?$/u);
