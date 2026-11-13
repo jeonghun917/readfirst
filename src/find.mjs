@@ -106,19 +106,20 @@ function readDefinitions(path, body, { lists = false } = {}) {
   out.header = headerOf(path, body, lines, decls, rows);
   // find asks for the lists too, read from the same declarations and lines: a second pass over every file doubled
   // the time of find.
-  if (lists) out.lists = listsOf(path, { lines, rows, decls, py });
+  if (lists) out.lists = listsOf(path, { rows, decls });
   return out;
 }
 
 // The constants of a file that hold a list or a table of names (`const HTTP_CLIENTS = ['axios', 'got']`,
 // `RATE_LIMITS = {"slack": 1}`, `new Set([...])`): a value find's definitions leave out, though it is what another
-// list of the same names repeats. Each: the constant's name, line, comment and `values`, the names written in it:
-// its strings with no space in them and its object keys. Only constants of the file's top level (or what a module
-// exports) whose value has a bracket and at least two such names; a list inside a function is the function's.
+// list of the same names repeats. Each: the constant's name, line and `values`, the names written in it: its
+// strings with no space in them, its object keys and the alternatives of a pattern. Only constants of the file's top
+// level (or what a module exports) whose value has a bracket, opens a tuple or holds alternatives, with at least two
+// such names; a list inside a function is the function's.
 // `definitions` gives them only when asked (`lists`): the find gate (newCode in src/cli.mjs) and the trigger engine
 // read its definitions without them, so a new list is not new code for them. They come from the same declarations
 // and lexed lines as the definitions, never a second pass over the file.
-function listsOf(path, { lines, rows, decls, py }) {
+function listsOf(path, { rows, decls }) {
   const out = [];
   for (const d of decls) {
     if (d.what !== 'var' || d.fn || d.depth || (d.member && !d.ofModule) || d.name.startsWith('#') || d.name.length < 3) continue;
@@ -146,7 +147,7 @@ function listsOf(path, { lines, rows, decls, py }) {
     });
     // Two names at least, each with a letter or digit: ['|', ','] is a list of separators, not of names.
     if (values.filter((v) => /[\p{L}\p{N}]/u.test(v)).length < 2) continue;
-    out.push({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), values });
+    out.push({ name: d.name, line: d.line, values });
   }
   return out;
 }
@@ -210,8 +211,10 @@ export function find({ query, files, imports = [], read = () => null, map = null
     items.push({ kind: 'file', file: f, words: at, doc: words(found.header ?? ''), test });
     for (const d of found) { defs++; items.push({ kind: d.kind, name: d.name, file: f, line: d.line, words: words(d.name), path: at, doc: words(d.doc), test }); }
     // A constant holding a list or table is found by its name and by the names written in it ("axios" in
-    // HTTP_CLIENTS), so a third list of the same HTTP libraries is not written beside two.
-    for (const l of found.lists ?? []) { lists++; items.push({ kind: 'list', name: l.name, file: f, line: l.line, words: words(l.name), path: at, doc: words(l.doc), values: words(l.values.join(' ')), test }); }
+    // HTTP_CLIENTS), so a third list of the same HTTP libraries is not written beside two. Not by its comment: the
+    // comment above a list says what it is for in words ("word", "limit", "read") that matched lists of other things
+    // for most queries (2026-11-13: 24 of 34 list lines in 12 queries, one of them related).
+    for (const l of found.lists ?? []) { lists++; items.push({ kind: 'list', name: l.name, file: f, line: l.line, words: words(l.name), path: at, doc: [], values: words(l.values.join(' ')), test }); }
   }
   for (const g of map?.groups ?? []) items.push({ kind: 'group', id: g.id, text: g.title, words: words(`${g.id} ${g.title}`) });
   for (const r of map?.rules ?? []) items.push({ kind: 'rule', id: r.id, text: r.rule, words: words(`${r.id} ${r.rule} ${r.why ?? ''}`) });

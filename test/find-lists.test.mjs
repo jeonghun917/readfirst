@@ -34,10 +34,11 @@ test('a constant list is found by the names it holds', () => {
   assert.match(findText(r), /`HTTP_CLIENTS` \(list\) in `src\/net\/clients\.js:2` — matches node, fetch \(node, fetch among the names it holds\)/u);
 });
 
-test('a constant list is found by its name and its comment, and so are tables and what a module exports', () => {
+test('a constant list is found by its name, and so are tables and what a module exports', () => {
   assert.ok(hits('http client').includes('list HTTP_CLIENTS src/net/clients.js'));
   assert.ok(hits('http libraries').includes('list HTTP_LIBS tools/libs.py'));
   assert.deepEqual(hits('github slack').filter((h) => h.startsWith('list')).sort(), ['list RATE_LIMITS src/limits.js', 'list THROTTLED src/throttle.py'], 'object keys and dict keys');
+  assert.equal(hits('request through').includes('list HTTP_CLIENTS src/net/clients.js'), false, 'not by the words of its comment ("a request can go through")');
   assert.deepEqual(hits('password').filter((h) => h.startsWith('list')).sort(), ['list SECRET_RE src/scrub.py', 'list SECRET_WORDS src/redact.js', 'list SENSITIVE src/redact.js', 'list WORD src/scrub.js']);
 });
 
