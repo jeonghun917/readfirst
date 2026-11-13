@@ -325,6 +325,29 @@ test('hook --gate: a write under / with the rest not known is asked; $OLDPWD bef
   }
 });
 
+// Review of #181 (2026-11-13): three shapes named a folder or a value as sure where it was not.
+test('case arms, a block after a wrapper, and a function that may cd: not named as sure', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => u.part)]; };
+  // A case arm is read as commands after its pattern; it runs instead of the others, so after esac what an arm
+  // changed is not known, and inside the arm it holds.
+  assert.deepEqual(s('case $x in a) cd /a;; esac; echo x > f'), ['cd /a']);
+  assert.deepEqual(s('case $x in a) cd /a; echo > g;; b) echo > h;; esac'), ['/a/g', '/r/h'], 'each arm starts from before the case');
+  assert.deepEqual(s('case $x in a) S=/a; echo > $S/g;; esac'), ['/a/g']);
+  assert.deepEqual(s('case $x in a) S=/a;; b) echo > $S/f;; esac'), ['$S']);
+  assert.deepEqual(s('case $x in a|b) cd /a; echo > g;; *) echo > h;; esac'), ['/a/g', '/r/h'], 'a pattern with |');
+  assert.deepEqual(s('case $x in\n (a|b) cd /a;;\nesac; echo > f'), ['cd /a'], 'on lines of their own');
+  assert.deepEqual(s('S=/z; case $x in a) echo;; esac; echo > $S/f'), ['/z/f'], 'arms that change nothing');
+  assert.deepEqual(s('echo case x in y > out.txt'), ['/r/out.txt'], 'the word case as an argument opens nothing');
+  // A block opened after a wrapper or after `do` is a block: what it changed is not known after it.
+  assert.deepEqual(s('time for f in $L; do S=/b; done; echo x > $S/f'), ['$S']);
+  assert.deepEqual(s('nohup while x; do cd /w; done; echo x > f'), ['cd /w']);
+  assert.deepEqual(s('for a in 1; do for b in $L; do S=/q; done; echo > $S/i; done'), ['$S'], 'a loop opened after do');
+  assert.deepEqual(s('time ls > l.txt'), ['/r/l.txt'], 'a wrapper before a plain command');
+  // A function the command defines may cd: after a call, relative paths are not known; absolute ones still are.
+  assert.deepEqual(s('f() { cd /z; }; f; echo x > g'), ['f']);
+  assert.deepEqual(s('f() { echo; }; f; echo x > /abs/g'), ['/abs/g']);
+});
+
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
   n++;
   const root = repo();
