@@ -33,7 +33,7 @@ import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom, unshownRisks } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
-import { bashReads, bashWrites } from './bash-writes.mjs';
+import { bashReads, shellWrites } from './bash-writes.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { definitions, find, findText, meets, words } from './find.mjs';
@@ -508,8 +508,9 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const cwd = event.cwd ?? process.cwd();
     const tool = event.tool_name ?? '';
     const file = event.tool_input?.file_path;
+    const written = tool === 'Bash' ? shellWrites(event.tool_input?.command, cwd) : null;
     const targets = [...new Set((/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
-      : tool === 'Bash' ? bashWrites(event.tool_input?.command, cwd) : []).map(physical))];
+      : written ? written.files : []).map(physical))];
     const seen = readSeen(stateDir, event.session_id) ?? {};
     const before = { ...seen };
     const save = () => { try { addSeen(stateDir, event.session_id, before, seen); return true; } catch { return false; } };
@@ -540,12 +541,24 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
         }
       }
     }
+    // Writes whose place the command cannot tell before it runs (a variable from outside it, a $( ), a loop variable;
+    // shellWrites): named, never dropped (until 2026-11-13 they were left out without a word). With --gate the call is
+    // refused once with them (`unknown:<the command's hash>`) and goes through when made again. The session's start
+    // mark is set, so the Stop hook checks the files that change after it.
+    const unknownRoot = written?.unknown.length ? repoOf(cwd) : null;
+    const unknownKey = unknownRoot ? `unknown:${createHash('sha1').update(String(event.tool_input.command)).digest('hex').slice(0, 12)}` : null;
+    const askUnknown = Boolean(unknownKey) && !before[unknownKey];
+    if (unknownKey) { seen[unknownKey] = now; if (!seen[`start:${unknownRoot}`]) seen[`start:${unknownRoot}`] = now; }
+    // Said once per command: made again, it goes through without the line.
+    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${written.unknown.map((u) => `\`${u.word}\` (${u.part}: ${u.why})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate && askUnknown ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
-      Object.assign(seen, reads);
-      save();
-      return null;
+      if (!(gate && askUnknown)) Object.assign(seen, reads);
+      const saved = save();
+      if (!unknownLine) return null;
+      if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: unknownLine } });
+      return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: unknownLine } });
     }
     const deadline = Date.now() + budget;
     const edited = new Map(targets.flatMap((abs) => { const e = editTexts(tool, event.tool_input, abs); return e ? [[abs, e]] : []; }));
@@ -562,17 +575,17 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const askFind = fresh.length > 0 && !askedAt;
     const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
-    if (gate && (notes.length || askFind)) seen[`denied:${sig}`] = now;
-    if (!(gate && (notes.length || late.length || askFind))) Object.assign(seen, reads);
+    if (gate && (notes.length || askFind || askUnknown)) seen[`denied:${sig}`] = now;
+    if (!(gate && (notes.length || late.length || askFind || askUnknown))) Object.assign(seen, reads);
     const saved = save();
     const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
-    if (!notes.length && !waiting.length && !lateLine && !findLine) return null;
+    if (!notes.length && !waiting.length && !lateLine && !findLine && !unknownLine) return null;
     // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes and,
-    // once per call, for new code written before `readfirst find`.
-    const text = [...notes, ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...waiting].join('\n\n');
+    // once per call, for new code written before `readfirst find` and for writes it cannot place.
+    const text = [...notes, ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...(unknownLine ? [unknownLine] : []), ...waiting].join('\n\n');
     // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
     // the notes as context instead.
-    if (gate && (notes.length || lateLine || askFind) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    if (gate && (notes.length || lateLine || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch {
     return null;
@@ -752,8 +765,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
