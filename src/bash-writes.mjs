@@ -890,10 +890,6 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     const b = blank(segment);
     for (let i = 0; i < b.length; i++) {
       if (b[i] === '\\') { i++; continue; }
-      // A " blank left is one that does not close in this segment: the command was split inside a $( ) in it
-      // (`echo "x -> $(ls | tr a b)"`), and words() reads the rest as that quote, so its > is not a redirect.
-      // (Backticks are not blanked, so one left here may well close: `echo \`ls > f\`` still shows its >.)
-      if (b[i] === '"') break;
       if (b[i] !== '<' && b[i] !== '>' && b[i] !== '&') continue;
       OPERATOR_AT.lastIndex = i;
       const op = OPERATOR_AT.exec(b)?.[0];
