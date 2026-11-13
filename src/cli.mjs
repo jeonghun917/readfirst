@@ -560,7 +560,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // (`unknown:<the command's hash>`) and goes through when made again. Each repository they could land in gets the
     // session's start mark, so the Stop hook checks the files that change there.
     if (misread) {
-      const whole = { part: command, word: command, why: `readfirst hit an error reading it (${misread})`, prefix: '' };
+      const whole = { part: 'the whole command', word: command, why: `readfirst hit an error reading it (${misread})`, prefix: '' };
       written = { files: written?.files ?? [], unknown: [...(written?.unknown ?? []), whole], repos: written?.repos ?? [] };
       seen[`misread:${createHash('sha1').update(command).digest('hex').slice(0, 12)}`] = now;
     }
@@ -578,7 +578,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       if (u.looked) return `could be in a repository below ${u.prefix}${u.roots.length ? ` (${some} and more: readfirst stopped looking at ${u.looked})` : ` (readfirst stopped looking at ${u.looked})`}`;
       return u.roots.length ? `could be in ${some}` : 'could be in any repository: none is known to this session';
     };
-    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${u.word}\` (${u.part}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
+    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${clip(u.word)}\` (${clip(u.part)}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
@@ -622,6 +622,13 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     return null;
   }
 }
+// A command or a word of one in the hook's line: the first CLIP characters and, on the same line, how many were left
+// out (a command readfirst could not read was quoted whole: 64,404 characters in one refusal, 2026-11-13).
+const CLIP = 200;
+const clip = (text) => {
+  const s = String(text);
+  return s.length <= CLIP ? s : `${s.slice(0, CLIP)}… (${s.length} characters, ${s.length - CLIP} left out)`; // cut: says how many it left out
+};
 // An error in one line, short enough for a state key and a report line.
 const errorText = (e) => `${e?.name ?? 'Error'}: ${String(e?.message ?? e)}`.replace(/\s+/gu, ' ').slice(0, 160); // cut: the error's first 160 characters; the rest is in no state
 

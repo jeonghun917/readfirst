@@ -32,6 +32,17 @@ test('a shell reader that throws: refused once as a write it cannot place, let t
   assert.match(hookReport({ stateDir }), /- commands readfirst hit an error reading \(refused once as writes it could not place\): 1, in 1 session\(s\)/u);
 });
 
+test('a long command is quoted in part, and the line says how much was left out', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'readfirst-misread-'));
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-misread-state-'));
+  const command = `echo "${'$(( '.repeat(8000)}"`;
+  const out = JSON.parse(runHook(bash('m5', cwd, command), { stateDir, gate: true, now: 1000, readers: { shellWrites: boom, bashReads } })).hookSpecificOutput;
+  assert.equal(out.permissionDecision, 'deny');
+  assert.match(out.permissionDecisionReason, new RegExp(`… \\(${command.length} characters, ${command.length - 200} left out\\)`, 'u'));
+  assert.ok(out.permissionDecisionReason.length < 2000, `the refusal is ${out.permissionDecisionReason.length} characters`);
+  assert.equal(runHook(bash('m5', cwd, command), { stateDir, gate: true, now: 2000, readers: { shellWrites: boom, bashReads } }), null, 'made again, it goes through');
+});
+
 test('bashReads that throws is the same; without --gate the line is context, never a refusal', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'readfirst-misread-'));
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-misread-state-'));
