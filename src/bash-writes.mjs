@@ -33,11 +33,10 @@ export function shellWord(word, vars = new Map()) {
   // The expansion that starts with the $ at i: [its text, the index past it]. quoted: inside "...", where $' and $" are
   // a plain $ (the `"` after it closes the quote: `"a$"` is a$; it was read as $"..." and the $ dropped, 2026-11-13).
   const dollar = (i, quoted = false) => {
-    // $(( )) is arithmetic, worked out when it runs.
-    if (s.startsWith('$((', i)) {
-      let depth = 0;
-      let e = s.length;
-      for (let k = i + 1; k < s.length; k++) { if (s[k] === '(') depth++; else if (s[k] === ')' && --depth === 0) { e = k + 1; break; } }
+    // $(( )) and $[ ] are arithmetic, worked out when it runs (arithEnd: where it ends).
+    if (s.startsWith('$((', i) || s.startsWith('$[', i)) {
+      const end = arithEnd(s, i);
+      const e = end < 0 ? s.length : end;
       return [hole(s.slice(i, e), 'it is arithmetic, worked out when it runs'), e];
     }
     if (s[i + 1] === '(') {
@@ -128,12 +127,14 @@ const WRAPPERS = new Map([
 // was not seen until 2026-11-13).
 const KEYWORDS = /^(?:do|then|else|elif|if|while|until|!)$/u;
 // A ( or { after such a word opens a subshell or group too: `do (cd h && ...)` runs cd (it ran nothing known until
-// 2026-11-13, so ../s.txt after it was named from the folder before the cd).
+// 2026-11-13, so ../s.txt after it was named from the folder before the cd). A (( opens arithmetic, not two
+// subshells, and stays on its word, so every walk sees the command it is (`((n++))` made n not known only in
+// shellWrites, and stateAt and bashReads kept n's old value, until 2026-11-13).
 function opening(ws) {
   let out = ws;
   for (;;) {
     if (!out.length) return out;
-    const first = out[0].replace(/^[({]+/u, '');
+    const first = out[0].startsWith('((') ? out[0] : out[0].replace(/^[({]+/u, '');
     out = first ? [first, ...out.slice(1)] : out.slice(1);
     if (!out.length || !KEYWORDS.test(out[0])) return out;
     out = out.slice(1);
@@ -309,9 +310,27 @@ const moveTo = (from, t) => {
   return from == null ? null : resolve(from, t);
 };
 
+// Where the arithmetic that opens at i ends: $(( )), $[ ] or a (( )) command (the index past its last bracket), or -1
+// when it never closes. Its brackets nest (`$(( (1+2) > 0 ))`) and a $( ) in it holds commands of its own (closeOf).
+// Every reader asks this one: a > or | in it compares or computes, and was read as a redirect or a pipe
+// (`echo $((1 > 0))` wrote a file 0, `$[1>0]` a file `0]`, until 2026-11-13).
+function arithEnd(s, i) {
+  const square = s.startsWith('$[', i);
+  const [open, close] = square ? ['[', ']'] : ['(', ')'];
+  let depth = 0;
+  for (let j = s[i] === '$' ? i + 1 : i; j < s.length; j++) {
+    const c = s[j];
+    if (c === '\\') { j++; continue; }
+    if (c === '$' && s[j + 1] === '(' && s[j + 2] !== '(') { const k = closeOf(s, j); if (k < 0) return -1; j = k - 1; continue; }
+    if (c === open) depth++;
+    else if (c === close && --depth === 0) return j + 1;
+  }
+  return -1;
+}
 // Where the quoted text or $( ) that opens at i ends (the index past its last character), or -1 when it never closes.
 // Quotes open again inside $( ), as the shell reads them; inside "..." a ' is a plain character.
 function closeOf(s, i) {
+  if (s.startsWith('$((', i) || s.startsWith('$[', i)) return arithEnd(s, i);
   if (s[i] === "'") { const k = s.indexOf("'", i + 1); return k < 0 ? -1 : k + 1; }
   const sub = s[i] === '$';
   for (let j = i + (sub ? 2 : 1); j < s.length;) {
@@ -319,7 +338,7 @@ function closeOf(s, i) {
     if (c === '\\') { j += 2; continue; }
     if (!sub && c === '"') return j + 1;
     if (sub && c === ')') return j + 1;
-    if ((c === '$' && s[j + 1] === '(') || (sub && (c === '"' || c === "'"))) {
+    if ((c === '$' && (s[j + 1] === '(' || s[j + 1] === '[')) || (sub && (c === '"' || c === "'"))) {
       const k = closeOf(s, j);
       if (k < 0) return -1;
       j = k;
@@ -334,32 +353,37 @@ function closeOf(s, i) {
 // visible: it holds commands, and its own quotes are blanked in turn. A regex took `"$(python3 -c "` for one quoted string
 // and the code after it for commands, so `i>=0` was a write to the file `=0` (2026-11-09). A quote that never closes is
 // read as a plain character, as before.
+// An arithmetic $(( )) or $[ ] is blanked the same way, wherever it stands: its > and | compare and compute.
 function blank(s) {
   const out = s.split('');
   const hide = (from, to) => { for (let k = from; k < to; k++) out[k] = ' '; };
+  // From `from` to `to` hidden, except the commands of each $( ) in it, which are walked in turn: the inside of "..."
+  // and of an arithmetic $(( )) or $[ ] (whose own $(( or $[ is not a command).
+  const commandsOnly = (from, to) => {
+    let shown = from;
+    for (let j = from; j < to;) {
+      if (s[j] === '\\') { j += 2; continue; }
+      if (s[j] !== '$' || s[j + 1] !== '(') { j++; continue; }
+      if (s[j + 2] === '(') { j += 3; continue; }
+      const close = closeOf(s, j);
+      if (close < 0 || close > to) break;
+      hide(shown, j + 2);
+      walk(j + 2, close - 1);
+      shown = close - 1;
+      j = close;
+    }
+    hide(shown, to);
+  };
   const walk = (from, to) => {
     for (let i = from; i < to;) {
       const c = s[i];
       if (c === '\\') { i += 2; continue; }
-      if (c !== "'" && c !== '"') { i++; continue; }
+      const arith = c === '$' && (s.startsWith('$((', i) || s[i + 1] === '[');
+      if (c !== "'" && c !== '"' && !arith) { i++; continue; }
       const end = closeOf(s, i);
       if (end < 0 || end > to) { i++; continue; }
       if (c === "'") hide(i, end);
-      else {
-        // "...": hidden, except the commands of each $( ) in it.
-        let shown = i;
-        for (let j = i + 1; j < end - 1;) {
-          if (s[j] === '\\') { j += 2; continue; }
-          if (s[j] !== '$' || s[j + 1] !== '(') { j++; continue; }
-          const close = closeOf(s, j);
-          if (close < 0 || close > end) break;
-          hide(shown, j + 2);
-          walk(j + 2, close - 1);
-          shown = close - 1;
-          j = close;
-        }
-        hide(shown, end);
-      }
+      else commandsOnly(i, end);
       i = end;
     }
   };
@@ -607,8 +631,9 @@ function follow(state, ws, { pipe = false, maybe = false } = {}) {
   if (at) {
     if (/^-[vV]$/u.test(ws[at] ?? '')) return false;
     // A { } group or a ( ) subshell after them: what is inside is the command (parens keeps the subshell's folder).
-    const group = (ws[at] ?? '').replace(/^[{(]/u, '');
-    ws = /^[{(]/u.test(ws[at] ?? '') ? (group ? [group, ...ws.slice(at + 1)] : ws.slice(at + 1)) : ws.slice(at);
+    // A (( after them is arithmetic and keeps its brackets (`time ((n++))`).
+    const group = (ws[at] ?? '').replace(/^(?:\{|\((?!\())/u, '');
+    ws = /^(?:\{|\((?!\())/u.test(ws[at] ?? '') ? (group ? [group, ...ws.slice(at + 1)] : ws.slice(at + 1)) : ws.slice(at);
   }
   // An assignment has no command name: `E=/s/eval` is not `eval` (it lost every variable for a while on 2026-11-13).
   const cmd = ASSIGN.test(ws[0] ?? '') ? '' : unquote(ws[0] ?? '').split('/').pop();
@@ -886,10 +911,10 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     const raw = words(segment);
     const opened = opening(raw);
     // Arithmetic and tests compare with > and <: `(( x > 0 ))`, `[[ a > b ]]` write nothing; (( )) may set variables.
-    // After if, while and the like too (`if (( x > 0 ))` named a file 0: opening took the (( off with the if).
+    // After if, while and the like (opening keeps the (( on its word) and after time (`time (( x > 0 ))` named a file 0).
     let k = 0;
-    while (KEYWORDS.test(raw[k] ?? '')) k++;
-    if (/^(?:\(\(|\[\[)/u.test(opened[0] ?? '') || /^(?:\(\(|\[\[)/u.test(raw[k] ?? '')) { if ((raw[k] ?? '').startsWith('((')) follow(state, raw.slice(k), how); return; }
+    while (opened[k] === 'time' || (k > 0 && opened[k] === '-p')) k++;
+    if (/^(?:\(\(|\[\[)/u.test(opened[k] ?? '')) { if (opened[k].startsWith('((')) follow(state, opened.slice(k), how); return; }
     // A redirect writes first, with the folder and variables from before the command: `y="$(sort a > b.txt)"` writes
     // b.txt. cd and assignments then change what the commands after them see, and write nothing more.
     redirects(segment);
