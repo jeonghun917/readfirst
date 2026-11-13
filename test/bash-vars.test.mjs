@@ -307,6 +307,24 @@ test('hook --gate: a part not known inside one folder name looks only at folders
   assert.ok(all.out.permissionDecisionReason.length < 1500, `${all.out.permissionDecisionReason.length} characters`);
 });
 
+// Review of 2026-11-13: a write known only to be under `/` was dropped (the walk read '' for /), and $OLDPWD took the
+// hook's own value, not the folder the shell was in.
+test('hook --gate: a write under / with the rest not known is asked; $OLDPWD before any cd is not the hook\'s', () => {
+  n++;
+  const outside = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-outside-'));
+  const fresh = () => mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
+  for (const c of ['cd /$D && echo x > f', 'echo x > /$A/$B/f']) assert.equal(hook(outside, fresh(), c)?.permissionDecision, 'deny', c);
+  const old = process.env.OLDPWD;
+  process.env.OLDPWD = outside;
+  try {
+    const out = hook(outside, fresh(), 'echo x > $OLDPWD/f.txt');
+    assert.equal(out?.permissionDecision, 'deny');
+    assert.match(out.permissionDecisionReason, /\$OLDPWD/u);
+  } finally {
+    if (old === undefined) delete process.env.OLDPWD; else process.env.OLDPWD = old;
+  }
+});
+
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
   n++;
   const root = repo();

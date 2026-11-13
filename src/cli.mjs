@@ -510,7 +510,9 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const file = event.tool_input?.file_path;
     // A variable the command does not set has the value Claude Code's environment gives it, which the hook shares:
     // $TMPDIR and $HOME are known paths, not unknown ones.
-    const env = new Map(Object.entries(process.env).map(([k, v]) => [k, { value: v, exported: true }]));
+    // Not OLDPWD: the hook's own is not the folder the Bash shell was in before (review of 2026-11-13); the command's cd
+    // sets it, and before that it is not known.
+    const env = new Map(Object.entries(process.env).filter(([k]) => k !== 'OLDPWD').map(([k, v]) => [k, { value: v, exported: true }]));
     const written = tool === 'Bash' ? shellWrites(event.tool_input?.command, cwd, { vars: env }) : null;
     const targets = [...new Set((/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
       : written ? written.files : []).map(physical))];
@@ -680,7 +682,9 @@ function couldLandIn(unknown, seen, cwd, made = [], until = Infinity) {
 // none.
 function reposUnder(dir, walk = { left: 2000, until: Infinity }) {
   const found = [];
-  const queue = [[dir.replace(/\/$/u, ''), 0]];
+  // The root stays `/`: stripped to '' it could not be read, and a write under `/$D` was dropped without a word (review
+  // of 2026-11-13).
+  const queue = [[dir === '/' ? '/' : dir.replace(/\/$/u, ''), 0]];
   while (queue.length) {
     const [d, depth] = queue.shift();
     // cut: the walk stops after `walk.left` folders or at `walk.until`; `cut` names where, and couldLandIn then keeps
