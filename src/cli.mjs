@@ -618,7 +618,10 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
   } catch (e) {
     // Never fails closed (the call goes through), but what failed is kept (failed:<tool>:<error>) for the Stop hook and
     // `hook --report`: until 2026-11-13 a bug here looked the same as nothing to say.
-    try { if (event?.session_id) addSeen(stateDir, event.session_id, {}, { [`failed:${event.tool_name ?? ''}:${errorText(e)}`]: now }); } catch { /* nothing more to do */ }
+    // Quoted values and numbers are left out of the key (`open '/a/b'`, `reading 'x'`), so one kind of error is one key
+    // and the state does not grow by a line for each call it fails on.
+    const kind = errorText(e).replace(/(['"`]).*?\1/gu, '$1…$1').replace(/\d+/gu, 'N');
+    try { if (event?.session_id) addSeen(stateDir, event.session_id, {}, { [`failed:${event.tool_name ?? ''}:${kind}`]: now }); } catch { /* nothing more to do */ }
     return null;
   }
 }

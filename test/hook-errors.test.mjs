@@ -43,6 +43,16 @@ test('a long command is quoted in part, and the line says how much was left out'
   assert.equal(runHook(bash('m5', cwd, command), { stateDir, gate: true, now: 2000, readers: { shellWrites: boom, bashReads } }), null, 'made again, it goes through');
 });
 
+test('only bashReads throws on a command whose writes are known: refused once, the writes still named, then let through', () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'readfirst-misread-'));
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-misread-state-'));
+  const readers = { shellWrites, bashReads: boom };
+  const out = JSON.parse(runHook(bash('m6', cwd, 'echo hi > out.txt'), { stateDir, gate: true, now: 1000, readers })).hookSpecificOutput;
+  assert.equal(out.permissionDecision, 'deny');
+  assert.match(out.permissionDecisionReason, /readfirst hit an error reading it/u);
+  assert.equal(runHook(bash('m6', cwd, 'echo hi > out.txt'), { stateDir, gate: true, now: 2000, readers }), null, 'made again, it goes through');
+});
+
 test('bashReads that throws is the same; without --gate the line is context, never a refusal', () => {
   const cwd = mkdtempSync(join(tmpdir(), 'readfirst-misread-'));
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-misread-state-'));
@@ -73,11 +83,14 @@ test('any other error in the hook lets the call through and is kept: the Stop ho
   const edit = JSON.stringify({ session_id: 'f1', cwd, tool_name: 'Edit', tool_input: { file_path: 5 } });
   assert.equal(runHook(edit, { stateDir, gate: true, now: 1000 }), null, 'never fails closed');
   assert.equal(runHook(edit, { stateDir, gate: true, now: 2000 }), null, 'the same error again: one error, not two');
+  // The same kind of error with another value in its message (`Received type number (7)`) is the same key.
+  const other = JSON.stringify({ session_id: 'f1', cwd, tool_name: 'Edit', tool_input: { file_path: 7 } });
+  assert.equal(runHook(other, { stateDir, gate: true, now: 3000 }), null);
   const stop = JSON.parse(runStopHook(JSON.stringify({ session_id: 'f1', cwd, stop_hook_active: false }), { stateDir, timeout: 30 }));
-  assert.match(stop.systemMessage, /the hook failed and let calls through unchecked, with 1 different error\(s\) \(Edit:TypeError: The "path" argument must be of type string/u);
+  assert.match(stop.systemMessage, /the hook failed and let calls through unchecked, with 1 different error\(s\) \(Edit:TypeError: The "…" argument must be of type string\. Received type number \(N\)\)/u);
   const report = hookReport({ stateDir });
   assert.match(report, /- errors the hook let calls through unchecked on: 1 different, in 1 session\(s\)/u);
-  assert.match(report, /Hook errors, in most sessions first:\n- Edit:TypeError: The "path" argument must be of type string.* \(1\)$/mu);
+  assert.match(report, /Hook errors, in most sessions first:\n- Edit:TypeError: The "…" argument must be of type string\. Received type number \(N\) \(1\)$/mu);
 });
 
 test('report lines written before these fields count them as zero', () => {
