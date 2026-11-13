@@ -37,7 +37,11 @@ test('the command in the settings refuses a Bash call that writes a file with se
   const command = entry.hooks.find((h) => /readfirst\.mjs" hook\b/u.test(h.command)).command;
   const args = command.replace('"$CLAUDE_PROJECT_DIR/bin/readfirst.mjs"', join(here, 'bin/readfirst.mjs')).split(' ').slice(1);
   const event = { session_id: `own-hook-${process.pid}`, cwd: root, tool_name: 'Bash', tool_input: { command: "sed -i 's/1/2/' src/a.js" } };
-  const out = JSON.parse(execFileSync('node', args, { input: JSON.stringify(event), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: here } }));
+  // A temp folder of its own: the hook keeps what it has shown there, and a state left by another run (or the
+  // developer's own session) would let the call through as already seen.
+  const state = mkdtempSync(join(tmpdir(), 'readfirst-own-hook-state-'));
+  const env = { ...process.env, CLAUDE_PROJECT_DIR: here, TMPDIR: state, TMP: state, TEMP: state };
+  const out = JSON.parse(execFileSync('node', args, { input: JSON.stringify(event), encoding: 'utf8', env }));
   assert.equal(out.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(out.hookSpecificOutput.permissionDecisionReason, /readfirst notes for src\/a\.js[\s\S]*a is read by the build/u);
 });
