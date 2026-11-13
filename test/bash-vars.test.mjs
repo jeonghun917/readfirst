@@ -46,7 +46,7 @@ test('what the command cannot know is listed as unknown, never dropped', () => {
   assert.deepEqual(unknown('echo x > "$(git rev-parse --show-toplevel)/f"'), ['$(git rev-parse --show-toplevel)']);
   assert.deepEqual(shellWrites('cd $D && echo x > f.txt', '/r').unknown[0].why, 'D is not set by the command');
   // A write the command names in full is still named; only the unknown one is listed.
-  assert.deepEqual(shellWrites('echo a > k.txt; echo b > $OUT', '/r'), { files: ['/r/k.txt'], unknown: [{ part: '$OUT', word: '$OUT', why: 'OUT is not set by the command', prefix: '' }] });
+  assert.deepEqual(shellWrites('echo a > k.txt; echo b > $OUT', '/r'), { files: ['/r/k.txt'], unknown: [{ part: '$OUT', word: '$OUT', why: 'OUT is not set by the command', prefix: '' }], repos: [] });
   // prefix: the folder the write is known to be under, '' when nothing is known.
   assert.deepEqual(shellWrites('echo x > /tmp/x/$D/f', '/r').unknown.map((u) => u.prefix), ['/tmp/x/']);
   assert.deepEqual(shellWrites('cd /srv/$D && echo x > f', '/r').unknown.map((u) => u.prefix), ['/srv/']);
@@ -68,8 +68,28 @@ test('words as the shell reads them: a backslash escapes the next character', ()
 
 test('commands that only read stay without writes and without unknowns', () => {
   for (const c of ['S=/a; ls $S', 'F=x; cat $F', 'echo $HOME', 'for f in a b; do echo $f; done', 'grep -n x "$F" 2>/dev/null']) {
-    assert.deepEqual(shellWrites(c, '/r'), { files: [], unknown: [] }, c);
+    assert.deepEqual(shellWrites(c, '/r'), { files: [], unknown: [], repos: [] }, c);
   }
+});
+
+// The environment the command starts with (the hook passes its own, which Claude Code gives it), what mktemp makes,
+// $OLDPWD, and the checkouts a command makes (2026-11-13: most of what the hook asked about was $TMPDIR and mktemp).
+test('variables from the environment, mktemp, $OLDPWD and the checkouts a command makes', () => {
+  const env = new Map([['TMPDIR', { value: '/tmp/t', exported: true }], ['HOME', { value: '/home/u', exported: true }]]);
+  const s = (c) => shellWrites(c, '/r', { vars: env });
+  assert.deepEqual(s('echo x > $TMPDIR/a.txt').files, ['/tmp/t/a.txt']);
+  assert.deepEqual(s('echo x > $HOME/.x').files, ['/home/u/.x']);
+  assert.deepEqual(s('D=$(mktemp -d) && echo x > $D/f').unknown.map((u) => [u.prefix, u.fresh]), [['/tmp/t/', true]], 'a new name in $TMPDIR');
+  assert.deepEqual(s('cd $(mktemp -d) && echo x > f').unknown.map((u) => [u.prefix, u.fresh]), [['/tmp/t/', true]]);
+  assert.deepEqual(s('R=$(mktemp -d /s/old-XXXX); T=$R/w; echo > $T/x').unknown.map((u) => [u.prefix, u.fresh]), [['/s/', true]], 'the folder of its template');
+  assert.deepEqual(s('F=$(mktemp -p /q); echo > $F').unknown.map((u) => [u.prefix, u.fresh]), [['/q/', true]]);
+  assert.deepEqual(s('F=$(mktemp x.XXX); echo > $F').unknown.map((u) => [u.prefix, u.fresh]), [['/r/', true]], 'a template with no folder: where the command is');
+  assert.deepEqual(s('cd /a && cd /b && echo > $OLDPWD/f').files, ['/a/f']);
+  assert.deepEqual(s('for r in a b; do echo > /s/w-$r/f; done').unknown.map((u) => [u.prefix, u.fresh]), [['/s', undefined]], 'a loop variable: not new');
+  // Not known only inside a file's name: the file is in that folder. A whole part may hold a /: it could be below.
+  assert.deepEqual(s('echo > /s/out-$k.txt').unknown.map((u) => [u.prefix, u.direct]), [['/s', true]]);
+  assert.deepEqual(s('echo > /s/$r').unknown.map((u) => [u.prefix, u.direct]), [['/s/', undefined]]);
+  assert.deepEqual(s('S=/s && git worktree add $S/w-x main && git clone u /c/d && git -C /a init sub').repos, ['/s/w-x', '/c/d', '/a/sub']);
 });
 
 test('readfirst read through a variable the command set counts as a read of that file', () => {
@@ -142,6 +162,32 @@ test('hook --gate from outside: a repository the session already used is where a
   assert.equal(hook(outside, stateDir, `echo x > ${parent}/$X/f.txt`, true, session).permissionDecision, 'deny');
   assert.equal(hook(outside, stateDir, `echo x > ${outside}/$X/f.txt`, true, session), null);
   assert.ok(readFileSync(join(stateDir, `readfirst-hook-${session}.lines`), 'utf8').includes(`"start:${root}"`), 'the Stop hook checks that repository');
+});
+
+// The owner's rule (2026-11-13): no refusal for a write outside every repository. $TMPDIR is the hook's own, a mktemp
+// folder is new and outside them, but a loop variable under a scratch folder that holds a worktree is still asked.
+test('hook --gate from outside: $TMPDIR and mktemp writes are quiet; a loop write into a scratch folder with a worktree is asked', () => {
+  n++;
+  const outside = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-outside-'));
+  const fresh = () => mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
+  assert.equal(hook(outside, fresh(), 'echo x > "$TMPDIR/out.txt"'), null);
+  assert.equal(hook(outside, fresh(), 'D=$(mktemp -d) && echo x > $D/f.txt'), null);
+  assert.equal(hook(outside, fresh(), 'cd "$(mktemp -d)" && echo x > f.txt'), null);
+  // A scratch folder with a checkout in it (a worktree is a folder with a .git file).
+  const scratch = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-scratch-'));
+  mkdirSync(join(scratch, 'w-main'));
+  writeFileSync(join(scratch, 'w-main/.git'), 'gitdir: /elsewhere\n');
+  const asked = hook(outside, fresh(), `S=${scratch}; for rev in a b; do cp t.js $S/w-$rev/test/; done`);
+  assert.equal(asked.permissionDecision, 'deny');
+  assert.match(asked.permissionDecisionReason, /\$rev: rev is a loop variable; could be in [^)]*w-main/u);
+  // An empty scratch folder where the command itself makes the worktree: asked too.
+  const empty = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-scratch-'));
+  const made = hook(outside, fresh(), `S=${empty}; for rev in a b; do git worktree add $S/w-$rev $rev; cp t.js $S/w-$rev/test/; done`);
+  assert.equal(made.permissionDecision, 'deny');
+  // The same loop into an empty scratch folder that makes no checkout: outside every repository, quiet.
+  assert.equal(hook(outside, fresh(), `S=${empty}; for rev in a b; do cp t.js $S/out-$rev.txt; done`), null);
+  // A file whose name alone is not known lands in the scratch folder itself, not in the worktree below it: quiet.
+  assert.equal(hook(outside, fresh(), `for k in 1 2; do npm test > ${scratch}/run$k.txt; done`), null);
 });
 
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {

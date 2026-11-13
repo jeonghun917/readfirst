@@ -508,7 +508,10 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const cwd = event.cwd ?? process.cwd();
     const tool = event.tool_name ?? '';
     const file = event.tool_input?.file_path;
-    const written = tool === 'Bash' ? shellWrites(event.tool_input?.command, cwd) : null;
+    // A variable the command does not set has the value Claude Code's environment gives it, which the hook shares:
+    // $TMPDIR and $HOME are known paths, not unknown ones.
+    const env = new Map(Object.entries(process.env).map(([k, v]) => [k, { value: v, exported: true }]));
+    const written = tool === 'Bash' ? shellWrites(event.tool_input?.command, cwd, { vars: env }) : null;
     const targets = [...new Set((/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
       : written ? written.files : []).map(physical))];
     const seen = readSeen(stateDir, event.session_id) ?? {};
@@ -533,7 +536,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     if (tool === 'Bash') {
       const known = new Map();
       const branches = new Map();
-      for (const r of bashReads(event.tool_input?.command, cwd)) {
+      for (const r of bashReads(event.tool_input?.command, cwd, { vars: env })) {
         if (!r.seen) continue;
         for (const abs of r.files.map(physical)) {
           const root = rootOf(abs, known);
@@ -546,12 +549,12 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // be outside every repository (couldLandIn). With --gate the call is refused once with them
     // (`unknown:<the command's hash>`) and goes through when made again. Each repository they could land in gets the
     // session's start mark, so the Stop hook checks the files that change there.
-    const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd) : [];
+    const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos) : [];
     const unknownKey = unplaced.length ? `unknown:${createHash('sha1').update(String(event.tool_input.command)).digest('hex').slice(0, 12)}` : null;
     const askUnknown = Boolean(unknownKey) && !before[unknownKey];
     if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) if (!seen[`start:${r}`]) seen[`start:${r}`] = now; }
     // Said once per command: made again, it goes through without the line.
-    const landIn = (u) => (u.roots.length ? `could be in ${u.roots.join(', ')}` : 'could be in any repository: none is known to this session');
+    const landIn = (u) => (u.looked ? `could be in a repository below ${u.prefix}${u.roots.length ? ` (${u.roots.join(', ')} and more: readfirst stopped looking at ${u.looked})` : ` (readfirst stopped looking at ${u.looked})`}` : u.roots.length ? `could be in ${u.roots.join(', ')}` : 'could be in any repository: none is known to this session');
     const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${u.word}\` (${u.part}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
     if (!targets.length) {
       const root = repoOf(cwd);
@@ -615,13 +618,16 @@ function rootOf(abs, known = new Map()) {
 }
 
 // The repositories each write a Bash command cannot place could land in (shellWrites' unknown), whatever folder the
-// session runs in: those holding the folder the write is known to be under (its `prefix`), or below it, among the
-// repositories of the call's folder and of the files this session already marked; with no prefix, any of those. A write
-// whose prefix is in no repository and above none of them is outside them all and dropped (`/tmp/x/$D/f`). Until
-// 2026-11-13 the repository was the call's folder alone, so a session started above its repositories
-// (`cd $R/repo && echo > src/f`) was never asked.
+// session runs in. With no known start (`prefix` ''), any repository the session knows (the call folder's and those of
+// the files it marked), or any at all when it knows none. With a prefix: the repository holding that folder; else the
+// repositories below it, which a partly known path (`$S/w-$rev/f`) can reach: those the session knows, those the
+// command itself makes (`made`: git worktree add, clone, init) and those found on disk (reposUnder). A new path mktemp
+// makes (`fresh`) has nothing below it: only the repository holding its folder counts. A write with none is outside
+// every repository and dropped: a temporary folder, a scratch folder with no checkout in it. Until 2026-11-13 the
+// repository was the call's folder alone, so a session started above its repositories (`cd $R/repo && echo > src/f`)
+// was never asked, and every write to $TMPDIR or a mktemp folder was.
 // Returns [{ ...unknown, roots }], roots empty when no repository is known at all (it could be any).
-function couldLandIn(unknown, seen, cwd) {
+function couldLandIn(unknown, seen, cwd, made = []) {
   const known = new Map();
   const roots = new Set();
   const here = repoOf(cwd);
@@ -638,11 +644,35 @@ function couldLandIn(unknown, seen, cwd) {
     if (!u.prefix) { out.push({ ...u, roots: [...roots] }); continue; }
     const dir = u.prefix.endsWith('/') ? u.prefix : `${u.prefix}/`;
     const own = rootOf(join(dir, 'x'), known);
-    const below = [...roots].filter((r) => `${r}/`.startsWith(dir));
-    const where = [...new Set([...(own ? [own] : []), ...below])];
-    if (where.length) out.push({ ...u, roots: where });
+    if (own) { out.push({ ...u, roots: [own] }); continue; }
+    // A new mktemp path, or a file whose name alone is not known (`$S/out-$k.txt`), is in that folder: nothing below.
+    if (u.fresh || u.direct) continue;
+    const under = (r) => `${r}/`.startsWith(dir);
+    const disk = reposUnder(dir);
+    const where = [...new Set([...[...roots].filter(under), ...made.filter(under), ...disk.found])];
+    if (where.length || disk.cut) out.push({ ...u, roots: where, ...(disk.cut ? { looked: disk.cut } : {}) });
   }
   return out;
+}
+
+// The checkouts (a folder with a .git in it) in a folder and below it, from a walk of at most `limit` folders, five
+// deep; node_modules and .git are not entered. cut: the folder the walk stopped in when it reached the limit, so the
+// caller counts a repository as possible there rather than none.
+function reposUnder(dir, limit = 2000) {
+  const found = [];
+  const queue = [[dir.replace(/\/$/u, ''), 0]];
+  let walked = 0;
+  while (queue.length) {
+    const [d, depth] = queue.shift();
+    // cut: the walk stops at `limit` folders; `cut` names where, and couldLandIn then keeps the write as possible
+    if (++walked > limit) return { found, cut: d };
+    let entries;
+    try { entries = readdirSync(d, { withFileTypes: true }); } catch { continue; }
+    if (entries.some((e) => e.name === '.git')) { found.push(d); continue; }
+    if (depth >= 5) continue;
+    for (const e of entries) if (e.isDirectory() && e.name !== 'node_modules') queue.push([join(d, e.name), depth + 1]);
+  }
+  return { found, cut: null };
 }
 
 // Once per session for each repository edited: map edits waiting a week or ten merges on its upkeep branch

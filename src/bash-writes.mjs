@@ -8,7 +8,7 @@
 //   (codeTargets), not every path-like word in it.
 // A here-document fed to cat or tee is data; only where it goes counts. `cd dir &&` moves where relative paths start.
 import { existsSync, readdirSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 const CODE_WRITES = /\bopen\([^)]*,\s*['"][wax]|\.write_text\(|\.write_bytes\(|writeFileSync\(|writeFile\(|appendFileSync\(|\.writelines?\(|createWriteStream\(|File\.write|>>?\s*\$|\bdump\(/u;
@@ -26,17 +26,23 @@ export function shellWord(word, vars = new Map()) {
   const s = String(word);
   const unknown = [];
   // text: what stands in the word; part: what is not known (for a variable set from something not known, that
-  // something: `S=$(mktemp -d)` makes $S's part `$(mktemp -d)`).
-  const hole = (text, why, part = text) => { unknown.push({ text, part, why }); return `${HOLE}${text}${HOLE}`; };
+  // something: `S=$(mktemp -d)` makes $S's part `$(mktemp -d)`); under: for a path mktemp makes, the folder it is made
+  // in (a new name there, so nothing below it yet).
+  const hole = (text, why, part = text, under) => { unknown.push({ text, part, why, ...(under !== undefined ? { under } : {}) }); return `${HOLE}${text}${HOLE}`; };
   // The expansion that starts with the $ at i: [its text, the index past it].
   const dollar = (i) => {
-    if (s[i + 1] === '(') { const end = closeOf(s, i); const e = end < 0 ? s.length : end; return [hole(s.slice(i, e), 'it is the output of a command, known only when it runs'), e]; }
+    if (s[i + 1] === '(') {
+      const end = closeOf(s, i);
+      const e = end < 0 ? s.length : end;
+      const under = mktempUnder(s.slice(i + 2, e - 1), vars);
+      return [hole(s.slice(i, e), under === undefined ? 'it is the output of a command, known only when it runs' : 'a new name mktemp makes when it runs', s.slice(i, e), under ?? undefined), e];
+    }
     const m = s.slice(i).match(/^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))/u);
     if (m) {
       const name = m[1] ?? m[2];
       const v = vars.get(name);
       if (v && v.value != null) return [v.value, i + m[0].length];
-      return [hole(m[0], v ? v.why : `${name} is not set by the command`, v?.part ?? m[0]), i + m[0].length];
+      return [hole(m[0], v ? v.why : `${name} is not set by the command`, v?.part ?? m[0], v?.under), i + m[0].length];
     }
     if (s[i + 1] === '{') { const k = s.indexOf('}', i); const e = k < 0 ? s.length : k + 1; return [hole(s.slice(i, e), 'a ${ } with an operator is not worked out here'), e]; }
     if (/[0-9@*#?$!-]/u.test(s[i + 1] ?? '')) return [hole(s.slice(i, i + 2), 'it is set by whoever runs the command'), i + 2];
@@ -65,6 +71,31 @@ export function shellWord(word, vars = new Map()) {
 }
 // The text of a word with no variables known: for command names and options.
 const unquote = (w) => shellWord(w).text;
+
+// The folder `mktemp` makes its new file or folder in, for the text of a $( ) that runs it, or undefined when the $( )
+// runs something else; null when that folder is not known either. -p DIR and --tmpdir=DIR: DIR; -t, a bare --tmpdir,
+// or no template: $TMPDIR, else the system's temporary folder; a template with a / in it: its folder; a template
+// without one: where the command is ('.').
+function mktempUnder(inner, vars) {
+  const ws = words(inner.trim());
+  if (unquote(ws[0] ?? '').split('/').pop() !== 'mktemp') return undefined;
+  const value = (w) => { const r = shellWord(w, vars); return r.unknown.length ? null : r.text; };
+  const tmp = () => vars.get('TMPDIR')?.value || tmpdir();
+  let dir;
+  let template;
+  for (let k = 1; k < ws.length; k++) {
+    const w = ws[k];
+    if (w === '--tmpdir') dir = tmp();
+    else if (w.startsWith('--tmpdir=')) dir = value(w.slice(9));
+    else if (/^-[a-zA-Z]*p$/u.test(w)) dir = value(ws[++k] ?? '');
+    else if (/^-[a-zA-Z]*t[a-zA-Z]*$/u.test(w)) dir ??= tmp();
+    else if (!w.startsWith('-')) template = value(w);
+  }
+  if (dir !== undefined) return dir;
+  if (template === undefined) return tmp();
+  if (template === null) return null;
+  return template.includes('/') ? dirname(template) : '.';
+}
 
 // Words that only set up the command after them: `FOO=1 sed -i ...`, `sudo tee f`, `env -i X=1 cp a b`,
 // `timeout 10 sed -i ...`, `nohup cp ...`. The command is the first word past them; each wrapper's options that take a
@@ -378,13 +409,20 @@ function follow(state, ws) {
   const cmd = unquote(ws[0] ?? '').split('/').pop();
   if (CD.test(cmd)) {
     const arg = ws[1] === undefined ? null : shellWord(ws[1], state.vars);
+    const before = state.base;
     state.base = stepTo(state.base, cmd, arg?.text);
-    // prefix: the absolute folder known to hold where it went (`cd /r/$X` is under /r), '' when nothing is known.
+    // prefix: the absolute folder known to hold where it went (`cd /r/$X` is under /r), '' when nothing is known; fresh:
+    // it went into a new folder mktemp made there (`cd $(mktemp -d)`), so nothing is below it yet.
     if (state.base == null) {
       const known = arg?.text.includes(HOLE) ? arg.text.slice(0, arg.text.indexOf(HOLE)) : '';
-      const prefix = known && isAbsolute(known) ? (known.endsWith('/') ? known : dirname(known)) : '';
-      state.why = arg?.unknown[0] ? { part: arg.unknown[0].part, why: arg.unknown[0].why, prefix } : state.why ?? { part: [cmd, ...ws.slice(1, 2)].join(' '), why: `where ${cmd} goes is not known before it runs`, prefix: '' };
+      const first = arg?.unknown[0];
+      const made = !known && first?.under != null ? (isAbsolute(first.under) ? first.under : before != null ? resolve(before, first.under) : null) : null;
+      const prefix = made ? `${made.replace(/\/$/u, '')}/` : known && isAbsolute(known) ? (known.endsWith('/') ? known : dirname(known)) : '';
+      state.why = first ? { part: first.part, why: first.why, prefix, fresh: Boolean(made) } : state.why ?? { part: [cmd, ...ws.slice(1, 2)].join(' '), why: `where ${cmd} goes is not known before it runs`, prefix: '' };
     }
+    // The shell keeps where it was and where it is: `cd -` and $OLDPWD go back to the folder before.
+    state.vars.set('OLDPWD', before != null ? { value: before, exported: true } : { value: null, why: 'the folder before is not known', part: '$OLDPWD' });
+    state.vars.set('PWD', state.base != null ? { value: state.base, exported: true } : { value: null, why: state.why?.why ?? 'the folder is not known', part: state.why?.part ?? '$PWD' });
     return true;
   }
   const declare = DECLARE.test(cmd);
@@ -400,7 +438,11 @@ function follow(state, ws) {
     const m = w.match(ASSIGN);
     if (!m) { if (exported && state.vars.get(w)) state.vars.get(w).exported = true; continue; }
     const v = shellWord(w.slice(m[0].length), state.vars);
-    state.vars.set(m[1], v.unknown.length ? { value: null, why: v.unknown[0].why, part: v.unknown[0].part, exported } : { value: v.text, exported });
+    // A value that starts with a path mktemp makes keeps where it is made (`R=$(mktemp -d)`, `T=$R/w`).
+    const first = v.unknown[0];
+    const made = first && v.text.startsWith(`${HOLE}${first.text}${HOLE}`) ? first.under : undefined;
+    const under = made == null ? undefined : isAbsolute(made) ? made : state.base != null ? resolve(state.base, made) : undefined;
+    state.vars.set(m[1], v.unknown.length ? { value: null, why: first.why, part: first.part, exported, ...(under != null ? { under } : {}) } : { value: v.text, exported });
   }
   return true;
 }
@@ -417,7 +459,9 @@ export function bashWrites(command, cwd = process.cwd()) {
 export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), why = null } = {}) {
   const found = new Set();
   const unknown = [];
-  const start = () => ({ base: cwd, why: cwd == null ? why : null, vars: copyVars(vars) });
+  // The variables it starts with (the hook passes its own environment: Claude Code starts it with the session's), and
+  // $PWD where it starts.
+  const start = () => { const v = copyVars(vars); if (cwd != null) v.set('PWD', { value: cwd, exported: true }); return { base: cwd, why: cwd == null ? why : null, vars: v }; };
   const state = start();
   const here = (w) => { try { return isAbsolute(w) ? existsSync(w) : state.base != null && existsSync(resolve(state.base, w)); } catch { return false; } };
   // A glob with one * in its last part (dir/*.yml), relative to where the command runs; anything wider is not expanded.
@@ -439,6 +483,8 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   };
   const dq = (w) => { const r = shellWord(w, state.vars); for (const u of r.unknown) holes.set(u.text, u); return r.text; };
   const missing = (u) => { if (!unknown.some((k) => k.part === u.part && k.word === u.word)) unknown.push(u); };
+  // repos: the checkouts the command makes (git worktree add, clone, init), as a folder or the known start of one.
+  const repos = new Set();
   // w: a word as dq gives it.
   const add = (w) => {
     let p = String(w).replace(/^file:\/\//u, '');
@@ -447,9 +493,20 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     const h = p.match(/\0([^\0]*)\0/u);
     // prefix: the absolute folder the write is known to be under ('' when nothing is known), so the hook can tell
     // which repositories it could land in: `/tmp/x/$D/f` is under /tmp/x, `$OUT/f` anywhere.
-    if (h) { const u = holes.get(h[1]); missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: knownPrefix(p.slice(0, p.indexOf(HOLE))) }); return; }
+    // A path that starts with one mktemp makes is a new name in that folder (fresh: nothing can be below it yet).
+    if (h) {
+      const u = holes.get(h[1]);
+      const made = p.startsWith(HOLE) && u?.under != null ? (isAbsolute(u.under) ? u.under : state.base != null ? resolve(state.base, u.under) : null) : null;
+      // direct: what is not known sits inside the file's own name, next to known letters of it (`out-$k.txt`), so the
+      // file is in the prefix folder itself, not below it. A whole part (`/s/$r`) may hold a / and is not direct.
+      const q = p.replace(/\0[^\0]*\0/gu, HOLE);
+      const lastSlash = q.lastIndexOf('/');
+      const direct = !made && q.indexOf(HOLE) > lastSlash && q.slice(lastSlash + 1).replaceAll(HOLE, '').length > 0;
+      missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: made ? `${made.replace(/\/$/u, '')}/` : knownPrefix(p.slice(0, p.indexOf(HOLE))), ...(made ? { fresh: true } : {}), ...(direct ? { direct: true } : {}) });
+      return;
+    }
     if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1));
-    const relativeUnknown = () => missing({ part: state.why?.part ?? 'cd', word: p, why: state.why?.why ?? 'the folder it is relative to is not known', prefix: state.why?.prefix ?? '' });
+    const relativeUnknown = () => missing({ part: state.why?.part ?? 'cd', word: p, why: state.why?.why ?? 'the folder it is relative to is not known', prefix: state.why?.prefix ?? '', ...(state.why?.fresh ? { fresh: true } : {}) });
     // A glob writes the files it matches (`sed -i ... src/*.js`): one * in the last part is expanded, anything wider
     // or a brace list is left out rather than named as a file called `*.js`.
     if (/[*?[{]/u.test(p)) { if (isAbsolute(p)) return; if (state.base == null) relativeUnknown(); else glob(p).forEach((f) => found.add(resolve(state.base, f))); return; }
@@ -477,6 +534,7 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     const r = shellWrites(text, state.base, { vars: innerVars, why: state.why });
     r.files.forEach((f) => found.add(f));
     r.unknown.forEach(missing);
+    r.repos.forEach((x) => repos.add(x));
   };
   const exportedOnly = (v) => new Map([...v].filter(([, x]) => x.exported));
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
@@ -538,10 +596,17 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
       // git's own options before the subcommand: -C <dir> runs it in that folder, -c <k=v> and --no-pager change nothing.
       let i = 0;
       let dir = '.';
+      const cs = []; // the -C folders as given, for resolve (join drops the / of an absolute one)
       while (i < args.length && args[i].startsWith('-')) {
-        if (args[i] === '-C') { dir = join(dir, args[i + 1] ?? ''); i += 2; } else if (args[i] === '-c') i += 2; else i++;
+        if (args[i] === '-C') { dir = join(dir, args[i + 1] ?? ''); cs.push(args[i + 1] ?? ''); i += 2; } else if (args[i] === '-c') i += 2; else i++;
       }
       if (/^(?:checkout|restore)$/u.test(args[i] ?? '')) gitPaths(args.slice(i), (w) => here(join(dir, w))).forEach((p) => add(join(dir, p)));
+      // A checkout the command makes (worktree add, clone, init): a write below it lands in a repository, though none
+      // is there yet when the hook runs (`git worktree add $S/w-$rev` then a write into $S/w-$rev).
+      const sub = args[i];
+      const rest = args.slice(i + 1).filter((w, k, all) => !w.startsWith('-') && !/^-(?:b|B|-reason|-template|-separate-git-dir|-origin|o|-branch|-depth|c|-config)$/u.test(all[k - 1] ?? ''));
+      const made = sub === 'worktree' && rest[0] === 'add' ? rest[1] : sub === 'clone' ? rest[1] ?? (rest[0] ?? '').replace(/\/$/u, '').split(/[/:]/u).pop().replace(/\.git$/u, '') : sub === 'init' ? rest[0] ?? '.' : undefined;
+      if (made) repos.add(made.includes(HOLE) ? knownPrefix(made.slice(0, made.indexOf(HOLE))) : state.base != null || isAbsolute(made) ? resolve(state.base ?? '/', ...cs, made) : '');
     }
     // `bash -c '...'`, `sh -lc "..."`: the string is commands, read the same way, by a new shell that sees only the
     // exported variables (what "..." held was expanded before it started).
@@ -568,7 +633,8 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     redirects(p.tail);
     for (let k = 0; k < p.opened; k++) outer.push(snapshot(state));
   }
-  return { files: [...found], unknown };
+  repos.delete('');
+  return { files: [...found], unknown, repos: [...repos] };
 }
 
 // The files each `readfirst read` in a shell command asks for, and whether its whole output reaches whoever ran the
@@ -580,10 +646,11 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
 // followed by `read`; any other way of running it (an alias, a script, inside $( )) is not seen here. Relative paths
 // start where the cds before it moved to, or at --root when it is given, as `readfirst read` resolves them.
 const READ_VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
-export function bashReads(command, cwd = process.cwd()) {
+export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {}) {
   const out = [];
-  // cd and the variables the command sets are followed as bashWrites follows them (`S=/a; cd $S && readfirst read f`).
-  const state = { base: cwd, why: null, vars: new Map() };
+  // cd and the variables the command sets are followed as bashWrites follows them (`S=/a; cd $S && readfirst read f`);
+  // `vars`: those it starts with (the hook's environment).
+  const state = { base: cwd, why: null, vars: copyVars(vars) };
   const outer = [];
   const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' '));
   for (const { text, op } of segmentsAndOps(shell)) {
