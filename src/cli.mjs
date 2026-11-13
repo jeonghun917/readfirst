@@ -40,7 +40,7 @@ import { definitions, find, findText, meets, words } from './find.mjs';
 import { CURSOR_DIR, cursorPlan } from './export.mjs';
 import { AGENTS, detectAgents, outsideRepo, setupAgents } from './agents.mjs';
 import { gitHooksReport, setupGitHooks } from './git-hooks.mjs';
-import { evidenceDrift, judge, moveEvidence, parseGitDiff } from './trigger.mjs';
+import { evidenceDrift, judge, moveEvidence, parseGitDiff, textChange } from './trigger.mjs';
 import { VERDICT_LANGS } from './verdict.mjs';
 import { HELD_PATH, heldInRun, parseHeld, recordHeld } from './held.mjs';
 import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
@@ -354,16 +354,26 @@ export function diffLang(asked, labelLangs) {
 // (being replaced, change together, checks; a broken map, which blocks, is put before these by the caller), what
 // readfirst could not see or fetch, other repositories, then what to know (rules, risks, where it broke, tests). Every
 // line is given (0.27.1: no "N more"); with several files, a line for only some of them names them.
-export function brief(list) {
+// The fixed id of a rule or risk, which an answer names: `rule:<id>` for a rule (its id is the map's), and
+// `risk:<group>:<first 8 hex of the SHA-1 of its text>` for a risk (a risk has no id of its own; the same text in the
+// same group is the same risk, and an edited text is a new one to answer).
+export const itemId = (kind, key, text) => (kind === 'rule' ? `rule:${key}` : `risk:${key ?? 'none'}:${createHash('sha1').update(String(text)).digest('hex').slice(0, 8)}`);
+// ids (the PreToolUse hook): each rule and risk also carries its fixed id (itemId) and what the change does to it, from
+// judge's `trigger` on its row: touched (by the names or lines given), not touched, or not judged (it names nothing
+// readfirst can find; there is no change to judge it against: a file a Bash command writes; or noteStates gave the
+// reason in `unjudged`: judging failed, or the edit was too large to place).
+export function brief(list, { ids = false } = {}) {
   const lines = [];
   const all = (list.targets ?? []).length;
   const forSome = (row) => (all > 1 && row.for && row.for.length < all ? ` [${row.for.join(', ')}]` : '');
+  const state = (t) => (!t ? 'not judged: no edit to judge it against' : t.unjudged ? `not judged: ${t.unjudged}` : !t.triggered ? `not touched: ${t.why}` : t.about?.length ? `touched by ${t.by.join(', ')}` : 'not judged: it names nothing readfirst can find in the code');
+  const tag = (id, row) => (ids ? ` [${id} · ${state(row.trigger)}]` : '');
   for (const d of list.deprecated ?? []) lines.push(`Being replaced: group ${d.group}${d.use ? `; use ${d.use} instead` : ''} (${d.why}). Do not add to it.${forSome(d)}`);
   for (const t of list.together ?? []) lines.push(`Change together: when this file changes, also change ${t.also.join(' or ')} (${t.why}). verify fails otherwise.${forSome(t)}`);
   for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}${forSome(c)}`);
   const known = [];
-  for (const r of list.rules) known.push(`Rule ${r.id}: ${r.rule}${r.why ? ` (why: ${r.why})` : ''}${forSome(r)}`);
-  for (const r of list.risks) known.push(`Risk: ${r.text}${forSome(r)}`);
+  for (const r of list.rules) known.push(`Rule ${r.id}${tag(itemId('rule', r.id, r.rule), r)}: ${r.rule}${r.why ? ` (why: ${r.why})` : ''}${forSome(r)}`);
+  for (const r of list.risks) known.push(`Risk${tag(itemId('risk', r.group, r.text), r)}: ${r.text}${forSome(r)}`);
   for (const t of list.targets ?? []) {
     const b = t.brokeBefore;
     if (b && !b.notFetched) known.push(`Broke before: ${b.count} fix${b.count === 1 ? '' : 'es'} in ${t.path}, last ${b.last.date} ${b.last.sha} "${b.last.subject}"`);
@@ -374,6 +384,23 @@ export function brief(list) {
   if (lines.length || known.length || (list.dependents ?? []).length) for (const u of list.unseen ?? []) lines.push(`Not seen by readfirst: ${u.why}`);
   for (const d of list.dependents ?? []) lines.push(`Another repository depends on this: ${d.repo}${d.paths.length ? ` (${d.paths.join(', ')})` : ''} (${d.why}).${forSome(d)}`);
   return [...lines, ...known];
+}
+
+// The states the hook's notes give (brief with ids), from `judge`, run by `run`. A judge that throws leaves every item
+// "not judged" with that reason, never "no edit" (there was one) and never without notes. `unplaced`: files whose edit
+// textChange could not place in its budget; an item it did not find touched elsewhere is not judged, with that reason.
+export function noteStates(list, run, unplaced = []) {
+  const rows = [...(list.rules ?? []), ...(list.risks ?? [])];
+  try { run(); } catch (e) {
+    const why = `judging the edit failed (${String(e?.message ?? e).split('\n')[0]})`;
+    for (const r of rows) r.trigger = { unjudged: why };
+    return list;
+  }
+  if (unplaced.length) {
+    const why = `the edit changes too much of ${unplaced.join(', ')} to place within the hook's budget`;
+    for (const r of rows) if (!r.trigger || !r.trigger.triggered) r.trigger = { unjudged: why };
+  }
+  return list;
 }
 
 // Which files the PreToolUse hook has seen in a session, by absolute path: the Stop hook verifies those. A session can
@@ -446,17 +473,23 @@ function findAsked(seen, root, name) {
 }
 export function newCode(tool, input, abs) {
   const names = (text) => new Set(definitions(abs, String(text ?? '')).map((d) => d.name));
-  const added = (after, before) => { const was = names(before); return [...names(after)].filter((n) => !was.has(n)); };
-  // An edit's old and new strings are fragments: a method's lines without its class, half a statement, a line of a
-  // template. Read so, a function that is only moved or re-indented looked new and a word in a string looked like a
-  // declaration. The file before and after the edit is what can be read.
+  const texts = editTexts(tool, input, abs);
+  if (!texts) return [];
+  const was = names(texts.before);
+  return [...names(texts.after)].filter((n) => !was.has(n));
+}
+// The file an Edit, MultiEdit or Write is about to change, before and after it: { before, after }, or null for any
+// other tool. An edit's old and new strings are fragments (a method's lines without its class, half a statement, a
+// line of a template): read alone, a function only moved looked new and a word in a string looked like a declaration,
+// so the edit is applied to the file as it is on disk, as Claude Code applies it (replace_all: every occurrence; an
+// old text not in the file: no change). A new file was ''.
+export function editTexts(tool, input, abs) {
+  if (!/^(?:Edit|MultiEdit|Write)$/u.test(tool)) return null;
   let before = '';
   try { before = readFileSync(abs, 'utf8'); } catch { /* a new file */ }
   const apply = (text, e) => { const [from, to] = [String(e?.old_string ?? ''), String(e?.new_string ?? '')]; return !from ? text : e?.replace_all ? text.split(from).join(to) : text.replace(from, () => to); };
-  if (tool === 'Edit') return added(apply(before, input), before);
-  if (tool === 'MultiEdit') return added((input?.edits ?? []).reduce(apply, before), before);
-  if (tool === 'Write') return added(input?.content, before);
-  return [];
+  const after = tool === 'Edit' ? apply(before, input) : tool === 'MultiEdit' ? (input?.edits ?? []).reduce(apply, before) : String(input?.content ?? '');
+  return { before, after };
 }
 
 // Claude Code PreToolUse hook. Reads the hook's JSON on stdin; for an Edit, Write or MultiEdit of a file, or a Bash
@@ -515,7 +548,8 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       return null;
     }
     const deadline = Date.now() + budget;
-    const { notes, late } = notesFor(targets, seen, now, { deadline, stateDir });
+    const edited = new Map(targets.flatMap((abs) => { const e = editTexts(tool, event.tool_input, abs); return e ? [[abs, e]] : []; }));
+    const { notes, late } = notesFor(targets, seen, now, { deadline, stateDir, edited });
     const waiting = pendingNotes(targets, seen, now);
     const known = new Map();
     const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => ({ abs, root: rootOf(abs, known), names: newCode(tool, event.tool_input, abs) }))
@@ -604,7 +638,9 @@ function hookContext(root, stateDir) {
 // for when there are several), or nothing for a repository with nothing to say. Files shown in the last six hours,
 // outside a repository, the map itself and .git/ are left out. Marks each file looked up as seen; a file it had no time
 // for is marked `touched:` (the Stop hook checks it) and returned in `late`.
-function notesFor(targets, seen, now, { deadline = Infinity, stateDir } = {}) {
+// edited: absolute path -> { before, after } for the files an Edit, MultiEdit or Write is about to change (editTexts):
+// their notes are judged against that change (judge in src/trigger.mjs) and each says whether it is touched.
+function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = new Map() } = {}) {
   const known = new Map();
   const branches = new Map();
   const byRoot = new Map();
@@ -646,7 +682,16 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir } = {}) {
     let map = ctx.map;
     let list;
     try { list = listFor(map); } catch { map = null; list = listFor(null); }
-    const lines = brief(list);
+    // The change each edited file is about to get, judged as `readfirst diff` judges a commit: the file is read as it
+    // will be. A judge that fails leaves the notes, each item saying judging failed (noteStates): the hook must not
+    // drop the notes.
+    // An edit too large to place in the time left (textChange's budget) is not judged by guessing: its items say so.
+    const changes = new Map(done.flatMap((p) => { const e = edited.get(join(root, p)); return e ? [[p, textChange(e.before, e.after, { deadline })]] : []; }));
+    const unplaced = [...changes].filter(([, c]) => c.unplaced).map(([p]) => p);
+    for (const p of unplaced) changes.delete(p);
+    const after = (p) => { const e = edited.get(join(root, p)); return e ? e.after : readText(root)(p); };
+    noteStates(list, () => { if (changes.size) judge(list, { changes, read: after, files: all, imports: map ? ctx.edges() : [] }); }, unplaced);
+    const lines = brief(list, { ids: true });
     if (ctx.broken.length) lines.unshift(brokenMapLine(ctx.broken));
     for (const p of done) { seen[join(root, p)] = now; seen[`shown:${branchOf(root, branches)}:${join(root, p)}`] = now; }
     if (!lines.length) continue;
