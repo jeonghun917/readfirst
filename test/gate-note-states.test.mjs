@@ -114,6 +114,12 @@ test('textChange: past its work budget or deadline the change is unplaced, not c
   const after = before.flatMap((l, i) => (i % 2 ? [`${l}!`] : i % 10 === 0 ? [l, 'new'] : [l]));
   const c = textChange(before.join('\n'), after.join('\n'));
   assert.equal(c.text.length, 100 * 2 + 20);
+  // A new file ('' is one empty line) or a file emptied: placed at once, whatever its size, not over the budget.
+  const created = textChange('', lines('n', 20_000));
+  assert.deepEqual([created.unplaced, created.text.length], [undefined, 20_001]);
+  const emptied = textChange(lines('n', 20_000), '');
+  assert.deepEqual([emptied.unplaced, emptied.text.length], [undefined, 20_001]);
+  assert.deepEqual(textChange('k5', lines('k', 20_000)).hunks, [{ oldStart: 0, oldCount: 0, newStart: 1, newCount: 5 }, { oldStart: 1, oldCount: 0, newStart: 7, newCount: 19_994 }]);
 });
 
 test('a judge that throws: every item says judging failed, not that there was no edit', () => {

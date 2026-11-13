@@ -125,6 +125,19 @@ export function textChange(before, after, { deadline = Infinity, work = DIFF_WOR
       while (aLo < aHi && bLo < bHi && a[aHi - 1] === b[bHi - 1]) { aHi--; bHi--; }
       if (aLo === aHi) { added.fill(1, bLo, bHi); continue; }
       if (bLo === bHi) { removed.fill(1, aLo, aHi); continue; }
+      // One line on a side (a new file's '' is one empty line) needs no walk: it is kept where the other side has it,
+      // else everything changed. The walk would go to half the other side's length and spend its budget on it.
+      if (aHi - aLo === 1 || bHi - bLo === 1) {
+        const one = aHi - aLo === 1;
+        const [line, lo, hi] = one ? [a[aLo], bLo, bHi] : [b[bLo], aLo, aHi];
+        const other = one ? b : a;
+        let at = lo;
+        while (at < hi && other[at] !== line) at++;
+        (one ? added : removed).fill(1, lo, hi);
+        if (at < hi) (one ? added : removed)[at] = 0;
+        else (one ? removed : added)[one ? aLo : bLo] = 1;
+        continue;
+      }
       const [x, y, u, v] = middleSnake(aLo, aHi, bLo, bHi);
       stack.push([aLo + u, aHi, bLo + v, bHi], [aLo, aLo + x, bLo, bLo + y]);
     }
