@@ -33,7 +33,7 @@ import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom, unshownRisks } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
-import { bashWrites } from './bash-writes.mjs';
+import { bashReads, bashWrites } from './bash-writes.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { definitions, find, findText, meets, words } from './find.mjs';
@@ -489,6 +489,20 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       const asked = findQuery(event.tool_input.command);
       if (root) { seen[`find:${root}`] = now; if (asked.length) seen[`findwords:${root}:${[...new Set(asked)].join(' ')}`] = now; }
     }
+    // `readfirst read` run in Bash shows the same notes the hook would (2026-11-13: the gate did not count it, so a
+    // file read that way was refused all the same). It counts for the branch it ran on, and only when its whole
+    // output came back: one sent to /dev/null, a file or a pipe, or cut by --limit, is not marked.
+    if (tool === 'Bash') {
+      const known = new Map();
+      const branches = new Map();
+      for (const r of bashReads(event.tool_input?.command, cwd)) {
+        if (!r.seen) continue;
+        for (const abs of r.files.map(physical)) {
+          const root = rootOf(abs, known);
+          if (root) seen[`read:${branchOf(root, branches)}:${abs}`] = now;
+        }
+      }
+    }
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
@@ -523,6 +537,17 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
   } catch {
     return null;
   }
+}
+
+// The branch a repository is on, or the commit when none is checked out; '' when git cannot say. `known` keeps the
+// answers of one call.
+function branchOf(root, known = new Map()) {
+  if (!known.has(root)) {
+    let b = '';
+    try { b = git(root, 'rev-parse', '--abbrev-ref', 'HEAD').trim(); if (b === 'HEAD') b = git(root, 'rev-parse', 'HEAD').trim(); } catch { b = ''; }
+    known.set(root, b);
+  }
+  return known.get(root);
 }
 
 // The repository of a path: that of its nearest existing folder (a new file's folder may not exist yet). `known` keeps
@@ -575,6 +600,7 @@ function hookContext(root, stateDir) {
 // for is marked `touched:` (the Stop hook checks it) and returned in `late`.
 function notesFor(targets, seen, now, { deadline = Infinity, stateDir } = {}) {
   const known = new Map();
+  const branches = new Map();
   const byRoot = new Map();
   for (const abs of targets) {
     const root = rootOf(abs, known);
@@ -582,7 +608,15 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir } = {}) {
     const path = relative(root, abs).replace(/\\/gu, '/');
     if (path.startsWith('..') || path === MAP_PATH || path.startsWith('.git/')) continue;
     const key = join(root, path);
-    if (seen[key] && now - seen[key] < 6 * 3600_000) continue;
+    // Notes shown or read on another branch do not count: the map and the file there may say something else
+    // (2026-11-13: a mark left from the previous branch let an edit through on the next one without its notes).
+    const branch = branchOf(root, branches);
+    const fresh = (k) => seen[k] && now - seen[k] < 6 * 3600_000;
+    // A file read with `readfirst read` and not shown by the hook is still a file this call edits: `touched:` has the
+    // Stop hook check it (without it, the read let the edit through and the stop never checked the file).
+    // A bare path with no `shown:` mark at all was written by an older readfirst, which kept no branch: it still counts.
+    const legacy = fresh(key) && !Object.keys(seen).some((k) => k.startsWith('shown:') && k.endsWith(`:${key}`));
+    if (legacy || fresh(`shown:${branch}:${key}`) || fresh(`read:${branch}:${key}`)) { if (!seen[key]) seen[`touched:${key}`] ??= now; continue; }
     if (!byRoot.has(root)) byRoot.set(root, []);
     if (!byRoot.get(root).includes(path)) byRoot.get(root).push(path);
   }
@@ -608,7 +642,7 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir } = {}) {
     try { list = listFor(map); } catch { map = null; list = listFor(null); }
     const lines = brief(list);
     if (ctx.broken.length) lines.unshift(brokenMapLine(ctx.broken));
-    for (const p of done) seen[join(root, p)] = now;
+    for (const p of done) { seen[join(root, p)] = now; seen[`shown:${branchOf(root, branches)}:${join(root, p)}`] = now; }
     if (!lines.length) continue;
     notes.push(`readfirst notes for ${done.join(', ')}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${lines.join('\n- ')}`);
   }
@@ -667,8 +701,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));

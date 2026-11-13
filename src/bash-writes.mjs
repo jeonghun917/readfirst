@@ -292,15 +292,18 @@ function parens(segment, open) {
   }
   return { lead, body: end < 0 ? segment : segment.slice(0, end), closes, tail: end < 0 ? '' : segment.slice(tailAt), opened: local };
 }
-const segments = (shell) => {
+// Each command of some shell text with the operator after it ('' after the last): `|` and `|&` mean its output goes
+// to the next command, not to whoever ran it.
+const segmentsAndOps = (shell) => {
   const out = [];
   let at = 0;
   // No \s* before the separator: a blanked quote is all spaces and would be taken with it.
   // `>|` is a redirect, not a pipe; `|&` pipes stderr too and is one operator (2026-11-09).
-  for (const m of blank(shell).matchAll(/&&|\|\||;|(?<!>)\|&?|\n/gu)) { out.push(shell.slice(at, m.index).trim()); at = m.index + m[0].length; }
-  out.push(shell.slice(at).trim());
+  for (const m of blank(shell).matchAll(/&&|\|\||;|(?<!>)\|&?|\n/gu)) { out.push({ text: shell.slice(at, m.index).trim(), op: m[0] }); at = m.index + m[0].length; }
+  out.push({ text: shell.slice(at).trim(), op: '' });
   return out;
 };
+const segments = (shell) => segmentsAndOps(shell).map((s) => s.text);
 
 export function bashWrites(command, cwd = process.cwd()) {
   const found = new Set();
@@ -422,4 +425,60 @@ export function bashWrites(command, cwd = process.cwd()) {
     for (let k = 0; k < p.opened; k++) outer.push(base);
   }
   return [...found];
+}
+
+// The files each `readfirst read` in a shell command asks for, and whether its whole output reaches whoever ran the
+// command: { files (absolute), seen, why }. Not seen when stdout goes to a file or /dev/null (`>`, `>>`, `1>`, `&>`),
+// into a pipe (`| head`, `| grep`: cut or filtered) or when --limit cuts the list. 2> and >&2 leave stdout where it is.
+// The command is readfirst, readfirst@version or a path ending in readfirst.mjs, run directly or through npx or node,
+// followed by `read`; any other way of running it (an alias, a script, inside $( )) is not seen here. Relative paths
+// start where the cds before it moved to, or at --root when it is given, as `readfirst read` resolves them.
+const READ_VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
+export function bashReads(command, cwd = process.cwd()) {
+  const out = [];
+  let base = cwd;
+  const outer = [];
+  const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' '));
+  for (const { text, op } of segmentsAndOps(shell)) {
+    const p = parens(text, outer.length);
+    for (let k = 0; k < p.lead; k++) outer.push(base);
+    const ws = unwrap(opening(words(p.body))).map(unquote);
+    const cmd = (ws[0] ?? '').split('/').pop();
+    const at = ws.findIndex((w) => /^(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)$/u.test(w));
+    if (CD.test(cmd)) base = stepTo(base, cmd, ws[1]);
+    else if (at >= 0 && ws[at + 1] === 'read' && ws.slice(0, at).every((w) => /^(?:\S*\/)?(?:npx|node)$|^(?:--yes|-y)$/u.test(w))) {
+      const files = [];
+      let root = null;
+      let limit = false;
+      let thrown = op === '|' || op === '|&';
+      const args = ws.slice(at + 2);
+      let names = false; // after `--` every word but a redirect is a file
+      for (let i = 0; i < args.length; i++) {
+        const w = args[i];
+        const redirect = w.match(REDIRECT);
+        if (redirect) {
+          if (/^(?:1|&)?>/u.test(w) && !/^(?:1)?>&/u.test(w)) thrown = true;
+          if (w.length === redirect[0].length) i++;
+          continue;
+        }
+        if (names) { files.push(w); continue; }
+        if (w === '--') { names = true; continue; }
+        const opt = w.match(/^--([\w-]+)(=.*)?$/u);
+        if (opt && READ_VALUES.has(opt[1])) {
+          const value = opt[2] !== undefined ? opt[2].slice(1) : args[++i];
+          if (opt[1] === 'root') root = value ?? null;
+          if (opt[1] === 'limit') limit = true;
+          continue;
+        }
+        if (w.startsWith('-')) continue;
+        files.push(w);
+      }
+      const from = root ? (base == null && !isAbsolute(root) ? null : resolve(base ?? '/', root)) : base;
+      const abs = files.filter((f) => !/[$`*?]/u.test(f)).map((f) => (isAbsolute(f) ? f : from == null ? null : resolve(from, f))).filter(Boolean);
+      if (abs.length) out.push({ files: abs, seen: !thrown && !limit, why: thrown ? 'its output was sent elsewhere' : limit ? '--limit cut the list' : null });
+    }
+    for (let k = 0; k < p.closes; k++) base = outer.pop();
+    for (let k = 0; k < p.opened; k++) outer.push(base);
+  }
+  return out;
 }

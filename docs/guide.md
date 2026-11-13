@@ -187,7 +187,9 @@ their notes.
 
 Want it read for sure, not just offered? Change the command to `npx --yes readfirst hook --gate`: the first call that
 touches a file whose notes Claude Code has not seen is refused with the notes as the reason, and the same call goes
-through when it is made again.
+through when it is made again. Notes count as seen on the branch they were seen on, and a `readfirst read` that
+Claude Code ran in Bash counts too, when its whole output came back: one sent to `/dev/null`, a file or a pipe
+(`| head`), or cut by `--limit`, does not.
 The gate also asks for `readfirst find` before new code: an edit that declares a function or type its file did not
 have, in a repository with a map, before `readfirst find` has run there in the session, is refused once with the new
 names and the command to run. Made again, it goes through, and the Stop hook counts it.
