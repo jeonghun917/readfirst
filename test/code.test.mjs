@@ -382,7 +382,10 @@ test('params: linear steps in the length of a parameter list, its nesting and it
 // short read can fit in one turn on the CPU while a long one always waits out the others' turns, which doubled the
 // ratio (pinned to one CPU beside a busy loop, a long chain of types measured 36 times by the clock in the median, 23
 // by CPU time; 9 of 30 runs failed by the clock, none by CPU time). Each size is read once first (the first read
-// compiles the reader), then the fastest of five runs is taken. 16 times the text may take at most 32 times as long
+// compiles the reader), then read again and again until 20ms of CPU time have passed, and the time of one read is
+// that time over the reads; the fastest of five such runs is taken. One read of the small size can take about 1ms,
+// within the noise of the timer and the compiler, and timed once a read of a long chain of types failed the 32 times
+// below on CI though its steps grow linearly. 16 times the text may take at most 32 times as long
 // (quadratic would be 256); the pair is measured up to three times and one under 32 passes (quadratic fails all
 // three). It runs in a worker stopped after 60 seconds: a test's timeout does not stop synchronous code (a test busy
 // for 8 seconds passed a 1 second timeout), and a reader that rescans a parameter list for each parameter was still
@@ -396,7 +399,12 @@ const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads')
       const text = make(n);
       declarations('a.ts', text, { params: true });
       let best = Infinity;
-      for (let k = 0; k < 5; k++) { const t = process.cpuUsage(); declarations('a.ts', text, { params: true }); const u = process.cpuUsage(t); best = Math.min(best, (u.user + u.system) / 1e3); }
+      for (let k = 0; k < 5; k++) {
+        const t = process.cpuUsage();
+        let calls = 0, us = 0;
+        do { declarations('a.ts', text, { params: true }); calls++; const u = process.cpuUsage(t); us = u.user + u.system; } while (us < 20_000);
+        best = Math.min(best, us / 1e3 / calls);
+      }
       parentPort.postMessage({ name, n, ms: best });
       return best;
     };
