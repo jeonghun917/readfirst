@@ -290,7 +290,7 @@ const PARAMS = [
   ['a.ts', 'const h: (req: Req) => Res = async (r) => {\n}', 'h', 'r'],
   ['a.js', 'const wrapped = memo(async ({ user: { id }, ...more }) => {\n})', 'wrapped', 'id(user)+more'],
   ['a.ts', 'function f(this: Window, [a, , b]: number[]) {\n}', 'f', 'this/self a+b'],
-  // Type arguments in a default value, after `new Name` and after `as` (formbricks, three functions of 23,826).
+  // Type arguments in a default value, after `new Name` and after `as` (shapes from formbricks).
   ['a.ts', 'const collectPaths = (schema: T, path = "", out = new Map<string, boolean>()) => {\n}', 'collectPaths', 'schema path out'],
   ['a.ts', 'const put = (body: unknown, { surveyId = SURVEY_ID, headers = {} as Record<string, string> } = {}) =>\n  run(body)', 'put', 'body surveyId(surveyId)+headers(headers)'],
   ['a.ts', 'const database = ({\n  held = null as { id: string } | null,\n  policies = {} as Record<string, unknown[]>,\n  previous,\n}) => {\n}', 'database', 'held(held)+policies(policies)+previous(previous)'],
@@ -302,7 +302,7 @@ const PARAMS = [
   ['a.py', 'class S:\n    def go(self, a, url):\n        pass', 'go', 'self/self a url'],
   ['a.py', 'def helper(a, /, b, *, url):\n    pass', 'helper', 'a -// b -/* url'],
   ['a.py', 'def helper(*args, **kwargs):\n    pass', 'helper', 'args/rest kwargs/rest'],
-  // A lambda as a default value: its own parameters are not the function's (indico, two functions of 13,846).
+  // A lambda as a default value: its own parameters are not the function's (a shape from indico).
   ['a.py', 'def __init__(self, model, *, get_query=lambda m, ctx: m.query, flag=False,\n             **kwargs):\n    pass', '__init__', 'self/self model -/* get_query flag kwargs/rest'],
 ];
 for (const [path, text, name, want] of PARAMS) {
