@@ -180,29 +180,143 @@ function functionAt(toks, k) {
 // Whether the value that begins at token k is a function or class: it is one; or it is one in parentheses
 // (`(async () => { ... }) as T`); or it is one call on a plain name with one as its first argument and nothing after
 // the call (`memo(() => ...)`, `list.filter((x) => ...)`). A call that is passed on (`.map(f).filter(Boolean)`),
-// awaited, or made on the spot (`(() => 1)()`) gives a value, not a function.
-function valueIsFunction(toks, k) {
-  if (functionAt(toks, k)) return true;
+// awaited, or made on the spot (`(() => 1)()`) gives a value, not a function. The token where that function or class
+// begins, or -1.
+function valueFunctionAt(toks, k) {
+  if (functionAt(toks, k)) return k;
   const endsAfter = (j) => {
     if (isWord(toks[j], 'as') || isWord(toks[j], 'satisfies')) return true; // a type follows, to the statement's end
     if (isPunct(toks[j], '!')) j++;
     const t = toks[j];
     return !t || (t.k === 'punct' && ';,)]}'.includes(t.v)) || (t.first && !continues(t));
   };
-  const wrapped = (j) => functionAt(toks, j) || (isPunct(toks[j], '(') && functionAt(toks, j + 1)); // `(fn) as T`
-  if (isPunct(toks[k], '(')) { const c = closeOf(toks, k); return c > 0 && functionAt(toks, k + 1) && endsAfter(c + 1); }
-  if (!isWord(toks[k]) || ['await', 'new', 'typeof', 'yield', 'void', 'delete'].includes(toks[k].v)) return false;
+  const wrapped = (j) => (functionAt(toks, j) ? j : isPunct(toks[j], '(') && functionAt(toks, j + 1) ? j + 1 : -1); // `(fn) as T`
+  if (isPunct(toks[k], '(')) { const c = closeOf(toks, k); return c > 0 && functionAt(toks, k + 1) && endsAfter(c + 1) ? k + 1 : -1; }
+  if (!isWord(toks[k]) || ['await', 'new', 'typeof', 'yield', 'void', 'delete'].includes(toks[k].v)) return -1;
   let j = k + 1;
   for (;;) {
     if ((isPunct(toks[j], '.') || isPunct(toks[j], '?.')) && isWord(toks[j + 1])) j += 2;
-    else if (isPunct(toks[j], '[')) { j = closeOf(toks, j); if (j < 0) return false; j++; }
+    else if (isPunct(toks[j], '[')) { j = closeOf(toks, j); if (j < 0) return -1; j++; }
     else if (isPunct(toks[j], '!')) j++;
     else break;
   }
-  if (isPunct(toks[j], '<')) { j = afterAngle(toks, j); if (j < 0) return false; }
-  if (!isPunct(toks[j], '(')) return false;
+  if (isPunct(toks[j], '<')) { j = afterAngle(toks, j); if (j < 0) return -1; }
+  if (!isPunct(toks[j], '(')) return -1;
   const c = closeOf(toks, j);
-  return c > 0 && wrapped(j + 1) && endsAfter(c + 1);
+  const at = c > 0 ? wrapped(j + 1) : -1;
+  return at >= 0 && endsAfter(c + 1) ? at : -1;
+}
+// Where the parameters of the function that begins at token k open: the token of its `(`, or of its one parameter
+// written without parentheses (`async url =>`), or -1 (a class, or no function there). Past `async`, `function`, a
+// `*`, the function's name and its type parameters `<...>`.
+function paramsOpen(toks, k) {
+  if (k < 0) return -1;
+  if (isWord(toks[k], 'async') && !isPunct(toks[k + 1], '=>')) k++;
+  if (isWord(toks[k], 'class')) return -1;
+  if (isWord(toks[k], 'function')) { k++; if (isPunct(toks[k], '*')) k++; if (isWord(toks[k])) k++; }
+  if (isPunct(toks[k], '<')) { k = afterAngle(toks, k); if (k < 0) return -1; }
+  if (isPunct(toks[k], '(')) return k;
+  return isWord(toks[k]) && isPunct(toks[k + 1], '=>') ? k : -1;
+}
+// The parts of a bracket's inside, from token `from` to the one before `to`, split at its own commas: [start, end)
+// pairs. A bracket inside is passed whole (closeOf), and so are type arguments (afterAngle): a `<` in a type, which
+// begins after `as` or `satisfies` (`headers = {} as Record<string, string>`) and, in a parameter list (typed), after
+// a parameter's `:` (`m: Map<string, number>`), up to its `=`; and a `<` right after `new Name`
+// (`out = new Map<string, boolean>()`). py: a `lambda` in a default value has parameters of its own, to its `:`.
+function partsOf(toks, from, to, typed, py = false) {
+  const out = [];
+  let start = from;
+  let inType = false;
+  let after = null; // 'new', 'name' or 'dot' while reading `new a.b`
+  for (let j = from; j < to; j++) {
+    const t = toks[j];
+    if (py && isWord(t, 'lambda')) {
+      for (j++; j < to && !isPunct(toks[j], ':'); j++) if (toks[j].k === 'punct' && '([{'.includes(toks[j].v)) { const c = closeOf(toks, j); if (c < 0 || c >= to) return out; j = c; }
+      continue;
+    }
+    if (t.k === 'word') {
+      if (t.v === 'as' || t.v === 'satisfies') inType = true;
+      after = t.v === 'new' ? 'new' : after === 'new' || after === 'dot' ? 'name' : null;
+      continue;
+    }
+    if (t.k !== 'punct') { after = null; continue; }
+    if (t.v === '.' && after === 'name') { after = 'dot'; continue; }
+    const typeArguments = t.v === '<' && (inType || after === 'name');
+    after = null;
+    if ('([{'.includes(t.v)) { const c = closeOf(toks, j); if (c < 0 || c >= to) return out; j = c; }
+    else if (typeArguments) { const a = afterAngle(toks, j); if (a > 0 && a <= to) j = a - 1; }
+    else if (typed && t.v === ':') inType = true;
+    else if (t.v === '=') inType = false;
+    else if (t.v === ',') { if (j > start) out.push([start, j]); start = j + 1; inType = false; }
+  }
+  if (to > start) out.push([start, to]);
+  return out;
+}
+// The names a destructuring pattern binds, from its bracket at `open`: { key, name } each. key: the property it is
+// taken from (an object's key; null for an array's element and a `...rest`); an inner pattern's names take the key
+// of the property it stands for (`{ user: { id } }` binds id with key user).
+function patternNames(toks, open, outer) {
+  const close = closeOf(toks, open);
+  if (close < 0) return [];
+  const out = [];
+  const object = isPunct(toks[open], '{');
+  for (const [a, b] of partsOf(toks, open + 1, close, false)) {
+    let k = a;
+    if (isPunct(toks[k], '...')) { if (isWord(toks[k + 1])) out.push({ key: outer, name: toks[k + 1].v }); else if (isPunct(toks[k + 1], '{') || isPunct(toks[k + 1], '[')) out.push(...patternNames(toks, k + 1, outer)); continue; }
+    if (!object) {
+      if (isWord(toks[k])) out.push({ key: outer, name: toks[k].v });
+      else if (isPunct(toks[k], '{') || isPunct(toks[k], '[')) out.push(...patternNames(toks, k, outer));
+      continue;
+    }
+    // A property: `key`, `key = x`, `key: name`, `key: { ... }`, `'key': name`, `[computed]: name`.
+    let key = null;
+    if (isWord(toks[k])) key = toks[k].v;
+    else if (toks[k]?.k === 'val') key = toks[k].text?.match(/^(['"`])(.*)\1$/u)?.[2] ?? null;
+    else if (isPunct(toks[k], '[')) { k = closeOf(toks, k); if (k < 0) continue; }
+    k++;
+    if (isPunct(toks[k], ':') && k + 1 < b) {
+      const v = toks[k + 1];
+      if (isWord(v)) out.push({ key: outer ?? key, name: v.v });
+      else if (isPunct(v, '{') || isPunct(v, '[')) out.push(...patternNames(toks, k + 1, outer ?? key));
+    } else if (key !== null && isWord(toks[a])) out.push({ key: outer ?? key, name: key });
+  }
+  return out;
+}
+// Constructor parameter properties (`constructor(private readonly db: Db)`): the words before the name.
+const PARAM_WORDS = new Set(['public', 'private', 'protected', 'readonly', 'override']);
+// The parameters of a function from the token where they open (paramsOpen; for Python the `(` of the `def`): each
+// { bindings: [{ key, name }], deco, rest, self, marker }. bindings: the names the parameter binds (a destructuring
+// binds several). deco: the last part of the name of its first decorator (`@Body()`, `@Args('input')`), or null.
+// rest: `...x`, `*args`, `**kwargs`. self: Python's first parameter named self or cls, JavaScript's `this`. marker:
+// Python's bare `*` or `/` (no bindings). Types and default values are not read; what is input is not said here.
+function paramsOf(toks, open, py) {
+  if (open < 0 || !toks[open]) return undefined;
+  if (!isPunct(toks[open], '(')) return [{ bindings: [{ key: null, name: toks[open].v }], deco: null, rest: false, self: false, marker: null }];
+  const close = closeOf(toks, open);
+  if (close < 0) return undefined;
+  const out = [];
+  for (const [a, b] of partsOf(toks, open + 1, close, true, py)) {
+    if (py && b - a === 1 && (isPunct(toks[a], '*') || isPunct(toks[a], '/'))) { out.push({ bindings: [], deco: null, rest: false, self: false, marker: toks[a].v }); continue; }
+    let k = a;
+    let deco = null;
+    while (k < b && isPunct(toks[k], '@')) {
+      k++;
+      let last = null;
+      while (k < b && isWord(toks[k])) { last = toks[k].v; if (isPunct(toks[k + 1], '.')) k += 2; else { k++; break; } }
+      if (isPunct(toks[k], '(')) { const c = closeOf(toks, k); k = c < 0 ? b : c + 1; }
+      deco ??= last;
+    }
+    while (k + 1 < b && isWord(toks[k]) && PARAM_WORDS.has(toks[k].v) && (isWord(toks[k + 1]) || isPunct(toks[k + 1], '{') || isPunct(toks[k + 1], '['))) k++;
+    const rest = isPunct(toks[k], '...') || isPunct(toks[k], '**') || (py && isPunct(toks[k], '*'));
+    if (rest) k++;
+    let bindings = [];
+    if (isWord(toks[k])) bindings = [{ key: null, name: toks[k].v }];
+    else if (isPunct(toks[k], '{') || isPunct(toks[k], '[')) bindings = patternNames(toks, k, null);
+    const name = bindings.length === 1 ? bindings[0].name : null;
+    const self = out.length === 0 && !rest && (py ? name === 'self' || name === 'cls' : name === 'this');
+    out.push({ bindings, deco, rest, self, marker: null });
+  }
+  return out;
 }
 
 // ---- JavaScript and TypeScript: one walk over the tokens with the brackets that are open, each knowing what it is
@@ -210,7 +324,7 @@ function valueIsFunction(toks, k) {
 // grammar has them: at a statement's start in a block, at a member's start in a class body or an object, and a
 // named `function` or `class` that starts its line as a value. Each is closed by its own body, its `;`, the token
 // pair at a line break, or the bracket around it.
-function scanJs(toks, lastLine) {
+function scanJs(toks, lastLine, wantParams = false) {
   const decls = [];
   const frames = [{ kind: 'block', atStart: true, cur: null, pend: null, deco: 0 }];
   let prev = null;
@@ -269,14 +383,15 @@ function scanJs(toks, lastLine) {
         while (toks[k] && (toks[k].k === 'word' || punct(toks[k], '*'))) k++;
         const name = toks[k - 1];
         const mods = toks.slice(i, Math.max(i, k - 1)).every((m) => punct(m, '*') || MEMBER_WORDS.has(m.v));
-        const after = punct(toks[k], '?') || punct(toks[k], '!') ? toks[k + 1] : toks[k]; // `name?(` is an optional method
-        if (k > i && word(name) && mods && (punct(after, '(') || punct(after, '<'))) f.cur.rec = record(name.v, t.line, 'fn', 'block', own);
+        const at = punct(toks[k], '?') || punct(toks[k], '!') ? k + 1 : k; // `name?(` is an optional method
+        const after = toks[at];
+        if (k > i && word(name) && mods && (punct(after, '(') || punct(after, '<'))) { f.cur.rec = record(name.v, t.line, 'fn', 'block', own); f.cur.rec.open = paramsOpen(toks, at); }
       } else if (!punct(t, '{')) {
         let k = i;
         while (word(toks[k]) && STATEMENT_WORDS.has(toks[k].v) && !(toks[k].v === 'async' && !word(toks[k + 1], 'function'))) k++;
         const w = toks[k];
         const n = toks[k + 1];
-        if (word(w, 'function')) { const nm = punct(n, '*') ? toks[k + 2] : n; if (word(nm)) f.cur.rec = record(nm.v, t.line, 'fn', 'block', own); }
+        if (word(w, 'function')) { const nm = punct(n, '*') ? toks[k + 2] : n; if (word(nm)) { f.cur.rec = record(nm.v, t.line, 'fn', 'block', own); f.cur.rec.open = paramsOpen(toks, k); } }
         else if (word(w, 'class')) { if (word(n) && n.v !== 'extends' && n.v !== 'implements') f.cur.rec = record(n.v, t.line, 'class', 'block', own); else f.classHead = true; }
         else if ((word(w, 'interface') || word(w, 'enum')) && word(n) && !punct(n, '=')) { if (word(n)) f.cur.rec = record(n.v, t.line, w.v === 'enum' ? 'enum' : 'type', 'block', own); }
         else if (word(w, 'const') && word(n, 'enum') && word(toks[k + 2])) f.cur.rec = record(toks[k + 2].v, t.line, 'enum', 'block', own);
@@ -293,18 +408,18 @@ function scanJs(toks, lastLine) {
       while (toks[k] && (toks[k].k === 'word' || punct(toks[k], '*'))) k++;
       const name = toks[k - 1];
       const mods = toks.slice(i, Math.max(i, k - 1)).every((m) => punct(m, '*') || m.v === 'async' || m.v === 'get' || m.v === 'set');
-      if (k === i + 1 && word(name) && punct(toks[k], ':') && functionAt(toks, k + 1)) { f.member = record(name.v, t.line, 'fn', 'statement', t.first); f.member.member = true; f.member.fnValue = true; f.member.ofModule = Boolean(f.moduleOwn); }
-      if (k > i && word(name) && !STATEMENT_HEADS.has(name.v) && mods && (punct(toks[k], '(') || punct(toks[k], '<'))) f.pend = { name: name.v, line: t.line, what: 'fn', startsLine: t.first };
+      if (k === i + 1 && word(name) && punct(toks[k], ':') && functionAt(toks, k + 1)) { f.member = record(name.v, t.line, 'fn', 'statement', t.first); f.member.member = true; f.member.fnValue = true; f.member.ofModule = Boolean(f.moduleOwn); f.member.open = paramsOpen(toks, k + 1); }
+      if (k > i && word(name) && !STATEMENT_HEADS.has(name.v) && mods && (punct(toks[k], '(') || punct(toks[k], '<'))) f.pend = { name: name.v, line: t.line, what: 'fn', startsLine: t.first, open: paramsOpen(toks, k) };
     } else if (t.first && (word(t, 'function') || word(t, 'class') || (word(t, 'async') && word(toks[i + 1], 'function')))) {
       // A named function or class that starts its line as a value: `register(` / `function onDone() {`.
       const at = word(t, 'async') ? i + 1 : i;
       const nm = punct(toks[at + 1], '*') ? toks[at + 2] : toks[at + 1];
-      if (word(nm) && nm.v !== 'extends' && nm.v !== 'implements') f.pend = { name: nm.v, line: t.line, what: toks[at].v === 'class' ? 'class' : 'fn', startsLine: true };
+      if (word(nm) && nm.v !== 'extends' && nm.v !== 'implements') f.pend = { name: nm.v, line: t.line, what: toks[at].v === 'class' ? 'class' : 'fn', startsLine: true, open: paramsOpen(toks, i) };
       else if (toks[at].v === 'class') f.classHead = true;
     } else if (word(t, 'class') && !(f.cur?.rec?.what === 'class' && !f.cur.rec.bodied)) f.classHead = true;
 
     // A statement set to a function or class (valueIsFunction, read once at its `=`).
-    if (punct(t, '=') && f.cur?.rec?.what === 'var' && !f.cur.rec.assigned) f.cur.rec.fnValue = valueIsFunction(toks, i + 1);
+    if (punct(t, '=') && f.cur?.rec?.what === 'var' && !f.cur.rec.assigned) { const at = valueFunctionAt(toks, i + 1); f.cur.rec.fnValue = at >= 0; f.cur.rec.open = paramsOpen(toks, at); }
     if (punct(t, '=') && f.cur?.rec) f.cur.rec.assigned = true;
     // moduleOwn: the bracket is the value the module exports as a whole, or inside it (`export default wrap({ ... })`).
     const moduleOwn = (isStmt(f) && Boolean(f.cur?.module)) || Boolean(f.moduleOwn);
@@ -316,6 +431,7 @@ function scanJs(toks, lastLine) {
       if (waiting && !TYPE_BEFORE.has(before)) {
         // The body of the declaration that is waiting for one.
         const rec = waiting === f.pend ? record(waiting.name, waiting.line, waiting.what, 'value', waiting.startsLine, true) : waiting;
+        if (waiting === f.pend) rec.open = waiting.open;
         rec.bodied = true;
         f.pend = null;
         f.classHead = false;
@@ -349,7 +465,13 @@ function scanJs(toks, lastLine) {
   // is read only when it is set to a function or class, or put on `exports` (a module written inside a wrapper
   // function, `define(function (require, exports) { exports.Mode = Mode })`, exports from there).
   const kept = new Map();
-  for (const d of decls) if (!(d.what === 'var' && d.local && !d.fnValue && !d.ofModule)) kept.set(d, { name: d.name, line: d.line, end: d.end, fn: d.what === 'fn' || d.fnValue, body: d.bodied || d.fnValue, value: d.form === 'value', what: d.what, exported: d.exported, member: d.member, ofModule: Boolean(d.ofModule), startsLine: d.startsLine, around: d.around });
+  for (const d of decls) {
+    if (d.what === 'var' && d.local && !d.fnValue && !d.ofModule) continue;
+    const s = { name: d.name, line: d.line, end: d.end, fn: d.what === 'fn' || d.fnValue, body: d.bodied || d.fnValue, value: d.form === 'value', what: d.what, exported: d.exported, member: d.member, ofModule: Boolean(d.ofModule), startsLine: d.startsLine, around: d.around };
+    // Asked for only (params: true), so what declarations gives without it is unchanged.
+    if (wantParams && s.fn) { const p = paramsOf(toks, d.open ?? -1, false); if (p) s.params = p; }
+    kept.set(d, s);
+  }
   // What is around each, among the declarations that are read.
   for (const s of kept.values()) { let a = s.around; while (a && !kept.has(a)) a = a.around; s.around = a ? kept.get(a) : null; }
   return [...kept.values()];
@@ -358,7 +480,7 @@ function scanJs(toks, lastLine) {
 // ---- Python: a statement starts on a logical line (outside every bracket and string, not after a backslash).
 // `def`, `async def` and `class` are read there at any indent; at column 0 also a name that is assigned or annotated.
 const PY_KEYWORD = new Set(['if', 'elif', 'else', 'for', 'while', 'try', 'except', 'finally', 'with', 'def', 'class', 'return', 'import', 'from', 'pass', 'raise', 'assert', 'del', 'global', 'nonlocal', 'lambda', 'yield', 'await', 'async', 'not', 'and', 'or', 'in', 'is', 'match', 'case', 'print', 'break', 'continue', 'None', 'True', 'False']);
-function scanPy(rows, raw) {
+function scanPy(rows, raw, wantParams = false) {
   const decls = [];
   const indent = (i) => raw[i].match(/^\s*/u)[0].length;
   const starts = []; // which lines start a logical line
@@ -391,7 +513,10 @@ function scanPy(rows, raw) {
         if (rows[k].code.trim() || rows[k].startsIn) end = k + 1;
       }
     }
-    decls.push({ name: head ? head[2] : name[1], line: i + 1, end, fn: Boolean(head) && head[1] === 'def', body: Boolean(head), value: false, what: head ? (head[1] === 'def' ? 'fn' : 'class') : 'var', exported: false, member: false, ofModule: false, startsLine: true, around: null });
+    const d = { name: head ? head[2] : name[1], line: i + 1, end, fn: Boolean(head) && head[1] === 'def', body: Boolean(head), value: false, what: head ? (head[1] === 'def' ? 'fn' : 'class') : 'var', exported: false, member: false, ofModule: false, startsLine: true, around: null };
+    // The parameters: the tokens of the `def`'s logical line, from its first `(`.
+    if (wantParams && d.fn) { const toks = tokens(rows, i, last + 1); const p = paramsOf(toks, toks.findIndex((t) => isPunct(t, '(')), true); if (p) d.params = p; }
+    decls.push(d);
   }
   // One statement to a logical line, so what is around each is the nearest earlier one whose lines hold it.
   const open = [];
@@ -451,13 +576,15 @@ export function unfinished(rows) {
 // `exports`, or a property of the object a module exports as a whole), depth, parent and parentLine (the name and line of the
 // declaration around it, or null). A value inside a function is read only when it is set to a function or class.
 // members: also an object's properties set to a function (`save: async (row) => ...`).
-export function declarations(path, body, { members = false } = {}) {
+// params: also, on each function, `params` (paramsOf): the names each parameter binds, read to the bracket that closes
+// the list, however many lines and levels it takes. Without it the output is what it always was.
+export function declarations(path, body, { members = false, params = false } = {}) {
   const py = /\.py$/u.test(path);
   const raw = body.split('\n');
   const { rows, blocks } = rowsOf(path, raw);
   let found;
-  if (blocks) found = blocks.flatMap((b) => scanJs(tokens(rows, b.from, b.to), b.to));
-  else found = py ? scanPy(rows, raw) : scanJs(tokens(rows), raw.length);
+  if (blocks) found = blocks.flatMap((b) => scanJs(tokens(rows, b.from, b.to), b.to, params));
+  else found = py ? scanPy(rows, raw, params) : scanJs(tokens(rows), raw.length, params);
   if (!members) {
     const gone = new Set(found.filter((d) => d.member));
     found = found.filter((d) => !gone.has(d));
