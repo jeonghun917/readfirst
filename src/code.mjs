@@ -11,6 +11,13 @@
 // opens a block or an object (a block taken for an object costs a declaration not read, never a false one).
 
 const REGEX_KEYWORD = /(?:^|[^\w$.])(?:return|typeof|case|in|of|do|else|void|delete|throw|yield|await|instanceof|new)$/u;
+// The steps the reader takes: one for each character, token or bracket a loop of it passes. Off unless a test turns
+// it on, and then a measure of the work that does not depend on the machine's speed (test/code.test.mjs reads it to
+// see that the work grows with the text, not with its square). Work done inside a builtin (a slice, a regular
+// expression) is not counted. countSteps(on) gives the count so far and starts again from zero, on or off.
+let counting = false;
+let steps = 0;
+export function countSteps(on) { const n = steps; counting = on; steps = 0; return n; }
 // One pass. lang is 'js' (JavaScript and TypeScript) or 'py'. Per line:
 // - code: the line at the same length, with the insides of strings, template text, comments and regular expressions
 //   as spaces. Names inside a template's `${ }` stay (they are code); the `${` and its `}` are spaces.
@@ -38,6 +45,7 @@ export function lex(lines, lang, state = null) {
     const blank = (n = 1, m = ' ') => { code += ' '.repeat(n); mark += m.repeat(n); i += n; };
     const keep = (n = 1, m = 'c') => { code += text.slice(i, i + n); mark += m.repeat(n); i += n; };
     while (i < text.length) {
+      if (counting) steps++;
       const c = text[i];
       if (py) {
         if (q) {
@@ -105,6 +113,7 @@ export function tokens(rows, from = 0, to = rows.length) {
     let first = true;
     let carried = startsIn === 'template' || startsIn === 'string3' || startsIn === 'string' || (l > from && rows[l - 1].tplOpen);
     for (let i = 0; i < code.length;) {
+      if (counting) steps++;
       const c = code[i];
       if (mark[i] === ' ' || (mark[i] === 'c' && /\s/u.test(c))) { i++; continue; }
       if (mark[i] !== 'c') {
@@ -152,6 +161,7 @@ const isPunct = (t, v) => t?.k === 'punct' && t.v === v;
 export function closeOf(toks, k) {
   let depth = 0;
   for (let j = k; j < toks.length; j++) {
+    if (counting) steps++;
     if (toks[j].k !== 'punct') continue;
     if ('([{'.includes(toks[j].v)) depth++;
     else if (')]}'.includes(toks[j].v) && --depth === 0) return j;
@@ -162,6 +172,7 @@ export function closeOf(toks, k) {
 function afterAngle(toks, k) {
   let depth = 0;
   for (let j = k; j < toks.length; j++) {
+    if (counting) steps++;
     if (isPunct(toks[j], '<')) depth++;
     else if (isPunct(toks[j], '>')) { if (--depth === 0) return j + 1; }
     else if (toks[j].k === 'punct' && '([{'.includes(toks[j].v)) { j = closeOf(toks, j); if (j < 0) return -1; }
@@ -195,6 +206,7 @@ function valueFunctionAt(toks, k) {
   if (!isWord(toks[k]) || ['await', 'new', 'typeof', 'yield', 'void', 'delete'].includes(toks[k].v)) return -1;
   let j = k + 1;
   for (;;) {
+    if (counting) steps++;
     if ((isPunct(toks[j], '.') || isPunct(toks[j], '?.')) && isWord(toks[j + 1])) j += 2;
     else if (isPunct(toks[j], '[')) { j = closeOf(toks, j); if (j < 0) return -1; j++; }
     else if (isPunct(toks[j], '!')) j++;
@@ -229,9 +241,10 @@ function partsOf(toks, from, to, typed, py = false) {
   let inType = false;
   let after = null; // 'new', 'name' or 'dot' while reading `new a.b`
   for (let j = from; j < to; j++) {
+    if (counting) steps++;
     const t = toks[j];
     if (py && isWord(t, 'lambda')) {
-      for (j++; j < to && !isPunct(toks[j], ':'); j++) if (toks[j].k === 'punct' && '([{'.includes(toks[j].v)) { const c = closeOf(toks, j); if (c < 0 || c >= to) return out; j = c; }
+      for (j++; j < to && !isPunct(toks[j], ':'); j++) if ((!counting || steps++ >= 0) && toks[j].k === 'punct' && '([{'.includes(toks[j].v)) { const c = closeOf(toks, j); if (c < 0 || c >= to) return out; j = c; }
       continue;
     }
     if (t.k === 'word') {
@@ -261,6 +274,7 @@ function patternNames(toks, open, outer) {
   const out = [];
   const object = isPunct(toks[open], '{');
   for (const [a, b] of partsOf(toks, open + 1, close, false)) {
+    if (counting) steps++;
     let k = a;
     if (isPunct(toks[k], '...')) { if (isWord(toks[k + 1])) out.push({ key: outer, name: toks[k + 1].v }); else if (isPunct(toks[k + 1], '{') || isPunct(toks[k + 1], '[')) out.push(...patternNames(toks, k + 1, outer)); continue; }
     if (!object) {
@@ -296,6 +310,7 @@ function paramsOf(toks, open, py) {
   if (close < 0) return undefined;
   const out = [];
   for (const [a, b] of partsOf(toks, open + 1, close, true, py)) {
+    if (counting) steps++;
     if (py && b - a === 1 && (isPunct(toks[a], '*') || isPunct(toks[a], '/'))) { out.push({ bindings: [], deco: null, rest: false, self: false, marker: toks[a].v }); continue; }
     let k = a;
     let deco = null;
@@ -351,6 +366,7 @@ function scanJs(toks, lastLine, wantParams = false) {
   const word = isWord;
   const punct = isPunct;
   for (let i = 0; i < toks.length; i++) {
+    if (counting) steps++;
     const t = toks[i];
     let f = frames.at(-1);
     // A line break that ends the statement in progress.
@@ -612,9 +628,11 @@ export function declarations(path, body, { members = false, params = false } = {
     }
     s.top = top;
   }
-  // Nesting, from what the walk found around each.
-  const depthOf = (d) => { let n = 0; for (let a = d.around; a; a = a.around) n++; return n; };
-  for (const s of found) { s.depth = depthOf(s); s.parent = s.around?.name ?? null; s.parentLine = s.around?.line ?? null; }
+  // Nesting, from what the walk found around each. What is around a declaration starts before it or on its line and
+  // ends no earlier, so it comes first in `found` and has its depth already: one step each, where walking the whole
+  // chain for each declaration took the square of the nesting (classes and methods nested 16,000 deep took 2.6 seconds).
+  const depthOf = (d) => { let n = 0; for (let a = d.around; a; a = a.around) { if (counting) steps++; n++; } return n; };
+  for (const s of found) { s.depth = s.around ? (s.around.depth ?? depthOf(s.around)) + 1 : 0; s.parent = s.around?.name ?? null; s.parentLine = s.around?.line ?? null; }
   for (const s of found) { delete s.around; delete s.startsLine; }
   return found;
 }
