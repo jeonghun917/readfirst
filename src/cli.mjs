@@ -683,8 +683,8 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = 
     let list;
     try { list = listFor(map); } catch { map = null; list = listFor(null); }
     // The change each edited file is about to get, judged as `readfirst diff` judges a commit: the file is read as it
-    // will be. A judge that fails leaves the notes as they were, with no state (the hook says nothing rather than
-    // fail, and it must not drop the notes).
+    // will be. A judge that fails leaves the notes, each item saying judging failed (noteStates): the hook must not
+    // drop the notes.
     // An edit too large to place in the time left (textChange's budget) is not judged by guessing: its items say so.
     const changes = new Map(done.flatMap((p) => { const e = edited.get(join(root, p)); return e ? [[p, textChange(e.before, e.after, { deadline })]] : []; }));
     const unplaced = [...changes].filter(([, c]) => c.unplaced).map(([p]) => p);
