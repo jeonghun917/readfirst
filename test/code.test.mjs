@@ -361,6 +361,9 @@ const LONG_SHAPES = {
   'many functions': (n) => Array.from({ length: n / 40 }, (_, i) => `function f${i}(a, { b }) {\n}`).join('\n'),
   'a long chain of types': (n) => `function f(m: ${'Map<string, '.repeat(n / 24)}1${'>'.repeat(n / 24)}, url) {\n}`,
   'nested declarations': (n) => `${'class A { m(b) {'.repeat(n / 20)}${'} }'.repeat(n / 20)}`,
+  'type arguments left open': (n) => `function f(m: ${'Map<'.repeat(n / 4)}) {\n}`,
+  'new with type arguments left open': (n) => `function f({ a = ${'new A<'.repeat(n / 6)} }) {\n}`,
+  'type arguments left open in nested patterns': (n) => `function f(${'{ a = new A<1, b: '.repeat(n / 18)}x${' }'.repeat(n / 18)}) {\n}`,
 };
 
 test('params: linear steps in the length of a parameter list, its nesting and its file', () => {
