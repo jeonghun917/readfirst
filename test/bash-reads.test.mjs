@@ -16,6 +16,10 @@ test('bashReads: output sent to a file, /dev/null or a pipe, or a list cut by --
   assert.deepEqual(seen('readfirst read a.js >/dev/null; readfirst read a.js >> log; readfirst read a.js &> x; readfirst read a.js 1> x'), [false, false, false, false]);
   assert.deepEqual(seen('readfirst read a.js | head -5; readfirst read a.js 2>&1 | grep Risk; readfirst read a.js --limit=2'), [false, false, false]);
   assert.deepEqual(bashReads('readfirst read a.js & echo hi', '/w'), [{ files: ['/w/a.js'], seen: false, why: 'its output was sent elsewhere' }], 'the background, and the words after & are not files');
+  assert.deepEqual(bashReads('readfirst read a.js&', '/w'), [{ files: ['/w/a.js'], seen: false, why: 'its output was sent elsewhere' }], 'an & with no space before it');
+  assert.deepEqual(bashReads('readfirst read a.js && echo x; readfirst read "a&b.js"', '/w').map((r) => [r.files, r.seen]), [[['/w/a.js'], true], [['/w/a&b.js'], true]], '&&, and an & inside a quoted name');
+  // An escaped \& is part of the name, not the background (the backslash itself is not taken out here: the path is not pinned).
+  assert.deepEqual(seen('readfirst read a\\&b.js'), [true]);
   assert.deepEqual(seen('FOO=1 npx readfirst read a.js; env X=1 npx readfirst read a.js; (readfirst read a.js >/dev/null)'), [true, true, false]);
   assert.deepEqual(bashReads('x=$(readfirst read a.js); echo $(readfirst read a.js); bash -c "readfirst read a.js"', '/w'), [], 'inside $( ) or another shell: not seen here');
 });
