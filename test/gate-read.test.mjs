@@ -53,6 +53,29 @@ test('a read whose output is thrown away, piped or cut is not a read: the edit i
   }
 });
 
+test('a read and a write in the same Bash call: the write is refused, since the hook runs before the read', () => {
+  for (const command of ['npx readfirst read src/a.js; sed -i s/1/2/ src/a.js', 'npx readfirst read src/a.js && sed -i s/1/2/ src/a.js', 'npx readfirst read src/a.js\nsed -i s/1/2/ src/a.js']) {
+    const { root } = repo();
+    const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-gate-read-state-'));
+    const id = session();
+    const out = hook(root, stateDir, id, 'Bash', { command }, 1000);
+    assert.equal(decision(out), 'deny', command);
+    assert.match(JSON.parse(out).hookSpecificOutput.permissionDecisionReason, /a and b move together/u);
+    // The refused call ran nothing; made again it goes through (its notes were shown), as any refused call does.
+    assert.equal(decision(hook(root, stateDir, id, 'Bash', { command }, 2000)), 'through', `${command}: made again`);
+  }
+});
+
+test('a read in a refused call does not count: the call never ran', () => {
+  const { root } = repo();
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-gate-read-state-'));
+  const id = session();
+  // Refused for src/a.js's notes; its read of src/b.js never ran.
+  assert.equal(decision(hook(root, stateDir, id, 'Bash', { command: 'npx readfirst read src/b.js; sed -i s/1/2/ src/a.js' }, 1000)), 'deny');
+  const other = { file_path: join(root, 'src/b.js'), old_string: '= 1', new_string: '= 2' };
+  assert.equal(decision(hook(root, stateDir, id, 'Edit', other, 2000)), 'deny');
+});
+
 test('notes shown or read on another branch do not count on this one', () => {
   const { root, git } = repo();
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-gate-read-state-'));

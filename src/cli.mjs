@@ -492,6 +492,10 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // `readfirst read` run in Bash shows the same notes the hook would (2026-11-13: the gate did not count it, so a
     // file read that way was refused all the same). It counts for the branch it ran on, and only when its whole
     // output came back: one sent to /dev/null, a file or a pipe, or cut by --limit, is not marked.
+    // The marks count from the next call on, and only when this call is let through: the hook runs before the
+    // command, so in `readfirst read f; sed -i ... f` nobody has seen the notes when sed writes (2026-11-13: that
+    // command went through), and a refused call runs no read at all.
+    const reads = {};
     if (tool === 'Bash') {
       const known = new Map();
       const branches = new Map();
@@ -499,13 +503,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
         if (!r.seen) continue;
         for (const abs of r.files.map(physical)) {
           const root = rootOf(abs, known);
-          if (root) seen[`read:${branchOf(root, branches)}:${abs}`] = now;
+          if (root) reads[`read:${branchOf(root, branches)}:${abs}`] = now;
         }
       }
     }
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
+      Object.assign(seen, reads);
       save();
       return null;
     }
@@ -524,6 +529,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
     if (gate && (notes.length || askFind)) seen[`denied:${sig}`] = now;
+    if (!(gate && (notes.length || late.length || askFind))) Object.assign(seen, reads);
     const saved = save();
     const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
     if (!notes.length && !waiting.length && !lateLine && !findLine) return null;
