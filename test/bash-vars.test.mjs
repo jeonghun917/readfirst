@@ -46,7 +46,11 @@ test('what the command cannot know is listed as unknown, never dropped', () => {
   assert.deepEqual(unknown('echo x > "$(git rev-parse --show-toplevel)/f"'), ['$(git rev-parse --show-toplevel)']);
   assert.deepEqual(shellWrites('cd $D && echo x > f.txt', '/r').unknown[0].why, 'D is not set by the command');
   // A write the command names in full is still named; only the unknown one is listed.
-  assert.deepEqual(shellWrites('echo a > k.txt; echo b > $OUT', '/r'), { files: ['/r/k.txt'], unknown: [{ part: '$OUT', word: '$OUT', why: 'OUT is not set by the command' }] });
+  assert.deepEqual(shellWrites('echo a > k.txt; echo b > $OUT', '/r'), { files: ['/r/k.txt'], unknown: [{ part: '$OUT', word: '$OUT', why: 'OUT is not set by the command', prefix: '' }] });
+  // prefix: the folder the write is known to be under, '' when nothing is known.
+  assert.deepEqual(shellWrites('echo x > /tmp/x/$D/f', '/r').unknown.map((u) => u.prefix), ['/tmp/x/']);
+  assert.deepEqual(shellWrites('cd /srv/$D && echo x > f', '/r').unknown.map((u) => u.prefix), ['/srv/']);
+  assert.deepEqual(shellWrites('echo x > out/$D.txt', '/r').unknown.map((u) => u.prefix), ['/r/out/']);
 });
 
 test('a loop body is read: sed -i after do, a write after then', () => {
@@ -98,13 +102,46 @@ test('hook --gate: a write to a variable from outside the command is refused onc
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
   const first = hook(root, stateDir, 'echo x > "$OUT/f.txt"');
   assert.equal(first.permissionDecision, 'deny');
-  assert.match(first.permissionDecisionReason, /writes where readfirst cannot tell before it runs: `\$OUT\/f\.txt` \(\$OUT: OUT is not set by the command\)/u);
+  assert.match(first.permissionDecisionReason, /writes where readfirst cannot tell before it runs: `\$OUT\/f\.txt` \(\$OUT: OUT is not set by the command; could be in /u);
   assert.equal(hook(root, stateDir, 'echo x > "$OUT/f.txt"'), null, 'made again, it goes through');
   // Without --gate it is said, not refused.
   const told = hook(root, mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-')), 'cd $D && sed -i s/a/b/ a.js', false);
   assert.equal(told.permissionDecision, undefined);
-  assert.match(told.additionalContext, /`a\.js` \(\$D: D is not set by the command\)/u);
+  assert.match(told.additionalContext, /`a\.js` \(\$D: D is not set by the command; could be in /u);
   assert.ok(readFileSync(join(stateDir, `readfirst-hook-bash-vars-${process.pid}-${n}.lines`), 'utf8').includes('"unknown:'), 'the mark is kept');
+});
+
+// A session runs from the folder it was started in, often one above its repositories: the repositories a write could
+// land in come from the write and from what the session has touched, not from that folder (until this test a session
+// in /home/user was never asked about `cd $R/repo && echo x > src/f`).
+test('hook --gate from a folder outside every repository: an unknown write is still refused once; one known to be outside is not', () => {
+  n++;
+  const outside = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-outside-'));
+  const fresh = () => mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
+  const nowhere = hook(outside, fresh(), 'cd $OUTSIDE/readfirst && echo x > src/zz.mjs');
+  assert.equal(nowhere.permissionDecision, 'deny');
+  assert.match(nowhere.permissionDecisionReason, /`src\/zz\.mjs` \(\$OUTSIDE: OUTSIDE is not set by the command; could be in any repository: none is known to this session\)/u);
+  // Known to be under a folder that holds no repository: outside them all, nothing to ask.
+  assert.equal(hook(outside, fresh(), `echo x > ${outside}/$D/f.txt`), null);
+  assert.equal(hook(outside, fresh(), `cd ${outside}/$D && echo x > f.txt`), null);
+});
+
+test('hook --gate from outside: a repository the session already used is where an unknown write could land', () => {
+  n++;
+  const root = repo();
+  const outside = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-outside-'));
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
+  const session = `bash-vars-used-${process.pid}-${n}`;
+  // The session edits a.js in the repository (its notes are shown: the repository is now one it used).
+  hook(outside, stateDir, `sed -i s/1/2/ ${root}/a.js`, true, session);
+  const out = hook(outside, stateDir, 'cd $R && echo x > b.js', true, session);
+  assert.equal(out.permissionDecision, 'deny');
+  assert.match(out.permissionDecisionReason, new RegExp(`could be in [^)]*${root.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}`, 'u'));
+  // A write under the folder above it could land in it too; one under another folder could not.
+  const parent = join(root, '..');
+  assert.equal(hook(outside, stateDir, `echo x > ${parent}/$X/f.txt`, true, session).permissionDecision, 'deny');
+  assert.equal(hook(outside, stateDir, `echo x > ${outside}/$X/f.txt`, true, session), null);
+  assert.ok(readFileSync(join(stateDir, `readfirst-hook-${session}.lines`), 'utf8').includes(`"start:${root}"`), 'the Stop hook checks that repository');
 });
 
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {

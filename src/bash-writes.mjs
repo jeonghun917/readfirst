@@ -379,7 +379,12 @@ function follow(state, ws) {
   if (CD.test(cmd)) {
     const arg = ws[1] === undefined ? null : shellWord(ws[1], state.vars);
     state.base = stepTo(state.base, cmd, arg?.text);
-    if (state.base == null) state.why = arg?.unknown[0] ? { part: arg.unknown[0].part, why: arg.unknown[0].why } : state.why ?? { part: [cmd, ...ws.slice(1, 2)].join(' '), why: `where ${cmd} goes is not known before it runs` };
+    // prefix: the absolute folder known to hold where it went (`cd /r/$X` is under /r), '' when nothing is known.
+    if (state.base == null) {
+      const known = arg?.text.includes(HOLE) ? arg.text.slice(0, arg.text.indexOf(HOLE)) : '';
+      const prefix = known && isAbsolute(known) ? (known.endsWith('/') ? known : dirname(known)) : '';
+      state.why = arg?.unknown[0] ? { part: arg.unknown[0].part, why: arg.unknown[0].why, prefix } : state.why ?? { part: [cmd, ...ws.slice(1, 2)].join(' '), why: `where ${cmd} goes is not known before it runs`, prefix: '' };
+    }
     return true;
   }
   const declare = DECLARE.test(cmd);
@@ -424,6 +429,14 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   };
   // The word's text with what it holds that is not known kept between \0s, and why for each such part.
   const holes = new Map();
+  // The folder a known start of a path stands for: `/tmp/x/` and `/tmp/x/a` (part of a name) are under /tmp/x; a
+  // relative start is under where the command is; an empty one under nothing known.
+  const knownPrefix = (text) => {
+    if (!text) return '';
+    const abs = isAbsolute(text) ? text : state.base == null ? null : resolve(state.base, text) + (text.endsWith('/') ? '/' : '');
+    if (!abs) return state.why?.prefix ?? '';
+    return abs.endsWith('/') ? abs : dirname(abs);
+  };
   const dq = (w) => { const r = shellWord(w, state.vars); for (const u of r.unknown) holes.set(u.text, u); return r.text; };
   const missing = (u) => { if (!unknown.some((k) => k.part === u.part && k.word === u.word)) unknown.push(u); };
   // w: a word as dq gives it.
@@ -432,9 +445,11 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     const shown = p.replaceAll(HOLE, '');
     if (!shown || shown.startsWith('-') || shown.startsWith('/dev/') || /^[a-z]+:\/\//u.test(shown)) return;
     const h = p.match(/\0([^\0]*)\0/u);
-    if (h) { const u = holes.get(h[1]); missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs' }); return; }
+    // prefix: the absolute folder the write is known to be under ('' when nothing is known), so the hook can tell
+    // which repositories it could land in: `/tmp/x/$D/f` is under /tmp/x, `$OUT/f` anywhere.
+    if (h) { const u = holes.get(h[1]); missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: knownPrefix(p.slice(0, p.indexOf(HOLE))) }); return; }
     if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1));
-    const relativeUnknown = () => missing({ part: state.why?.part ?? 'cd', word: p, why: state.why?.why ?? 'the folder it is relative to is not known' });
+    const relativeUnknown = () => missing({ part: state.why?.part ?? 'cd', word: p, why: state.why?.why ?? 'the folder it is relative to is not known', prefix: state.why?.prefix ?? '' });
     // A glob writes the files it matches (`sed -i ... src/*.js`): one * in the last part is expanded, anything wider
     // or a brace list is left out rather than named as a file called `*.js`.
     if (/[*?[{]/u.test(p)) { if (isAbsolute(p)) return; if (state.base == null) relativeUnknown(); else glob(p).forEach((f) => found.add(resolve(state.base, f))); return; }

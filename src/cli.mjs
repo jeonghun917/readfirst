@@ -542,15 +542,17 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       }
     }
     // Writes whose place the command cannot tell before it runs (a variable from outside it, a $( ), a loop variable;
-    // shellWrites): named, never dropped (until 2026-11-13 they were left out without a word). With --gate the call is
-    // refused once with them (`unknown:<the command's hash>`) and goes through when made again. The session's start
-    // mark is set, so the Stop hook checks the files that change after it.
-    const unknownRoot = written?.unknown.length ? repoOf(cwd) : null;
-    const unknownKey = unknownRoot ? `unknown:${createHash('sha1').update(String(event.tool_input.command)).digest('hex').slice(0, 12)}` : null;
+    // shellWrites): named, never dropped (until 2026-11-13 they were left out without a word), unless they are known to
+    // be outside every repository (couldLandIn). With --gate the call is refused once with them
+    // (`unknown:<the command's hash>`) and goes through when made again. Each repository they could land in gets the
+    // session's start mark, so the Stop hook checks the files that change there.
+    const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd) : [];
+    const unknownKey = unplaced.length ? `unknown:${createHash('sha1').update(String(event.tool_input.command)).digest('hex').slice(0, 12)}` : null;
     const askUnknown = Boolean(unknownKey) && !before[unknownKey];
-    if (unknownKey) { seen[unknownKey] = now; if (!seen[`start:${unknownRoot}`]) seen[`start:${unknownRoot}`] = now; }
+    if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) if (!seen[`start:${r}`]) seen[`start:${r}`] = now; }
     // Said once per command: made again, it goes through without the line.
-    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${written.unknown.map((u) => `\`${u.word}\` (${u.part}: ${u.why})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate && askUnknown ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
+    const landIn = (u) => (u.roots.length ? `could be in ${u.roots.join(', ')}` : 'could be in any repository: none is known to this session');
+    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${u.word}\` (${u.part}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
@@ -610,6 +612,37 @@ function rootOf(abs, known = new Map()) {
   while (!existsSync(dir) && dirname(dir) !== dir) dir = dirname(dir);
   if (!known.has(dir)) known.set(dir, repoOf(dir));
   return known.get(dir);
+}
+
+// The repositories each write a Bash command cannot place could land in (shellWrites' unknown), whatever folder the
+// session runs in: those holding the folder the write is known to be under (its `prefix`), or below it, among the
+// repositories of the call's folder and of the files this session already marked; with no prefix, any of those. A write
+// whose prefix is in no repository and above none of them is outside them all and dropped (`/tmp/x/$D/f`). Until
+// 2026-11-13 the repository was the call's folder alone, so a session started above its repositories
+// (`cd $R/repo && echo > src/f`) was never asked.
+// Returns [{ ...unknown, roots }], roots empty when no repository is known at all (it could be any).
+function couldLandIn(unknown, seen, cwd) {
+  const known = new Map();
+  const roots = new Set();
+  const here = repoOf(cwd);
+  if (here) roots.add(here);
+  for (const k of Object.keys(seen)) {
+    const m = k.match(/^(?:start:(.+)|touched:(.+)|(?:shown|read):[^:]*:(.+)|(\/.+))$/su);
+    if (!m) continue;
+    if (m[1]) { roots.add(m[1]); continue; }
+    const root = rootOf(m[2] ?? m[3] ?? m[4], known);
+    if (root) roots.add(root);
+  }
+  const out = [];
+  for (const u of unknown) {
+    if (!u.prefix) { out.push({ ...u, roots: [...roots] }); continue; }
+    const dir = u.prefix.endsWith('/') ? u.prefix : `${u.prefix}/`;
+    const own = rootOf(join(dir, 'x'), known);
+    const below = [...roots].filter((r) => `${r}/`.startsWith(dir));
+    const where = [...new Set([...(own ? [own] : []), ...below])];
+    if (where.length) out.push({ ...u, roots: where });
+  }
+  return out;
 }
 
 // Once per session for each repository edited: map edits waiting a week or ten merges on its upkeep branch
