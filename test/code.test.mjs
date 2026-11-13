@@ -263,3 +263,94 @@ test('own code: the page script inside a template is text, not declarations', ()
   const view = declarations('src/view-city.mjs', body).find((d) => d.name === 'viewHtmlCity');
   assert.ok(view.end - view.line > 200, `viewHtmlCity holds its whole template (lines ${view.line} to ${view.end})`);
 });
+
+// ---- Parameters (declarations with params: true): the names each parameter binds, read to the bracket that closes
+// the list. Each expected answer is the parser's (the TypeScript compiler's parameter names and binding patterns,
+// Python's ast arguments): name(key) for a destructured name, /Deco for its first decorator, /rest, /self, and
+// -/* or -// for Python's bare markers. Signatures over lines, two levels deep, with brackets in strings, comments,
+// default values and types: the shapes a reader of a few lines or one level loses.
+const paramText = (p) => p.map((x) => [x.bindings.map((b) => (b.key ? `${b.name}(${b.key})` : b.name)).join('+') || '-', x.deco && `/${x.deco}`, x.rest && '/rest', x.self && '/self', x.marker && `/${x.marker}`].filter(Boolean).join('')).join(' ');
+const PARAMS = [
+  ['a.js', 'export async function helper(url) {\n}', 'helper', 'url'],
+  ['a.ts', 'function helper(\n  url: string,\n  a: number,\n  b: number,\n  c: number,\n  d: number,\n) {\n}', 'helper', 'url a b c d'],
+  ['a.ts', 'async function helper({\n  url,\n  a,\n}: Props) {\n}', 'helper', 'url(url)+a(a)'],
+  ['a.ts', 'function helper(url: string, cb: (a: (b: number) => void) => void) {\n}', 'helper', 'url cb'],
+  ['a.ts', 'function helper(m: Map<string, number>, url: string) {\n}', 'helper', 'm url'],
+  ['a.js', 'function helper(url = make(a(b)), x) {\n}', 'helper', 'url x'],
+  ['a.js', "function helper(url, sep = ')') {\n}", 'helper', 'url sep'],
+  ['a.js', 'function helper(\n  url, // the (target)\n) {\n}', 'helper', 'url'],
+  ['a.ts', 'function helper(url: string): Promise<Map<string, { ok: boolean }>> {\n}', 'helper', 'url'],
+  ['a.ts', 'export function helper(url: string): () => void {\n}', 'helper', 'url'],
+  ['a.ts', 'export const helper = async (url: string): Promise<void> => {\n}', 'helper', 'url'],
+  ['a.js', 'export const helper = async url => {\n}', 'helper', 'url'],
+  ['a.ts', 'function helper<T extends Record<string, unknown>>(url: T) {\n}', 'helper', 'url'],
+  ['a.js', "function helper({ id: orderId, note = '' }, ...rest) {\n}", 'helper', 'orderId(id)+note(note) rest/rest'],
+  ['a.ts', "class C {\n  async make(@Body(new Pipe()) body: Dto, @Query('dry', new ParseBoolPipe({ optional: true })) dry: boolean, @Req() req) {\n  }\n}", 'make', 'body/Body dry/Query req/Req'],
+  ['a.ts', 'class C {\n  constructor(private readonly db: Db, public name: string) {\n  }\n}', 'constructor', 'db name'],
+  ['a.ts', 'const h: (req: Req) => Res = async (r) => {\n}', 'h', 'r'],
+  ['a.js', 'const wrapped = memo(async ({ user: { id }, ...more }) => {\n})', 'wrapped', 'id(user)+more'],
+  ['a.ts', 'function f(this: Window, [a, , b]: number[]) {\n}', 'f', 'this/self a+b'],
+  // Type arguments in a default value, after `new Name` and after `as` (shapes from formbricks).
+  ['a.ts', 'const collectPaths = (schema: T, path = "", out = new Map<string, boolean>()) => {\n}', 'collectPaths', 'schema path out'],
+  ['a.ts', 'const put = (body: unknown, { surveyId = SURVEY_ID, headers = {} as Record<string, string> } = {}) =>\n  run(body)', 'put', 'body surveyId(surveyId)+headers(headers)'],
+  ['a.ts', 'const database = ({\n  held = null as { id: string } | null,\n  policies = {} as Record<string, unknown[]>,\n  previous,\n}) => {\n}', 'database', 'held(held)+policies(policies)+previous(previous)'],
+  ['a.py', 'def helper(url) -> None:\n    pass', 'helper', 'url'],
+  ['a.py', 'def helper(url: str) -> Awaitable[tuple[int, str]]:\n    pass', 'helper', 'url'],
+  ['a.py', 'def helper(\n    url: str,\n    a: int,\n    b: int,\n    c: int,\n    d: int,\n):\n    pass', 'helper', 'url a b c d'],
+  ['a.py', 'def helper(url=Depends(get(x())), y=1):\n    pass', 'helper', 'url y'],
+  ['a.py', 'def helper(url, sep=")"):\n    pass', 'helper', 'url sep'],
+  ['a.py', 'class S:\n    def go(self, a, url):\n        pass', 'go', 'self/self a url'],
+  ['a.py', 'def helper(a, /, b, *, url):\n    pass', 'helper', 'a -// b -/* url'],
+  ['a.py', 'def helper(*args, **kwargs):\n    pass', 'helper', 'args/rest kwargs/rest'],
+  // A lambda as a default value: its own parameters are not the function's (a shape from indico).
+  ['a.py', 'def __init__(self, model, *, get_query=lambda m, ctx: m.query, flag=False,\n             **kwargs):\n    pass', '__init__', 'self/self model -/* get_query flag kwargs/rest'],
+];
+for (const [path, text, name, want] of PARAMS) {
+  test(`params: ${JSON.stringify(text.split('\n').find((l) => /\(|=>/u.test(l)).trim()).slice(0, 90)}`, () => {
+    const d = declarations(path, text, { params: true }).find((x) => x.name === name);
+    assert.ok(d?.params, `${name} has params`);
+    assert.equal(paramText(d.params), want);
+  });
+}
+
+test('params: asked for only; without it every declaration of this package is what it was', () => {
+  for (const f of OWN) {
+    const body = readFileSync(f, 'utf8');
+    for (const members of [false, true]) {
+      const plain = declarations(f, body, { members });
+      assert.ok(plain.every((d) => !('params' in d)), f);
+      const withParams = declarations(f, body, { members, params: true }).map(({ params, ...rest }) => rest);
+      assert.deepEqual(withParams, plain, f);
+    }
+  }
+});
+
+test('params: a function of this package with a parameter list has params, and a class has none', () => {
+  const ds = declarations('src/code.mjs', readFileSync('src/code.mjs', 'utf8'), { params: true });
+  assert.equal(paramText(ds.find((d) => d.name === 'declarations').params), 'path body members(members)+params(params)');
+  assert.ok(ds.filter((d) => d.what === 'class').every((d) => !d.params));
+});
+
+test('params: linear time in the length of a parameter list, its nesting and its file', () => {
+  const shapes = {
+    'a long list': (n) => `function f(${Array.from({ length: n / 8 }, (_, i) => `a${i}`).join(', ')}) {\n}`,
+    'deep nesting': (n) => `function f(x = ${'('.repeat(n / 4)}1${')'.repeat(n / 4)}, y) {\n}`,
+    'a bracket left open': (n) => `function f(${'('.repeat(n / 2)}`,
+    'many functions': (n) => Array.from({ length: n / 40 }, (_, i) => `function f${i}(a, { b }) {\n}`).join('\n'),
+    'a long chain of types': (n) => `function f(m: ${'Map<string, '.repeat(n / 24)}1${'>'.repeat(n / 24)}, url) {\n}`,
+  };
+  for (const [name, make] of Object.entries(shapes)) {
+    // The fastest of five runs at each size: one run varies by 3 times on a shared machine. 16 times the text may take
+    // at most 32 times as long (quadratic would be 256); measured 11 to 29 times alone, and once 34 under npm test's
+    // other files, so the pair is measured up to three times and one under 32 passes (quadratic fails all three).
+    const time = (n) => {
+      const text = make(n);
+      let best = Infinity;
+      for (let k = 0; k < 5; k++) { const t = process.hrtime.bigint(); declarations('a.ts', text, { params: true }); best = Math.min(best, Number(process.hrtime.bigint() - t) / 1e6); }
+      return best;
+    };
+    const tries = [];
+    for (let k = 0; k < 3 && !tries.some(([s, b]) => b < s * 32); k++) tries.push([time(20_000), time(320_000)]);
+    assert.ok(tries.some(([s, b]) => b < s * 32), `${name}: ${tries.map(([s, b]) => `${s.toFixed(1)}ms at 20,000, ${b.toFixed(1)}ms at 320,000`).join('; ')}`);
+  }
+});
