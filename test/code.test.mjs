@@ -332,6 +332,27 @@ test('params: a function of this package with a parameter list has params, and a
   assert.ok(ds.filter((d) => d.what === 'class').every((d) => !d.params));
 });
 
+test('params: a destructuring pattern nested 5,000 and 50,000 deep is read, in steps that grow with it', () => {
+  // A reader that called itself for each inner pattern ran out of stack at 5,000 (`Maximum call stack size
+  // exceeded`); one that read each inner pattern's inside again took the depth times the text.
+  const shapes = {
+    object: (d) => [`function f(${'{ a: '.repeat(d)}x${' }'.repeat(d)}, y) {\n}`, 'x(a) y'],
+    array: (d) => [`function f(${'['.repeat(d)}x${']'.repeat(d)}, ...{ b: [z] }) {\n}`, 'x z(b)/rest'],
+    rest: (d) => [`function f(${'{ ...{ k: '.repeat(d)}x${' } }'.repeat(d)}) {\n}`, 'x(k)'],
+  };
+  for (const [name, make] of Object.entries(shapes)) {
+    const steps = [];
+    for (const depth of [5_000, 50_000]) {
+      const [text, want] = make(depth);
+      countSteps(true);
+      const [d] = declarations('a.ts', text, { params: true });
+      steps.push(countSteps(false));
+      assert.equal(paramText(d.params), want, `${name} at ${depth}`);
+    }
+    assert.ok(steps[1] < steps[0] * 20, `${name}: ${steps[0]} steps at 5,000 deep, ${steps[1]} at 50,000`);
+  }
+});
+
 // Texts of n characters that a reader doing the work twice over would read in time growing with n's square.
 const LONG_SHAPES = {
   'a long list': (n) => `function f(${Array.from({ length: n / 8 }, (_, i) => `a${i}`).join(', ')}) {\n}`,

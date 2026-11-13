@@ -235,7 +235,8 @@ function paramsOpen(toks, k) {
 // begins after `as` or `satisfies` (`headers = {} as Record<string, string>`) and, in a parameter list (typed), after
 // a parameter's `:` (`m: Map<string, number>`), up to its `=`; and a `<` right after `new Name`
 // (`out = new Map<string, boolean>()`). py: a `lambda` in a default value has parameters of its own, to its `:`.
-function partsOf(toks, from, to, typed, py = false) {
+// close: what finds a bracket's match, closeOf unless the caller has the matches already (closesFrom).
+function partsOf(toks, from, to, typed, py = false, close = closeOf) {
   const out = [];
   let start = from;
   let inType = false;
@@ -244,7 +245,7 @@ function partsOf(toks, from, to, typed, py = false) {
     if (counting) steps++;
     const t = toks[j];
     if (py && isWord(t, 'lambda')) {
-      for (j++; j < to && !isPunct(toks[j], ':'); j++) if ((!counting || steps++ >= 0) && toks[j].k === 'punct' && '([{'.includes(toks[j].v)) { const c = closeOf(toks, j); if (c < 0 || c >= to) return out; j = c; }
+      for (j++; j < to && !isPunct(toks[j], ':'); j++) if ((!counting || steps++ >= 0) && toks[j].k === 'punct' && '([{'.includes(toks[j].v)) { const c = close(toks, j); if (c < 0 || c >= to) return out; j = c; }
       continue;
     }
     if (t.k === 'word') {
@@ -256,7 +257,7 @@ function partsOf(toks, from, to, typed, py = false) {
     if (t.v === '.' && after === 'name') { after = 'dot'; continue; }
     const typeArguments = t.v === '<' && (inType || after === 'name');
     after = null;
-    if ('([{'.includes(t.v)) { const c = closeOf(toks, j); if (c < 0 || c >= to) return out; j = c; }
+    if ('([{'.includes(t.v)) { const c = close(toks, j); if (c < 0 || c >= to) return out; j = c; }
     else if (typeArguments) { const a = afterAngle(toks, j); if (a > 0 && a <= to) j = a - 1; }
     else if (typed && t.v === ':') inType = true;
     else if (t.v === '=') inType = false;
@@ -265,34 +266,55 @@ function partsOf(toks, from, to, typed, py = false) {
   if (to > start) out.push([start, to]);
   return out;
 }
+// The match of every bracket from the one at `open` to its own match, in one pass: a Map from each opening token to
+// its closing token, the same matches closeOf gives one at a time. A bracket not closed by then is not in it.
+function closesFrom(toks, open) {
+  const at = new Map();
+  const opened = [];
+  for (let j = open; j < toks.length; j++) {
+    if (counting) steps++;
+    if (toks[j].k !== 'punct') continue;
+    if ('([{'.includes(toks[j].v)) opened.push(j);
+    else if (')]}'.includes(toks[j].v)) { at.set(opened.pop(), j); if (!opened.length) break; }
+  }
+  return at;
+}
 // The names a destructuring pattern binds, from its bracket at `open`: { key, name } each. key: the property it is
 // taken from (an object's key; null for an array's element and a `...rest`); an inner pattern's names take the key
-// of the property it stands for (`{ user: { id } }` binds id with key user).
+// of the property it stands for (`{ user: { id } }` binds id with key user). The patterns inside are read from a
+// stack of their own, not by calling this again (that ran out of the call stack 5,000 deep), and every bracket's
+// match is found once (closesFrom), not again for each pattern around it, so the work grows with the text however
+// deep it nests. The names come in the order they are written.
 function patternNames(toks, open, outer) {
-  const close = closeOf(toks, open);
-  if (close < 0) return [];
+  const at = closesFrom(toks, open);
+  const match = (_, j) => at.get(j) ?? -1;
   const out = [];
-  const object = isPunct(toks[open], '{');
-  for (const [a, b] of partsOf(toks, open + 1, close, false)) {
+  const stack = []; // the patterns being read, the innermost last: its parts, the next to read, its kind and key
+  const enter = (o, key) => { const c = match(toks, o); if (c >= 0) stack.push({ parts: partsOf(toks, o + 1, c, false, false, match), next: 0, object: isPunct(toks[o], '{'), outer: key }); };
+  enter(open, outer);
+  while (stack.length) {
+    const f = stack.at(-1);
+    if (f.next === f.parts.length) { stack.pop(); continue; }
+    const [a, b] = f.parts[f.next++];
     if (counting) steps++;
     let k = a;
-    if (isPunct(toks[k], '...')) { if (isWord(toks[k + 1])) out.push({ key: outer, name: toks[k + 1].v }); else if (isPunct(toks[k + 1], '{') || isPunct(toks[k + 1], '[')) out.push(...patternNames(toks, k + 1, outer)); continue; }
-    if (!object) {
-      if (isWord(toks[k])) out.push({ key: outer, name: toks[k].v });
-      else if (isPunct(toks[k], '{') || isPunct(toks[k], '[')) out.push(...patternNames(toks, k, outer));
+    if (isPunct(toks[k], '...')) { if (isWord(toks[k + 1])) out.push({ key: f.outer, name: toks[k + 1].v }); else if (isPunct(toks[k + 1], '{') || isPunct(toks[k + 1], '[')) enter(k + 1, f.outer); continue; }
+    if (!f.object) {
+      if (isWord(toks[k])) out.push({ key: f.outer, name: toks[k].v });
+      else if (isPunct(toks[k], '{') || isPunct(toks[k], '[')) enter(k, f.outer);
       continue;
     }
     // A property: `key`, `key = x`, `key: name`, `key: { ... }`, `'key': name`, `[computed]: name`.
     let key = null;
     if (isWord(toks[k])) key = toks[k].v;
     else if (toks[k]?.k === 'val') key = toks[k].text?.match(/^(['"`])(.*)\1$/u)?.[2] ?? null;
-    else if (isPunct(toks[k], '[')) { k = closeOf(toks, k); if (k < 0) continue; }
+    else if (isPunct(toks[k], '[')) { k = match(toks, k); if (k < 0) continue; }
     k++;
     if (isPunct(toks[k], ':') && k + 1 < b) {
       const v = toks[k + 1];
-      if (isWord(v)) out.push({ key: outer ?? key, name: v.v });
-      else if (isPunct(v, '{') || isPunct(v, '[')) out.push(...patternNames(toks, k + 1, outer ?? key));
-    } else if (key !== null && isWord(toks[a])) out.push({ key: outer ?? key, name: key });
+      if (isWord(v)) out.push({ key: f.outer ?? key, name: v.v });
+      else if (isPunct(v, '{') || isPunct(v, '[')) enter(k + 1, f.outer ?? key);
+    } else if (key !== null && isWord(toks[a])) out.push({ key: f.outer ?? key, name: key });
   }
   return out;
 }
