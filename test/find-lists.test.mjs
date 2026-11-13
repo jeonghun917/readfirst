@@ -17,6 +17,8 @@ const FILES = {
   'src/redact.js': "const SECRET_WORDS = ['password', 'token', 'apiKey'];\nmodule.exports.SENSITIVE = ['password', 'private_key'];\n",
   'src/scrub.js': "const WORD = /\\b(?:password|secret|api_?key)\\b/iu;\nconst SEP = /\\s*\\|\\s*/u;\n",
   'src/scrub.py': 'import re\nSECRET_RE = re.compile(r"password|private_key")\n',
+  'tools/tuple.py': 'HTTP_TUPLE = ("requests", "httpx")\nSEND = send("requests", "httpx")\n',
+  'src/seps.js': "const SEP = '|';\nconst ORS = '||';\nconst SEPS = ['|', ','];\nconst VERBS = 'GET|POST';\n",
   'src/plain.js': "const N = 3;\nconst ONE = ['only'];\nfunction inner() { const local = ['axios', 'got']; return local; }\nrun({ list: ['axios', 'got'] });\nconst MESSAGES = ['axios failed to connect', 'got no answer'];\n",
 };
 const files = Object.keys(FILES);
@@ -44,6 +46,13 @@ test('a pattern of alternatives is a list of the names it holds; an escaped | is
   assert.equal(find({ query: 'sep', files: ['src/scrub.js'], read }).searched.lists, 1, 'WORD only, not SEP');
 });
 
+test('a Python tuple is a list, a call with strings is not; a separator is not a list, a string of alternatives is', () => {
+  assert.deepEqual(find({ query: 'httpx', files: ['tools/tuple.py'], read }).code.filter((h) => h.kind === 'list').map((h) => h.name), ['HTTP_TUPLE']);
+  const r = find({ query: 'verbs', files: ['src/seps.js'], read });
+  assert.equal(r.searched.lists, 1, "only VERBS: '|', '||' and ['|', ','] hold no names");
+  assert.deepEqual(r.code.map((h) => h.name), ['VERBS']);
+});
+
 test('a single value, a list of one, a list inside a function, a call argument and a list of sentences are not lists to find', () => {
   const r = find({ query: 'only local axios got', files: ['src/plain.js'], read });
   assert.deepEqual(r.code.filter((h) => h.kind === 'list'), []);
@@ -51,5 +60,10 @@ test('a single value, a list of one, a list inside a function, a call argument a
 });
 
 test('definitions, which the find gate and the trigger engine read, still leave lists out', () => {
-  assert.deepEqual(definitions('src/net/clients.js', FILES['src/net/clients.js']).map((d) => d.name), ['request']);
+  const plain = definitions('src/net/clients.js', FILES['src/net/clients.js']);
+  assert.deepEqual(plain.map((d) => d.name), ['request']);
+  assert.equal(plain.lists, undefined, 'lists only when asked');
+  const asked = definitions('src/net/clients.js', FILES['src/net/clients.js'], { lists: true });
+  assert.deepEqual(asked.map((d) => d.name), ['request'], 'the same definitions when lists are asked for');
+  assert.deepEqual(asked.lists.map((l) => l.name), ['HTTP_CLIENTS']);
 });

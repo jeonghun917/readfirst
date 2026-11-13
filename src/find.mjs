@@ -95,14 +95,18 @@ function docOf(lines, i, py, top = null) {
 // The comment that says what each does comes from the reader's `top` (the comment and decorators right above) and a
 // Python docstring right below. The list also carries the file's own header comment (`header`), which says what the
 // module is for: find matches it for the file as a whole, once, not for each definition in it.
-function readDefinitions(path, body) {
+function readDefinitions(path, body, { lists = false } = {}) {
   const lines = body.split('\n');
   const py = /\.py$/u.test(path);
   const decls = declarations(path, body, { members: true });
+  const rows = codeRows(path, body);
   const out = decls
     .filter((d) => (d.what !== 'var' || d.fn || d.ofModule) && (!d.member || d.ofModule) && !d.name.startsWith('#') && !KEYWORDS.has(d.name) && d.name.length >= 3)
     .map((d) => ({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), kind: ['class', 'type', 'alias', 'enum'].includes(d.what) ? 'type' : 'function' }));
-  out.header = headerOf(path, body, lines, decls);
+  out.header = headerOf(path, body, lines, decls, rows);
+  // find asks for the lists too, read from the same declarations and lines: a second pass over every file doubled
+  // the time of find.
+  if (lists) out.lists = listsOf(path, { lines, rows, decls, py });
   return out;
 }
 
@@ -111,24 +115,28 @@ function readDefinitions(path, body) {
 // list of the same names repeats. Each: the constant's name, line, comment and `values`, the names written in it:
 // its strings with no space in them and its object keys. Only constants of the file's top level (or what a module
 // exports) whose value has a bracket and at least two such names; a list inside a function is the function's.
-// Kept apart from `definitions`, which the find gate (newCode in src/cli.mjs) and the trigger engine also read: a new
-// list is not new code for them.
-function listsOf(path, body) {
-  if (!body || !reads(path)) return [];
-  const lines = body.split('\n');
-  const rows = codeRows(path, body);
-  const py = /\.py$/u.test(path);
+// `definitions` gives them only when asked (`lists`): the find gate (newCode in src/cli.mjs) and the trigger engine
+// read its definitions without them, so a new list is not new code for them. They come from the same declarations
+// and lexed lines as the definitions, never a second pass over the file.
+function listsOf(path, { lines, rows, decls, py }) {
   const out = [];
-  for (const d of declarations(path, body, { members: true })) {
+  for (const d of decls) {
     if (d.what !== 'var' || d.fn || d.depth || (d.member && !d.ofModule) || d.name.startsWith('#') || d.name.length < 3) continue;
     const toks = tokens(rows, d.line - 1, d.end);
     const eq = toks.findIndex((t) => t.k === 'punct' && t.v === '=');
     const value = eq < 0 ? [] : toks.slice(eq + 1);
-    // A pattern of alternatives (`/\b(?:password|token)\b/`, re.compile(r"password|token")) is a list too: the
+    // A pattern of alternatives (`/\b(?:password|token)\b/`, re.compile(r"password|token"), 'GET|POST') is a list too: the
     // names it holds are its alternatives. An escaped \| is a character, not an alternative.
     const plain = (t) => (t.k === 'val' && t.text && t.endLine === t.line && !/\s/u.test(t.text) ? t.text.replace(/\\./gu, ' ') : null);
-    const alternatives = (t) => { const p = plain(t); return p !== null && p.includes('|') ? p.split('|') : null; };
-    if (!value.some((t) => (t.k === 'punct' && (t.v === '[' || t.v === '{')) || alternatives(t))) continue;
+    // Only alternatives that hold a letter or digit count: '|' or '||' alone is a separator, not a list of two names.
+    const alternatives = (t) => {
+      const p = plain(t);
+      const parts = p !== null && p.includes('|') ? p.split('|').filter((s) => /[\p{L}\p{N}]/u.test(s)) : [];
+      return parts.length >= 2 ? parts : null;
+    };
+    // A value that opens with a parenthesis is a tuple (Python's `('requests', 'httpx')`) or a grouping, not a call.
+    const opensTuple = value[0]?.k === 'punct' && value[0].v === '(';
+    if (!opensTuple && !value.some((t) => (t.k === 'punct' && (t.v === '[' || t.v === '{')) || alternatives(t))) continue;
     const values = [];
     value.forEach((t, k) => {
       // A name is a string with no space in it ('node-fetch', 'api.stripe.com'): a sentence or a file's text in a
@@ -136,15 +144,15 @@ function listsOf(path, body) {
       if (plain(t) !== null) values.push(...(alternatives(t) ?? [plain(t)]));
       else if (t.k === 'word' && value[k + 1]?.v === ':' && ['{', ','].includes(value[k - 1]?.v)) values.push(t.v);
     });
-    if (values.length < 2) continue;
+    // Two names at least, each with a letter or digit: ['|', ','] is a list of separators, not of names.
+    if (values.filter((v) => /[\p{L}\p{N}]/u.test(v)).length < 2) continue;
     out.push({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), values });
   }
   return out;
 }
 // The comment a file opens with, when it is not the comment of its first declaration: the lines of comment from the
 // first line (after a `#!` line) up to the first line of code or the first blank line after text.
-function headerOf(path, body, lines, decls) {
-  const rows = codeRows(path, body);
+function headerOf(path, body, lines, decls, rows = codeRows(path, body)) {
   const out = [];
   let i = lines[0]?.startsWith('#!') ? 1 : 0;
   for (; i < lines.length; i++) {
@@ -157,9 +165,11 @@ function headerOf(path, body, lines, decls) {
   return out.join(' ').trim().slice(0, 600); // cut: a description, not a list; find matches words in its first 600 characters
 }
 
-export function definitions(path, body) {
+// lists: also the constants that hold a list or table of names, as `lists` on the result (find only; the gate and
+// the trigger engine leave it off and get the same definitions).
+export function definitions(path, body, { lists = false } = {}) {
   if (!body) return [];
-  if (reads(path)) return readDefinitions(path, body);
+  if (reads(path)) return readDefinitions(path, body, { lists });
   const lang = DEFS.find((d) => d.test.test(path));
   if (!lang) return [];
   const out = [];
@@ -193,7 +203,7 @@ export function find({ query, files, imports = [], read = () => null, map = null
   for (const f of code) {
     const test = isTest(f);
     const at = words(f.replace(/\.[^./]+$/u, ''));
-    const found = definitions(f, read(f));
+    const found = definitions(f, read(f), { lists: true });
     // A file is found by its path, and by the comment it opens with: often the only place that says what a module's
     // functions are for ("strings and comments carried across lines" for a file whose functions are named by what
     // they return).
@@ -201,7 +211,7 @@ export function find({ query, files, imports = [], read = () => null, map = null
     for (const d of found) { defs++; items.push({ kind: d.kind, name: d.name, file: f, line: d.line, words: words(d.name), path: at, doc: words(d.doc), test }); }
     // A constant holding a list or table is found by its name and by the names written in it ("axios" in
     // HTTP_CLIENTS), so a third list of the same HTTP libraries is not written beside two.
-    for (const l of listsOf(f, read(f))) { lists++; items.push({ kind: 'list', name: l.name, file: f, line: l.line, words: words(l.name), path: at, doc: words(l.doc), values: words(l.values.join(' ')), test }); }
+    for (const l of found.lists ?? []) { lists++; items.push({ kind: 'list', name: l.name, file: f, line: l.line, words: words(l.name), path: at, doc: words(l.doc), values: words(l.values.join(' ')), test }); }
   }
   for (const g of map?.groups ?? []) items.push({ kind: 'group', id: g.id, text: g.title, words: words(`${g.id} ${g.title}`) });
   for (const r of map?.rules ?? []) items.push({ kind: 'rule', id: r.id, text: r.rule, words: words(`${r.id} ${r.rule} ${r.why ?? ''}`) });
