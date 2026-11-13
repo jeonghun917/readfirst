@@ -34,8 +34,8 @@ export function shellWord(word, vars = new Map()) {
   // a plain $ (the `"` after it closes the quote: `"a$"` is a$; it was read as $"..." and the $ dropped, 2026-11-13).
   const dollar = (i, quoted = false) => {
     // $(( )) and $[ ] are arithmetic, worked out when it runs (arithEnd: where it ends).
-    if (s.startsWith('$((', i) || s.startsWith('$[', i)) {
-      const end = arithEnd(s, i);
+    const end = s.startsWith('$((', i) || s.startsWith('$[', i) ? arithEnd(s, i) : -1;
+    if (end >= 0 || s.startsWith('$[', i)) {
       const e = end < 0 ? s.length : end;
       return [hole(s.slice(i, e), 'it is arithmetic, worked out when it runs'), e];
     }
@@ -314,23 +314,43 @@ const moveTo = (from, t) => {
 // when it never closes. Its brackets nest (`$(( (1+2) > 0 ))`) and a $( ) in it holds commands of its own (closeOf).
 // Every reader asks this one: a > or | in it compares or computes, and was read as a redirect or a pipe
 // (`echo $((1 > 0))` wrote a file 0, `$[1>0]` a file `0]`, until 2026-11-13).
+// As bash reads it, (( is arithmetic only when the first ) that closes its inner ( is followed at once by the outer
+// one: `$((echo 1) > b)` and `$((cd /a); echo > b)` are a $( ) holding a subshell, and write b (read as arithmetic
+// for a while on 2026-11-13, so the write was lost): then this is -2. -1: it never closes (then the text is not
+// read again as a $( ): each level of `$( $((1 $( $((1 ...` read it twice, and 500 of them did not finish).
+// The answers for the last text asked about are kept: blank, closeOf, parens and shellWord ask about one command again
+// and again.
+let arithSeen = { s: null, ends: new Map() };
 function arithEnd(s, i) {
+  if (arithSeen.s !== s) arithSeen = { s, ends: new Map() };
+  if (!arithSeen.ends.has(i)) arithSeen.ends.set(i, arithScan(s, i));
+  return arithSeen.ends.get(i);
+}
+// One scan, by a loop with no call back into closeOf: a $( ) in it adds its brackets as any ( ) does, and quoted text
+// is passed whole (calling closeOf for a $( ) nested as deep as the text did: `$( $((1 ` 2,000 times ran out of stack).
+function arithScan(s, i) {
   const square = s.startsWith('$[', i);
   const [open, close] = square ? ['[', ']'] : ['(', ')'];
   let depth = 0;
   for (let j = s[i] === '$' ? i + 1 : i; j < s.length; j++) {
     const c = s[j];
     if (c === '\\') { j++; continue; }
-    if (c === '$' && s[j + 1] === '(' && s[j + 2] !== '(') { const k = closeOf(s, j); if (k < 0) return -1; j = k - 1; continue; }
+    if (c === "'") { const k = s.indexOf("'", j + 1); if (k < 0) return -1; j = k; continue; }
+    if (c === '"') { let k = j + 1; while (k < s.length && s[k] !== '"') k += s[k] === '\\' ? 2 : 1; if (k >= s.length) return -1; j = k; continue; }
     if (c === open) depth++;
-    else if (c === close && --depth === 0) return j + 1;
+    else if (c === close) {
+      depth--;
+      if (square && depth === 0) return j + 1;
+      if (!square && depth === 1) return s[j + 1] === ')' ? j + 2 : -2;
+    }
   }
   return -1;
 }
 // Where the quoted text or $( ) that opens at i ends (the index past its last character), or -1 when it never closes.
 // Quotes open again inside $( ), as the shell reads them; inside "..." a ' is a plain character.
 function closeOf(s, i) {
-  if (s.startsWith('$((', i) || s.startsWith('$[', i)) return arithEnd(s, i);
+  if (s.startsWith('$[', i)) return arithEnd(s, i);
+  if (s.startsWith('$((', i)) { const e = arithEnd(s, i); if (e !== -2) return e; } // -2: a $( ) holding a subshell
   if (s[i] === "'") { const k = s.indexOf("'", i + 1); return k < 0 ? -1 : k + 1; }
   const sub = s[i] === '$';
   for (let j = i + (sub ? 2 : 1); j < s.length;) {
@@ -364,7 +384,7 @@ function blank(s) {
     for (let j = from; j < to;) {
       if (s[j] === '\\') { j += 2; continue; }
       if (s[j] !== '$' || s[j + 1] !== '(') { j++; continue; }
-      if (s[j + 2] === '(') { j += 3; continue; }
+      if (s[j + 2] === '(' && arithEnd(s, j) >= 0) { j += 3; continue; }
       const close = closeOf(s, j);
       if (close < 0 || close > to) break;
       hide(shown, j + 2);
@@ -378,7 +398,7 @@ function blank(s) {
     for (let i = from; i < to;) {
       const c = s[i];
       if (c === '\\') { i += 2; continue; }
-      const arith = c === '$' && (s.startsWith('$((', i) || s[i + 1] === '[');
+      const arith = c === '$' && (s.startsWith('$((', i) || s[i + 1] === '[') && arithEnd(s, i) >= 0;
       if (c !== "'" && c !== '"' && !arith) { i++; continue; }
       const end = closeOf(s, i);
       if (end < 0 || end > to) { i++; continue; }
@@ -413,7 +433,7 @@ function parens(segment, open) {
   let i = b.match(/^\s*(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)*/u)[0].length;
   // (( )) is arithmetic, not two subshells, after those words too: `if ((x)); then cd /a; fi` was read as two
   // subshells whose ) put back the state from before the if, so the if and its cd were taken as sure (2026-11-13).
-  if (b.startsWith('((', i)) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 };
+  if (b.startsWith('((', i) && arithEnd(segment, i) >= 0) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 };
   const at = i;
   while (i < b.length && (b[i] === '(' || /\s/u.test(b[i]))) i++;
   const lead = (b.slice(at, i).match(/\(/gu) ?? []).length;
@@ -914,7 +934,15 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     // After if, while and the like (opening keeps the (( on its word) and after time (`time (( x > 0 ))` named a file 0).
     let k = 0;
     while (opened[k] === 'time' || (k > 0 && opened[k] === '-p')) k++;
-    if (/^(?:\(\(|\[\[)/u.test(opened[k] ?? '')) { if (opened[k].startsWith('((')) follow(state, opened.slice(k), how); return; }
+    if (/^(?:\(\(|\[\[)/u.test(opened[k] ?? '')) {
+      if (opened[k].startsWith('((')) follow(state, opened.slice(k), how);
+      // A redirect after its )) or ]] still writes: `(( n )) > f` and `[[ x ]] > f` make f (they were dropped).
+      const b = blank(segment);
+      const from = b.search(/\(\(|\[\[/u);
+      const past = from < 0 ? -1 : b.startsWith('((', from) ? arithEnd(segment, from) : b.indexOf(']]', from) + 2;
+      if (past > 1) redirects(segment.slice(past));
+      return;
+    }
     // A redirect writes first, with the folder and variables from before the command: `y="$(sort a > b.txt)"` writes
     // b.txt. cd and assignments then change what the commands after them see, and write nothing more.
     redirects(segment);

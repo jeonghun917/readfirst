@@ -438,6 +438,18 @@ test('arithmetic: $(( )), $[ ] and (( )) wherever they open compare and compute;
   assert.deepEqual(s("n=a; cd $n; python3 - <<'E'\nopen('f','w')\nE"), ['/r/a/f']);
   assert.deepEqual(bashReads('n=a; ((n++)); cd $n && readfirst read f', '/r'), []);
   assert.deepEqual(bashReads('n=a; cd $n && readfirst read f', '/r').map((r) => r.files), [['/r/a/f']]);
+  // $(( is arithmetic only when its inner ( closes right before the outer one, as bash reads it: these are a $( )
+  // holding a subshell, and write (taken whole for arithmetic, they were lost); `$((echo hi > d))` is arithmetic.
+  assert.deepEqual(s('echo $((echo 1) > /t/b)'), ['/t/b']);
+  assert.deepEqual(s('echo $((cd /t); echo x > /t/e)'), ['/t/e']);
+  assert.deepEqual(s('echo $((cd /t; echo hi > /t/a) )'), ['/t/a']);
+  assert.deepEqual(s('x=$((echo 1);echo z > /t/f)'), ['/t/f']);
+  assert.deepEqual(s('echo $((echo hi > /t/d))'), []);
+  // A redirect after the )) of (( )) or the ]] of [[ ]] writes (it was dropped with what was inside).
+  assert.deepEqual(s('(( n )) > f'), ['/r/f']);
+  assert.deepEqual(s('[[ a > b ]] > f'), ['/r/f']);
+  // A $( ) inside $(( )) is counted, not read again by closeOf: 2,000 of `$( $((1 ` ran out of stack.
+  assert.doesNotThrow(() => shellWrites('echo $( $((1 '.repeat(2000), '/r'));
 });
 
 test('hook --gate: a write through a variable the command set is placed, and gets that file\'s notes', () => {
