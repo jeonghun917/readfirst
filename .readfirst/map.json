@@ -170,7 +170,7 @@
           ]
         },
         {
-          "text": "the find-first gate in `runHook` recognises `readfirst find` only by the `FIND_RUN` pattern (readfirst, readfirst@version, npx with --yes/-y, or a path ending in readfirst.mjs, followed by `find`) in a Bash call; any other way of running it (a shell alias, `node -e`, a script that wraps it) leaves no `find:<root>` mark, and the next edit that adds a function is refused as if find never ran. What counts as new code is `newCode`, which applies the edit to the file as it is on disk and compares the names `definitions` (src/find.mjs) finds in the whole file before and after (an Edit's strings are fragments and cannot be read alone: a moved function looked new, a method without its class was missed); an edit whose old text is not in the file adds nothing; a change to `definitions` changes what the gate refuses.",
+          "text": "the find-first gate in `runHook` recognises `readfirst find` only by the `FIND_RUN` pattern (readfirst, readfirst@version, npx with --yes/-y, or a path ending in readfirst.mjs, followed by `find`) in a Bash call; any other way of running it (a shell alias, `node -e`, a script that wraps it) leaves no `find:<root>` mark and no `findwords:` mark, and the next edit that adds a function is refused as if find never ran. A find that did run opens the gate only for the new names it asked about (`findAsked`: a word of its query, read by `findQuery` with the options left out, meets a word of the name, by `words` and `meets` of src/find.mjs), or, for names the gate already refused once, any find run after that refusal: one search at the start no longer covers every function written afterwards. What counts as new code is `newCode`, which applies the edit to the file as it is on disk and compares the names `definitions` (src/find.mjs) finds in the whole file before and after (for Write, the new content against the file as it is; an edit whose old text is not in the file adds nothing); a change to `definitions`, `words` or `meets` changes what the gate refuses.",
           "files": [
             "src/cli.mjs"
           ]
@@ -375,12 +375,6 @@
           "text": "the agents setup knows are listed in several places: `AGENTS`, detectAgents, `PLAN` and `SNIPPETS` in src/agents.mjs, the notes-file list in addAgentLine (cli.mjs), the HELP text and the 'Wire every agent at once' section of docs/guide.md. A new agent must be added to all of them: without a `PLAN` entry setupAgents throws on it, and without a `SNIPPETS` entry the by-hand message for an unparsable file says only 'the readfirst MCP server'. Setup writes a file only when it parses as plain JSON (or, for Codex, when no [mcp_servers.readfirst] table exists), and a readfirst key that is already there is never compared or updated."
         },
         {
-          "text": "src/shapes.mjs holds the published shapes (`PATTERNS`: queryset, str-method, str-replace, js-string, js-replace, js-expect-promise) and the machinery that looks for any list of shapes (`candidates(file, patterns)`, `discardedResults(files, fileText, { patterns })`); the hosted version passes its own list, so do not add the server's other shapes here, they stay hosted. What is code on a line comes from the one reader (`lex` in src/code.mjs, once per hunk: a hunk starts where the patch does), and the function around a call from its tokens and `declarations` (`enclosingFunction`: a declared function, or a brace after `=>` or after a `)` that does not follow if, for, while, switch, catch or with); no helper here skips a string or a comment itself, and one that does is the copy this file had four of. js-expect-promise leaves out files on vitest or bun test (notIn: a *.vitest.* name or an import of vitest or bun:test), which fail such a test themselves",
-          "files": [
-            "src/shapes.mjs"
-          ]
-        },
-        {
           "text": "the scar rules in src/history.mjs (`SIGNALS`, `NOISE`, NOT_CODE, `TEST`, scar, spreadScars) are a copy of the hosted version's lib/history.mjs, kept in one module so the hosted side can import them from the package; a change to the regexes or weights changes what `read`, `diff`, the Action and `audit` call a scar, and the threshold constants (MIN_WEIGHT 2 for a file, BROKE_MOST_MIN_SCORE 2 with BROKE_MOST_MIN_COMMITS 2 for audit) decide when a young repository shows nothing; NOT_TRAP only trims the audit ranking",
           "files": [
             "src/history.mjs"
@@ -520,6 +514,25 @@
             "src/shapes.mjs",
             "src/cli.mjs"
           ]
+        },
+        {
+          "text": "src/shapes.mjs holds the published shapes (`PATTERNS`: queryset, str-method, str-replace, js-string, js-replace, js-expect-promise) and the machinery that looks for any list of shapes (`candidates(file, patterns)`, `discardedResults(files, fileText, { patterns })`); the hosted version passes its own list, so do not add the server's other shapes here, they stay hosted. What is code on a line comes from the one reader (`lex` in src/code.mjs, once per hunk: a hunk starts where the patch does), and the function around a call from its tokens and `declarations` (`enclosingFunction`: a declared function, or a brace after `=>` or after a `)` that does not follow if, for, while, switch, catch or with); no helper here skips a string or a comment itself, and one that does is the copy this file had four of. A pattern's own `find` is called as `find(stmt, code)`: the statement's text and the same characters as the lexer left them; it must close or count its call on the code with `closeOf` (exported, for lists given from outside too), never on the text, or it stops at a parenthesis inside a string and misses the finding (js-expect-promise did for `expect(load(')')).resolves`, 0.32.0). js-expect-promise leaves out files on vitest or bun test (notIn: a *.vitest.* name or an import of vitest or bun:test), which fail such a test themselves",
+          "files": [
+            "src/shapes.mjs"
+          ]
+        },
+        {
+          "text": "`unseenIn` (src/readlist.mjs) now gives two kinds of entry: a module loaded by a computed name has `line`, and a file the reader cannot finish (`unfinished` in src/code.mjs) has none. A caller that prints `path:line` or counts computed loads must keep only the entries with `line`, as `audit` does (`computed` is the entries with a line, `unfinished` the rest), or it prints `path:undefined`.",
+          "files": [
+            "src/readlist.mjs",
+            "src/audit.mjs"
+          ]
+        },
+        {
+          "text": "`spansOf` (src/trigger.mjs) reads a name from an item's text only when it is in backticks or has a shape only code has (camelCase, snake_case, UPPER_CASE with an underscore, a call such as `main()`). A bare capital word with no underscore (CLI, API, URL, JSON, VERSION, FLAGS) is prose: 0.30.0 counted them, and a risk about \"the CLI version\" read as touched by a change to a line using a constant called CLI. A risk about a constant FLAGS must write `FLAGS`. A risk written before that rule and now judged by nothing is listed by `unmatchedItems` with `backtick`, the bare capital words its files declare, so `audit` can say what to put in backticks.",
+          "files": [
+            "src/trigger.mjs"
+          ]
         }
       ]
     },
@@ -567,6 +580,12 @@
           "text": "test/silent-cuts.test.mjs finds cuts by their shape (`CUT`, and `TEXT` for cuts of text), not by meaning: a slice to a number, an UPPER_CASE constant or max/limit/count, a slice from the end (.slice(-N), N of 3 or more or a constant; missed until 0.27.4, so verify's last-30-lines cut passed), a push under such a bound, a loop stopped at one. A cut of text is told apart by its receiver (sha, hash, title, subject, message, body, String(), a string method): a list named like one of those, or a cut to a bound of another name (k, at, end), is not looked at. When it misses one, widen the shapes; do not add a cut: note to pass it",
           "files": [
             "test/silent-cuts.test.mjs"
+          ]
+        },
+        {
+          "text": "test/code.test.mjs reads this package's own .mjs files (`OWN`, from `git ls-files src bin test`, so it needs git on PATH and the tests run inside the checkout) and fails if the reader of src/code.mjs misreads one: a template, string or comment holding a line shaped like a declaration, a top-level function or class that does not end at a brace at column 0, or a declaration that runs into the next. A new or edited file with a shape the reader guesses wrong (see the todo tests) fails here, not in the file's own test; fix the reader with a snippet and a parser's answer, not by changing the file to suit it.",
+          "files": [
+            "test/code.test.mjs"
           ]
         }
       ]
@@ -921,7 +940,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "treeState",
-      "line": 789,
+      "line": 858,
       "labels": [
         "crypto"
       ],
@@ -942,6 +961,18 @@
         "no-silent-cut"
       ],
       "note": "Writes files; called from 1 other file read"
+    },
+    {
+      "file": "src/shapes.mjs",
+      "symbol": "lineHash",
+      "line": 16,
+      "labels": [
+        "crypto"
+      ],
+      "rules": [
+        "no-silent-cut"
+      ],
+      "note": "Hashes, signs or encrypts"
     }
   ]
 }
