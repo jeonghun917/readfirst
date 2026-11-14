@@ -207,7 +207,7 @@ answer and an edit in one command is refused for the edit. An answer holds for t
 item by the same names; one that touches a new name asks again, and an item not touched is not asked at all. The same
 call made again without an answer is refused again, with the items still open. An `unsure` lets the edit through, and
 the Stop hook stops once to name every item still unsure. Once the session has been asked 4 items or more, an answer
-is refused when its `unsure` answers, with the session's earlier ones, would be more than half of the items asked. The `readfirst answer` command itself only prints what it was
+is refused when it would leave more than half of them with `unsure` as their last answer. The `readfirst answer` command itself only prints what it was
 given; it writes nothing.
 Notes count as seen on the branch they were seen on, and a `readfirst read` that Claude Code ran in Bash counts too,
 when its whole output came back: one sent to `/dev/null`, a file or a pipe (`| head`), or cut by `--limit`, does not.

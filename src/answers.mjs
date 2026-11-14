@@ -15,7 +15,7 @@
 import { commandWords } from './bash-writes.mjs';
 
 export const ANSWER_KINDS = ['keeps', 'not-this', 'done', 'unsure'];
-// The items a session must have been asked before unsure answers over half of them are refused.
+// The items a session must have been asked before an answer leaving over half of them unsure is refused.
 const UNSURE_FROM = 4;
 const KIND_LINE = 'keeps (the change keeps what it asks; say how), not-this (it is about something else; `symbols`: what the change touches), done (the change does what it asks), unsure';
 
@@ -122,8 +122,8 @@ export function answered(answers, item, by) {
 // - each item must be one the gate asked in this session;
 // - a not-this answer's symbols must be among the names the change touched the item by (it cannot claim a whole file),
 //   and an item readfirst could not judge takes no not-this;
-// - with 4 or more items asked, an answer with an unsure is refused when the unsure answers, its own counted, would be
-//   more than half of them (counted across answers, so splitting them does not help).
+// - with 4 or more items asked, an answer with an unsure is refused when it would leave more than half of them with an
+//   unsure last answer (counted by item across answers, so splitting them does not help).
 export function answersIn(command, cwd, seen) {
   const runs = answerRuns(command, cwd);
   if (!runs.length) return null;
@@ -148,13 +148,15 @@ export function answersIn(command, cwd, seen) {
       if (wider.length) problems.push(`\`${a.item}\`: not-this names ${wider.map((s) => `\`${s}\``).join(', ')}, which the change did not touch it by (it touched ${[...by].map((s) => `\`${s}\``).join(', ')}): name only those`);
     }
   }
-  // Counted with this command's own (plan 2.6: across answers), so neither one answer of all unsure nor answers split
-  // in parts get past it. Below UNSURE_FROM items asked it does not apply: one unsure of one item asked would always be
-  // over half, and the Stop hook's refusal for an open unsure is the cost there.
-  const unsureNow = answers.filter((a) => a.answer === 'unsure').length;
-  const unsureAll = before.filter((a) => a.answer === 'unsure').length + unsureNow;
-  if (unsureNow && asked.size >= UNSURE_FROM && unsureAll * 2 > asked.size) {
-    problems.push(`${unsureAll} unsure answers in this session with this one, more than half of the ${asked.size} items asked: an unsure answer is no answer now; answer keeps, not-this or done`);
+  // Counted by item, this command's answers taken as the latest (plan 2.6: unsure answers reach more than half of all
+  // items asked): an item whose last answer is unsure counts once however often it was answered so, and not at all once
+  // answered otherwise. One answer of all unsure and answers split in parts are caught alike. Below UNSURE_FROM items
+  // asked it does not apply: one unsure of one item asked would always be over half, and the Stop hook's refusal for an
+  // open unsure is the cost there. Every answer stays in the state, unsure or not.
+  const unsureNow = answers.some((a) => a.answer === 'unsure');
+  const unsureItems = lastUnsure([...before, ...answers.map((a) => ({ ...a, at: Infinity }))]).length;
+  if (unsureNow && asked.size >= UNSURE_FROM && unsureItems * 2 > asked.size) {
+    problems.push(`${unsureItems} of the ${asked.size} items asked in this session would be left unsure with this answer, more than half: an unsure answer is no answer now; answer keeps, not-this or done`);
   }
   if (problems.length) return { keys: {}, problems, count: 0 };
   const keys = {};
@@ -164,8 +166,12 @@ export function answersIn(command, cwd, seen) {
 
 // The items whose last answer is unsure, with no later answer of another kind (plan 2.6): the Stop hook names them.
 export function openUnsure(seen) {
+  return lastUnsure(givenAnswers(seen));
+}
+// The items of a list of answers whose last answer is unsure.
+function lastUnsure(answers) {
   const last = new Map();
-  for (const a of givenAnswers(seen)) {
+  for (const a of answers) {
     const was = last.get(a.item);
     // An answer of another kind given in the same call clears it.
     if (!was || a.at > was.at || (a.at === was.at && a.answer !== 'unsure')) last.set(a.item, a);

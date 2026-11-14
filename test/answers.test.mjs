@@ -6,7 +6,7 @@
 // touches the item by no other names. An unsure answer lets the call through and blocks the stop once.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -35,7 +35,9 @@ function session({ risks = [NAMED, BOTH, PROSE], rules = [{ id: 'no-net', rule: 
   let now = 1000;
   const call = (tool, input) => { const out = runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input }), { stateDir, gate: true, now: (now += 1000) }); return out ? JSON.parse(out).hookSpecificOutput : null; };
   const stop = () => { const out = runStopHook(JSON.stringify({ session_id: id, cwd: root }), { stateDir, timeout: 30 }); return out ? JSON.parse(out) : null; };
-  return { root, call, stop, bash: (command) => call('Bash', { command }) };
+  // The answers kept in the state, in the order given: [item, kind].
+  const kept = () => readFileSync(join(stateDir, `readfirst-hook-${id.replace(/[^\w-]/gu, '')}.lines`), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)[0]).filter((k) => k.startsWith('answer:')).map((k) => JSON.parse(k.slice('answer:'.length)).slice(0, 2));
+  return { root, call, stop, kept, bash: (command) => call('Bash', { command }) };
 }
 const inBeta = (root) => ({ file_path: join(root, 'src/a.js'), old_string: '  return y * two;', new_string: '  return y * two * 1;' });
 const inAlpha = (root) => ({ file_path: join(root, 'src/a.js'), old_string: '  return x + one;', new_string: '  return x + one + 0;' });
@@ -144,18 +146,26 @@ test('an answer holds while the change touches the item by the same names; a new
 
 const unsure = (...list) => list.map((item) => ({ item, answer: 'unsure', because: 'cannot tell what the cache keys on' }));
 
-test('with 4 items asked: all unsure at once is refused, and so are unsure answers split to get past half', () => {
+test('with 4 items asked: an answer leaving over half of them unsure is refused, counted by item, split or not', () => {
   const s = session();
   // A write by sed has no edit to judge: all four items are asked.
   const ids = asked(s.bash('sed -i s/two/pair/ src/a.js'));
   assert.deepEqual(ids.sort(), [ID.both, ID.named, ID.prose, ID.rule].sort());
   const all = s.bash(answer(unsure(...ids)));
   assert.equal(all.permissionDecision, 'deny', 'one answer, every item unsure');
-  assert.match(all.permissionDecisionReason, /4 unsure answers in this session with this one, more than half of the 4 items asked/u);
+  assert.match(all.permissionDecisionReason, /4 of the 4 items asked in this session would be left unsure with this answer, more than half/u);
   assert.equal(s.bash(answer([...unsure(ID.rule, ID.both), ...keeps(ID.prose, ID.named)])), null, 'two of four unsure: not more than half, taken');
   const third = s.bash(answer(unsure(ID.prose)));
-  assert.equal(third.permissionDecision, 'deny', 'split: a third unsure in another answer');
-  assert.match(third.permissionDecisionReason, /3 unsure answers in this session with this one, more than half of the 4 items asked/u);
+  assert.equal(third.permissionDecision, 'deny', 'split: a third item unsure in another answer');
+  assert.match(third.permissionDecisionReason, /3 of the 4 items asked in this session would be left unsure/u);
+  // By item: the same item unsure again is still one, and an item answered otherwise since no longer counts.
+  assert.equal(s.bash(answer(unsure(ID.rule))), null, 'the rule unsure again: still 2 items');
+  assert.equal(s.bash(answer(keeps(ID.rule))), null);
+  assert.equal(s.bash(answer(unsure(ID.prose))), null, 'the rule answered keeps: the prose risk makes 2 again, taken');
+  assert.equal(s.bash(answer(keeps(ID.prose))), null);
+  assert.equal(s.bash(answer(unsure(ID.rule))), null, 'the rule unsure again after keeps: 2 items, taken');
+  // Every answer is kept, the unsure ones too, so the record shows an item named twice.
+  assert.deepEqual(s.kept().filter(([item]) => item === ID.rule).map(([, kind]) => kind), ['unsure', 'unsure', 'keeps', 'unsure']);
   assert.equal(decision(s.bash('sed -i s/two/pair/ src/a.js')), 'through', 'unsure answers let the write through');
   const stopped = s.stop();
   assert.equal(stopped?.decision, 'block');
