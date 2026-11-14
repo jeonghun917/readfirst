@@ -1266,7 +1266,8 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
               const { what } = log[i];
               const squash = /^commit[^:]*: Squashed commit of the following/u.test(what);
               if (/^commit(?: \((?:amend|initial)\))?: /u.test(what) && !squash) continue;
-              moves.add(squash ? 'merge --squash' : what.slice(0, what.indexOf(':') < 0 ? what.length : what.indexOf(':')));
+              // A move made by `git update-ref` with no -m leaves an empty message: named as such, never as a blank.
+              moves.add(squash ? 'merge --squash' : what.slice(0, what.indexOf(':') < 0 ? what.length : what.indexOf(':')).trim() || 'no reflog message');
               for (const f of git(root, 'diff', '--name-only', '-z', '--no-renames', log[i + 1].sha, log[i].sha).split('\0').filter(Boolean)) brought.add(f);
             }
             const broughtHere = [...brought].filter((f) => changes.has(f)).sort();

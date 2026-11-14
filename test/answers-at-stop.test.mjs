@@ -299,6 +299,25 @@ for (const [move, bring] of Object.entries(BRING)) {
   });
 }
 
+test('a move with an empty reflog message (git update-ref) is named as having none, not as a blank', () => {
+  const s = session();
+  const git = (...a) => execFileSync('git', ['-C', s.root, ...a], { encoding: 'utf8' });
+  git('checkout', '-q', '-b', 'work');
+  s.call('Edit', inBeta(s.root));
+  notThisBeta(s);
+  git('checkout', '-q', 'main');
+  writeFileSync(join(s.root, 'src/a.js'), A.replace('  return x + one;', '  return x + one + 0;'));
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', 'alpha, on main');
+  const tip = git('rev-parse', 'HEAD').trim();
+  git('checkout', '-q', 'work');
+  git('update-ref', 'HEAD', tip);
+  leave(s.root, { alpha: true });
+  const out = said(s.stop());
+  assert.doesNotMatch(out, /does not bear out/u);
+  assert.match(out, /by moves of HEAD it did not commit itself \([^)]*\bno reflog message\b[^)]*\)/u);
+  assert.doesNotMatch(out, /\(; |; \)|; ;/u, 'no blank move in the list');
+});
+
 test('HEAD moved and the reflog does not reach back to the start: no not-this compared, and it says so', () => {
   const s = session();
   const git = (...a) => execFileSync('git', ['-C', s.root, ...a], { encoding: 'utf8' });
