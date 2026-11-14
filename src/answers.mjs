@@ -60,6 +60,13 @@ const literal = (raw) => {
 };
 // The word that names readfirst: readfirst, readfirst@<version>, or a path to it (bin/readfirst.mjs, …/bin/readfirst).
 const READFIRST = /^(?:\S*\/)?readfirst(?:@[\w.-]+)?(?:\.mjs)?$/u;
+// Where the arguments of `readfirst <sub>` start in one command's words (commandWords), or -1 when the command runs no
+// readfirst <sub>: readfirst itself, by npx (with -y or --yes) or by node.
+export function readfirstAt(w, sub) {
+  let i = 0;
+  if (w[i]?.text === 'npx') { i++; while (/^(?:-y|--yes)$/u.test(w[i]?.text ?? '')) i++; } else if (w[i]?.text === 'node') i++;
+  return READFIRST.test(w[i]?.text ?? '') && w[i + 1]?.text === sub ? i + 2 : -1;
+}
 // Each `readfirst answer` a Bash command runs, as the shell hands its words over: [{ text }] for one read, [{ why }]
 // for one that gives no readable answer. A command inside a function body is not run where it is written and is left
 // out. A word that takes anything from a variable, even one the command sets, is no answer (`literal`).
@@ -69,10 +76,10 @@ export function answerRuns(command, cwd) {
   for (const c of commandWords(command, cwd)) {
     if (c.body) continue;
     const w = c.words;
-    let i = 0;
-    if (w[i]?.text === 'npx') { i++; while (/^(?:-y|--yes)$/u.test(w[i]?.text ?? '')) i++; } else if (w[i]?.text === 'node') i++;
-    if (!READFIRST.test(w[i]?.text ?? '') || w[i + 1]?.text !== 'answer') continue;
-    const arg = w[i + 2];
+    const at = readfirstAt(w, 'answer');
+    if (at < 0) continue;
+    const i = at - 2;
+    const arg = w[at];
     if (c.pipe) out.push({ why: 'it is in a pipeline: give the JSON as its one quoted argument, not on standard input' });
     else if (!arg) out.push({ why: 'it has no argument (a here-document or standard input is not read): give the JSON as its one quoted argument' });
     else if (!arg.known || !literal(arg.raw ?? '')) out.push({ why: 'its argument is not written out in the command ($( ), a file or a variable): an answer is one literal argument, the JSON itself in single quotes' });
