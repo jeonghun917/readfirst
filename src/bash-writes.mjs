@@ -1290,9 +1290,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
   // the hook showed another repository's notes for a relative path after a cd).
-  // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`).
+  // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`). Both
+  // characters go, as bash takes them out, here and in bashReads and commandWords: they were read as a space, so in
+  // `echo a\\` + newline + `#b > f` the word a#b became a comment and the write was lost (review of #202, 2026-11-14).
   // hereDocs gives each here-document with where it opens in the text without bodies (`at`) and where its line starts.
-  const { text: bare, docs } = hereDocs(String(command ?? '').replace(/\\\r?\n/gu, ' '));
+  const { text: bare, docs } = hereDocs(String(command ?? '').replace(/\\\r?\n/gu, ''));
   for (const { at: opens, line, quote, body } of docs) {
     Object.assign(state, stateAt(bare.slice(0, opens)));
     // Only the command the here-document feeds: in `node x.mjs; cat > f <<E` it goes to cat (2026-11-08).
@@ -1464,7 +1466,7 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
   // eachCommand takes here-documents and then comments out: a `readfirst read` in a document's body is no read (it
   // counted until 2026-11-14, so a note that only quoted the command let the gate through). It takes the bodies of
   // substitutions out too (lift): a `readfirst read` inside a $( ) is not seen (its output goes to the command around it).
-  const shell = String(command ?? '').replace(/\\\r?\n/gu, ' ');
+  const shell = String(command ?? '').replace(/\\\r?\n/gu, '');
   liftDepth++;
   try { eachCommand(shell, state, (p, raw, how, op) => {
     const opened = opening(raw);
@@ -1541,7 +1543,7 @@ function expands(word) {
 export function commandWords(command, cwd = process.cwd(), { vars = new Map() } = {}) {
   const out = [];
   const state = { base: cwd, why: null, vars: copyVars(vars) };
-  const shell = withoutComments(hereDocs(String(command ?? '').replace(/\\\r?\n/gu, ' ')).text);
+  const shell = withoutComments(hereDocs(String(command ?? '').replace(/\\\r?\n/gu, '')).text);
   // A quote that never closes or a backslash at the very end: bash refuses the command or hands over another word, and
   // `words` drops the character, so it is looked for in the whole text (each word known: false).
   const b = blank(shell);

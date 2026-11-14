@@ -86,10 +86,13 @@ test('a # glued to the end of a quoted word is part of the word, and bash agrees
   // Review of #202: a blank escaped by a backslash is part of the word (`a\ #b` is one word), and a # right after | or
   // & starts a comment (it did not, so `|# c > n` named n).
   for (const script of ["echo 'a'#b > f", 'cat "x"#y > g', "cat 'a'#<<E > f\n$(echo > g)\nE", "echo a #'b' > c", "echo 'a' #c > z", 'echo a;#c > z',
-    'echo a\\ #b > f5', "echo 'a'\\ #b > f6", 'echo a\\\\ #b > f7', 'echo a;true|# c > n1', 'echo a&# c > n2', 'echo $(x)#y > h', 'cat <(echo a)#x > n3']) {
+    'echo a\\ #b > f5', "echo 'a'\\ #b > f6", 'echo a\\\\ #b > f7', 'echo a;true|# c > n1', 'echo a&# c > n2', 'echo $(x)#y > h', 'cat <(echo a)#x > n3',
+    // A backslash and a newline are taken out, not read as a space: `a\` + newline + `#b` is the word a#b.
+    'echo a\\\n#b > f8', 'echo a\\\n\\\n#b > f9', 'echo a \\\n#b > n4', 'echo a\\\nb > f10']) {
     assert.deepEqual(named(script), bashMade(script), script);
   }
   assert.deepEqual(commandWords("readfirst answer '[1]'#x", '/r').map((x) => x.words.map((w) => w.text)), [['readfirst', 'answer', '[1]#x']]);
+  assert.deepEqual(commandWords('readfirst answer a\\\n#x', '/r').map((x) => x.words.map((w) => w.text)), [['readfirst', 'answer', 'a#x']]);
 });
 
 test('a `readfirst read` in a here-document body is no read; one run as a command still is', () => {
