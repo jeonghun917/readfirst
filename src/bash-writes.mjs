@@ -7,7 +7,7 @@
 //   python, node, ruby, perl or a shell from -c / -e or a here-document: there the targets of its write calls count
 //   (codeTargets), not every path-like word in it.
 // A here-document fed to cat or tee is data; only where it goes counts. `cd dir &&` moves where relative paths start.
-import { existsSync, readdirSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -15,6 +15,44 @@ const CODE_WRITES = /\bopen\([^)]*,\s*['"][wax]|\.write_text\(|\.write_bytes\(|w
 const PATHISH = /(?:\.{0,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z0-9]{1,6}\b/gu;
 const RUNNER = /^(?:python3?|node|ruby|perl|bash|sh|zsh|deno|bun)$/u;
 const SHELLS = /^(?:bash|sh|zsh|dash|ksh)$/u;
+// The script file a shell runs, from its arguments (dq'd, without -c): the first word after its options and their
+// values (-o/-O/+o/+O NAME, --rcfile/--init-file FILE), or after `--`. None when it reads its commands from stdin (-s,
+// no file) or runs none (-n, --version, --help).
+function shellScript(args) {
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i];
+    if (w === '--') return args[i + 1];
+    if (/^(?:[-+][oO]|--rcfile|--init-file)$/u.test(w)) { i++; continue; }
+    if (/^--(?:version|help)$/u.test(w) || /^-[a-zA-Z]*[sn]/u.test(w)) return undefined;
+    if (/^[-+]/u.test(w)) continue;
+    return w;
+  }
+  return undefined;
+}
+// Whether running the file as a command runs it as a script: it can be run (an execute bit) and it is no program. A
+// file without #! runs too: the kernel refuses it (ENOEXEC) and bash reads it as a shell script (`./plain.sh` with no
+// #! wrote, and readfirst said nothing: review of #213). A program starts with its format's magic bytes (ELF, Mach-O,
+// PE) or holds a NUL in its first 512 bytes. A file that cannot be read, or has no execute bit, runs nothing: false.
+const BINARY = [[0x7f, 0x45, 0x4c, 0x46], [0xfe, 0xed, 0xfa, 0xce], [0xfe, 0xed, 0xfa, 0xcf], [0xce, 0xfa, 0xed, 0xfe], [0xcf, 0xfa, 0xed, 0xfe], [0xca, 0xfe, 0xba, 0xbe], [0x4d, 0x5a]];
+function runsAsScript(file) {
+  let fd = null;
+  try {
+    if (!(statSync(file).mode & 0o111)) return false;
+    fd = openSync(file, 'r');
+    const b = Buffer.alloc(512);
+    const n = readSync(fd, b, 0, 512, 0);
+    return !BINARY.some((m) => m.length <= n && m.every((x, i) => b[i] === x)) && !b.subarray(0, n).includes(0);
+  } catch { return false; } finally { if (fd !== null) closeSync(fd); }
+}
+// The file a command reads on stdin from its words as written (`< f`, `<f`; not <<, <<<, <( or <&), or undefined.
+function stdinFile(ws) {
+  for (let i = 0; i < ws.length; i++) {
+    if (ws[i] === '<' || ws[i] === '0<') return ws[i + 1];
+    const m = ws[i].match(/^0?<(?![<(&>])(.+)$/u);
+    if (m) return m[1];
+  }
+  return undefined;
+}
 
 // A word as the shell hands it to the command: quotes taken off, backslash escapes undone (`a\&b.js` is a&b.js; the
 // backslash was kept until 2026-11-13) and $NAME / ${NAME} replaced by the value the command itself gave the variable
@@ -1346,6 +1384,34 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     r.unknown.forEach(missing);
     r.repos.forEach((x) => repos.add(x));
   };
+  // A string run as commands, by eval (this shell, all its variables) or `bash -c` (a new shell). One holding a part
+  // known only when the command runs (`eval "$(cat <<E ...)"`, `bash -c "$X"`) is not read: what it writes is given as
+  // not known, with why. Until 2026-11-14 eval's string was not read at all and such a string read as no commands, so
+  // their writes were missed in silence (review of #211).
+  const runString = (text, by, innerVars) => {
+    if (!text.includes(HOLE)) { inner(text, innerVars); return; }
+    // A loop variable over a literal list (`for c in 'echo > a' 'echo > b'; do bash -c "$c"`): each string is read.
+    const turns = perTurn(text);
+    if (turns) { turns.forEach((t) => inner(t, innerVars)); return; }
+    const h = text.match(/\0([^\0]*)\0/u);
+    missing({ part: holes.get(h[1])?.part ?? h[1], word: `${by} ${text.replaceAll(HOLE, '')}`, why: `${by} runs it as commands, and it is known only when the command runs`, prefix: '' });
+  };
+  // A script file run by source, `.` or a shell, run as the command itself (`./build.sh`), or fed to a shell's stdin
+  // (`bash < build.sh`) (w: its path, as dq gives it; by: what runs it; part: what the command said, `by w` unless
+  // given): its text is not read, so what it writes is given as not known. A path that is not there runs nothing (bash
+  // fails) and is quiet; a bare name a shell or source is given may be found in PATH (`path`), one read from stdin may
+  // not. Run as the command, only a script (runsAsScript) is: a program such as /usr/bin/git is read by its name, as
+  // any program is (`script`).
+  const runFile = (w, by, { part = null, path = true, script = false } = {}) => {
+    if (!w) return;
+    const p = w === '~' || w.startsWith('~/') ? join(homedir(), w.slice(1)) : w;
+    if (!p.includes(HOLE) && (p.includes('/') || !path) && (isAbsolute(p) || state.base != null)) {
+      const at = isAbsolute(p) ? p : resolve(state.base, p);
+      if (!existsSync(at) || (script && !runsAsScript(at))) return;
+    }
+    const shown = w.replaceAll(HOLE, '');
+    missing({ part: part ?? `${by} ${shown}`, word: shown, why: `${by} runs it, and readfirst does not read the file's text`, prefix: '' });
+  };
   const exportedOnly = (v) => new Map([...v].filter(([, x]) => x.exported));
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
@@ -1447,8 +1513,8 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     }
     targets.forEach((x) => add(dq(x)));
   };
-  // how: { pipe, maybe } from howItRuns.
-  const writesIn = (segment, how) => {
+  // how: { pipe, maybe } from howItRuns; piped: its stdin is the output of the command before it (after `|`).
+  const writesIn = (segment, how, piped = false) => {
     const raw = words(segment);
     const opened = opening(raw);
     // Arithmetic and tests compare with > and <: `(( x > 0 ))`, `[[ a > b ]]` write nothing; (( )) may set variables.
@@ -1467,6 +1533,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // A redirect writes first, with the folder and variables from before the command: `y="$(sort a > b.txt)"` writes
     // b.txt. cd and assignments then change what the commands after them see, and write nothing more.
     redirects(segment);
+    // eval and source run in this shell, with its folder and variables: read before follow makes them not known.
+    const before = unwrap(opened);
+    const runs = unquote(before[0] ?? '').split('/').pop();
+    if (runs === 'eval') runString(withoutRedirects(before.slice(1)).map(dq).join(' '), 'eval', state.vars);
+    else if (runs === 'source' || runs === '.') runFile(withoutRedirects(before.slice(1)).map(dq)[0], runs);
     if (follow(state, opened, how)) return;
     const ws = unwrap(opened);
     const cmd = unquote(ws[0] ?? '').split('/').pop();
@@ -1508,8 +1579,21 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // exported variables (what "..." held was expanded before it started).
     else if (SHELLS.test(cmd) && args.findIndex((w) => /^-[a-z]*c[a-z]*$/u.test(w)) >= 0) {
       const script = args[args.findIndex((w) => /^-[a-z]*c[a-z]*$/u.test(w)) + 1];
-      if (script !== undefined) inner(script, exportedOnly(state.vars));
+      if (script !== undefined) runString(script, `${cmd} -c`, exportedOnly(state.vars));
     }
+    // `bash x.sh`, `sh -e ./x.sh a`: the first word after the shell's options is a script file it runs. With none (or
+    // -s) it reads its commands from stdin: a file (`bash < build.sh`) or the command before it in a pipeline
+    // (`cat build.sh | sh`), whose text is not read either (a here-document fed to it is read: docsIn).
+    // -n (read, run nothing), --version and --help run no commands at all.
+    else if (SHELLS.test(cmd) && !args.some((w) => /^-[a-zA-Z]*n/u.test(w) || w === '--version' || w === '--help')) {
+      const file = args.some((w) => /^-[a-zA-Z]*s/u.test(w)) ? undefined : shellScript(args);
+      const input = file === undefined ? stdinFile(ws) : undefined;
+      if (file !== undefined) runFile(file, cmd);
+      else if (input !== undefined) runFile(dq(input), cmd, { part: `${cmd} < ${dq(input).replaceAll(HOLE, '')}`, path: false });
+      else if (piped) missing({ part: `| ${cmd}`, word: cmd, why: `${cmd} runs the commands the command before it prints, and readfirst does not read them`, prefix: '' });
+    }
+    // A path in the command's place runs that file (`./build.sh`, `exec ./build.sh`): a script, as `bash x.sh` does.
+    else if (dq(ws[0] ?? '').includes('/')) runFile(dq(ws[0]), 'the command', { part: dq(ws[0]).replaceAll(HOLE, ''), script: true });
     else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e') && CODE_WRITES.test(segment)) {
       const i = args.findIndex((w) => w === '-c' || w === '-e');
       codeTargets(args[i + 1] ?? '', { args: args.slice(i + 2).filter((w) => !w.startsWith('-')), exists: here, glob }).forEach(add);
@@ -1528,12 +1612,15 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   const pending = [];
   const sub = (text) => { for (const id of bodiesIn(text)) pending.push({ id, at: snapshot(state) }); };
   // A command's here-documents are read first, with the state before it (bash expands them before the command runs).
-  const visit = (p, raw, how) => { docsIn(raw); sub(p.body); writesIn(unmark(p.body), how); };
+  // lastOp: the operator before the command, so a command after `|` knows its stdin is a pipe (each walk starts anew).
+  let lastOp = '';
+  const visit = (p, raw, how, op) => { const piped = lastOp === '|' || lastOp === '|&'; lastOp = op ?? ''; docsIn(raw); sub(p.body); writesIn(unmark(p.body), how, piped); };
   const after = (text) => { if (mark && text.includes(mark)) docsIn(words(text)); sub(text); redirects(unmark(text)); };
   eachCommand(shell, state, visit, after);
   for (let k = 0; k < pending.length; k++) {
     const { id, at } = pending[k];
     Object.assign(state, at, { blocks: [], chain: null, fnDepth: 0, fnAwait: false, paren: 0 });
+    lastOp = '';
     eachCommand(BODIES.get(id).text, state, visit, after);
   }
   // Not reached (no mark free, or a mark the walks did not reach): the text before it is walked, as before 2026-11-14.
@@ -1552,8 +1639,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const r = [...madeAt].find((x) => f.startsWith(`${x.replace(/\/$/u, '')}/`));
     if (r) { found.delete(f); missing({ part: r, word: f, why: 'it is in a checkout this command makes, not there yet', prefix: `${r.replace(/\/$/u, '')}/` }); }
   }
-  // What the command said where each $( ) stands, put back for whoever reads the unknown parts (the hook names them).
-  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: unlift(u.part), word: unlift(u.word) })), repos: [...repos] };
+  // What the command said where each $( ) stands, put back for whoever reads the unknown parts (the hook names them),
+  // and each here-document's opener where its mark stands: since #211 the mark itself was shown (`$(cat  0 )` with a
+  // private-use character, where the command said `$(cat <<E ...)`).
+  const opener = (t) => (mark && t.includes(mark) ? t.replace(markWord, (m) => { const d = docs[Number(m.slice(mark.length))]; return d ? `<<${d.quote ? `'${d.tag}'` : d.tag}` : m; }) : t);
+  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: opener(unlift(u.part)), word: opener(unlift(u.word)) })), repos: [...repos] };
 }
 
 // The files each `readfirst read` in a shell command asks for, and whether its whole output reaches whoever ran the
