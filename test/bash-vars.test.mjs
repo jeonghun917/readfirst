@@ -167,6 +167,23 @@ test('hook --gate: the same unknown write in another folder or repository is ref
   assert.deepEqual([run(a), run(a), run(b), run(b)], ['deny', null, 'deny', null]);
 });
 
+// A script file a shell or source runs is given as not known (test/bash-eval.test.mjs, 2026-11-14): with --gate it is
+// asked once per command and folder like any write that cannot be placed, so running it again there goes through; a
+// script path that is not there runs nothing and is not asked about.
+test('hook --gate: bash x.sh and source x.sh are asked once per command and folder; a script that is not there is not asked', () => {
+  n++;
+  const root = repo();
+  writeFileSync(join(root, 'x.sh'), 'echo hi > out.txt\n');
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
+  const first = hook(root, stateDir, 'bash x.sh');
+  assert.equal(first?.permissionDecision, 'deny');
+  assert.match(first.permissionDecisionReason, /bash runs it, and readfirst does not read the file's text/u);
+  assert.equal(hook(root, stateDir, 'bash x.sh'), null, 'made again in the same folder, it goes through');
+  assert.equal(hook(root, stateDir, 'source ./x.sh')?.permissionDecision, 'deny', 'another command is asked once too');
+  assert.equal(hook(root, stateDir, 'source ./x.sh'), null);
+  assert.equal(hook(root, stateDir, 'bash ./no-such.sh'), null, 'nothing runs, nothing is asked');
+});
+
 // A session runs from the folder it was started in, often one above its repositories: the repositories a write could
 // land in come from the write and from what the session has touched, not from that folder (until this test a session
 // in /home/user was never asked about `cd $R/repo && echo x > src/f`).
@@ -216,7 +233,8 @@ test('values changed where the reader cannot follow are not known: $( ) split at
   for (const c of ["S=/a; eval 'S=/b'; echo x > $S/f", 'S=/a; printf -v S %s /b; echo x > $S/f', 'S=/a; . env.sh; echo x > $S/f',
     'S=/a; source env.sh; echo x > $S/f', 'S=/a; mapfile S < l; echo x > $S/f', 'S=/a; let S=3; echo x > $S/f', 'S=/a; ((S=3)); echo x > $S/f',
     'S=/a; f(){ S=/b; }; f; echo x > $S/f', 'if x; then S=/a; else S=/b; fi; echo x > $S/f', 'true || S=/a; echo x > $S/f']) {
-    assert.deepEqual(s(c), ['$S'], c);
+    // A script source or `.` runs is given as not known itself too (test/bash-eval.test.mjs): what it writes is not read.
+    assert.deepEqual(s(c).filter((p) => !/^(?:source|\.) env\.sh$/u.test(p)), ['$S'], c);
   }
   // A pipeline's stage runs in a subshell: its assignment does not stay.
   assert.deepEqual(s('S=/z; S=/a | cat; echo x > $S/f'), ['/z/f']);
@@ -389,9 +407,11 @@ test('command, builtin and time cd, source, case heads after {, if or a wrapper,
   assert.deepEqual(s('builtin cd /a; echo > k'), ['/a/k']);
   assert.deepEqual(s('time { cd /a; echo x > f; }'), ['/a/f']);
   assert.deepEqual(s('command -v cd; echo > k'), ['/r/k']);
-  // source and `.` may cd: relative paths after them are not known, absolute ones still are.
-  assert.deepEqual(s('source env.sh; echo > k'), ['source env.sh']);
-  assert.deepEqual(s('. env.sh; echo > /abs/k'), ['/abs/k']);
+  // source and `.` may cd: relative paths after them are not known, absolute ones still are. The script they run is
+  // given as not known too (its text is not read, test/bash-eval.test.mjs): in the first, once for the script and once
+  // for k.
+  assert.deepEqual(shellWrites('source env.sh; echo > k', '/r').unknown.map((u) => [u.part, u.word]), [['source env.sh', 'env.sh'], ['source env.sh', 'k']]);
+  assert.deepEqual(s('. env.sh; echo > /abs/k'), ['/abs/k', '. env.sh']);
   // A case head after `{`, `if` or a wrapper opens the case too.
   assert.deepEqual(s('{ case $v in a) cd /a;; esac; }; echo > f'), ['cd /a']);
   assert.deepEqual(s('if case $v in a) cd /a;; esac; then echo; fi; echo > f'), ['cd /a']);
