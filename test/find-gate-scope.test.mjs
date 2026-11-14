@@ -89,6 +89,13 @@ test('an exported value written as an object or array exports the names in its v
   assert.deepEqual(added('test/j.js', 'function makeUser() {}\nfunction keyOnly() {}\nmodule.exports = { keyOnly: makeUser };\n'), ['makeUser'], 'a key is not a value');
 });
 
+// Review of c9694c5: a method an exported literal defines (`makeUser() {}`) has no value place, and was lost.
+test('a method an exported object literal defines is exported', () => {
+  assert.deepEqual(added('test/k.js', 'module.exports = {\n  makeUser() {},\n  buildOrder: () => 1,\n};\n'), ['makeUser', 'buildOrder']);
+  assert.deepEqual(added('test/l.js', 'export default {\n  makeUser() {},\n  async buildOrder() {},\n  get total() { return 1; },\n};\n'), ['makeUser', 'buildOrder', 'total']);
+  assert.deepEqual(added('test/m.js', 'function helperFn() {}\nmodule.exports = { run() { return helperFn(1); } };\n'), ['run'], 'a call inside a method exports nothing');
+});
+
 test('a local of an unnamed default function is not asked about', { todo: 'declarations reads the body of `export default function () {}` as the top level' }, () => {
   assert.deepEqual(added('src/d.js', 'export default function () {\n  const computeTotal = () => 1;\n}\n'), []);
 });

@@ -122,6 +122,9 @@ function laterExports(rows) {
       const before = t[j - 1]?.v;
       const after = t[j + 1]?.v;
       if (['{', '[', ',', ':', '...'].includes(before) && [',', '}', ']'].includes(after)) out.add(t[j].v);
+      // A method the literal defines (`makeUser() {}`, `async a() {}`, `get total() {}`, `*gen() {}`; review of
+      // c9694c5): its name, at a key's place, before its parameters.
+      else if (after === '(' && ['{', ',', 'async', 'get', 'set', '*'].includes(before) && is(i, '{')) out.add(t[j].v);
     }
   };
   for (let i = 0; i < t.length; i++) {
