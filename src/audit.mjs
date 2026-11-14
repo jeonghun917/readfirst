@@ -279,7 +279,7 @@ export function auditText(a) {
   section('Rules and risks no change can judge (they name no function or file:line readfirst finds in their files, so diff and the PR comment show them unjudged; name the function in backticks or give file:line)', (a.unmatched ?? []).map((u) => `- ${u.where}${u.files ? ` (shown for ${u.files} file${u.files === 1 ? '' : 's'})` : ''}: ${u.text}${u.backtick?.length ? ` — its files declare ${u.backtick.map((w) => `\`${w}\``).join(', ')}: a capital word counts as that name only in backticks` : ''}`));
   // Filled by the CLI from the Stop hook's lines (src/answers.mjs wideItems): what the gate asked most sessions answered
   // not-this, so the item is wider than what it is about.
-  section('Rules and risks most sessions answered not-this at the gate (narrow each to the symbols it is about)', (a.wide ?? []).map((w) => `- \`${w.id}\` (not-this in ${w.notThis} of the ${w.sessions} sessions that answered it): ${w.text}`));
+  section('Rules and risks most sessions answered not-this at the gate (narrow each to the symbols it is about; by each session\'s last answer, in 3 sessions or more; a session asked and giving no answer is not counted)', (a.wide ?? []).map((w) => `- \`${w.id}\` (not-this in ${w.notThis} of the ${w.sessions} sessions that answered it): ${w.text}`));
   section('Hot spots nothing checks (no test reaches their file, and no check of their own in the map)', firstThenNamed(a.unguarded, (h) =>
     `- \`${h.symbol}\` in \`${h.file}:${h.line}\`: ${h.labels.join(', ')}`, (h) => `\`${h.symbol}\` (\`${h.file}:${h.line}\`)`));
   // cut: the files past TOP are named on the same line

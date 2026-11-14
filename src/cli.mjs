@@ -1170,8 +1170,16 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     // Judged on the session's own diff: from the commit the repository was at before its first call (`head:`), to the
     // working tree, with files git does not track yet counted whole. A state from an older readfirst has no such commit:
     // nothing is compared, and the stop says so.
-    const noStart = notThis.length && head === null ? `readfirst${at}: ${notThis.length} not-this answer(s) were not compared with the change: this session's starting commit was not recorded (a state from an older readfirst).` : null;
-    if (notThis.length && head !== null) {
+    // A starting commit no longer under HEAD (a branch switch, a rebase, a commit gone) would put another branch's
+    // changes in the diff, and a diff git cannot make would say nothing at all: both say so instead (review of
+    // readfirst#204).
+    const notCompared = (why) => `readfirst${at}: ${notThis.length} not-this answer(s) were not compared with the change: ${why}.`;
+    let noStart = notThis.length && head === null ? notCompared("this session's starting commit was not recorded (a state from an older readfirst)") : null;
+    if (notThis.length && head) {
+      // cut: head is a commit sha shortened for the message, not a list.
+      try { git(root, 'merge-base', '--is-ancestor', head, 'HEAD'); } catch { noStart = notCompared(`this session started at ${head.slice(0, 12)}, which is not under the commit checked out now (a branch switch or a rebase)`); }
+    }
+    if (notThis.length && head !== null && !noStart) {
       try {
         const changes = parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', head || EMPTY_TREE));
         for (const f of git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean)) if (!changes.has(f)) changes.set(f, { lines: new Set(), text: [], whole: true });
@@ -1182,7 +1190,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
           const outside = it.by.filter((s) => !given.has(s));
           if (outside.length) untrue.push({ id: it.id, line: `\`${it.id}\` was answered not-this (${[...given].map((s) => `\`${s}\``).join(', ')}), but the change touches it by ${outside.map((s) => `\`${s}\``).join(', ')}` });
         }
-      } catch { /* no diff to judge against: nothing is said */ }
+      } catch (e) { noStart = notCompared(`the session's diff could not be read (${errorText(e)})`); }
     }
     const answerLine = () => {
       if (!untrue.length) return null;

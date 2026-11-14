@@ -127,7 +127,39 @@ test('audit names the rules and risks most sessions answered not-this, as too wi
   writeFileSync(join(tmpdir(), ACTED_LOG), `${lines.join('\n')}\n`);
   let out = '';
   assert.equal(main(['--root', s.root, 'audit'], { out: (t) => { out += t; }, err: () => {} }), 0);
-  assert.match(out, /## Rules and risks most sessions answered not-this at the gate \(narrow each to the symbols it is about\)\n\n- `risk:src:[0-9a-f]{8}` \(not-this in 2 of the 3 sessions that answered it\): risk in group src: `alpha` and `beta` share one cache\n/u);
+  assert.match(out, /## Rules and risks most sessions answered not-this at the gate \(narrow each to the symbols it is about; by each session's last answer, in 3 sessions or more; a session asked and giving no answer is not counted\)\n\n- `risk:src:[0-9a-f]{8}` \(not-this in 2 of the 3 sessions that answered it\): risk in group src: `alpha` and `beta` share one cache\n/u);
   assert.doesNotMatch(out, /rule:no-net` \(not-this/u, 'not-this in 1 of 3 sessions: not most');
   assert.doesNotMatch(out, /risk:elsewhere/u, 'an item of another map is not this map\'s');
+});
+
+test('audit counts each session by its last answer, and only from 3 sessions answered', () => {
+  const s = session();
+  // The shared-cache risk: answered not-this and then keeps in two sessions (last answer keeps), not-this in one.
+  // The rule: not-this in both of only two sessions.
+  const row = (counts, last) => ({ asked: 1, keeps: 0, 'not-this': 0, done: 0, unsure: 0, false: 0, ...counts, last });
+  const lines = [
+    { session: 'a', items: { [ID.both]: row({ 'not-this': 1, keeps: 1 }, 'keeps'), [ID.rule]: row({ 'not-this': 1 }, 'not-this') } },
+    { session: 'b', items: { [ID.both]: row({ 'not-this': 1, keeps: 1 }, 'keeps'), [ID.rule]: row({ 'not-this': 1 }, 'not-this') } },
+    { session: 'c', items: { [ID.both]: row({ 'not-this': 1 }, 'not-this') } },
+  ].map((l) => JSON.stringify({ at: 1, ...l }));
+  writeFileSync(join(tmpdir(), ACTED_LOG), `${lines.join('\n')}\n`);
+  let out = '';
+  assert.equal(main(['--root', s.root, 'audit'], { out: (t) => { out += t; }, err: () => {} }), 0);
+  assert.doesNotMatch(out, /answered not-this at the gate/u, 'the risk: last answer not-this in 1 of 3; the rule: 2 of only 2 sessions');
+});
+
+test('a starting commit no longer under HEAD (a branch switch) compares no not-this, and says so', () => {
+  const s = session();
+  const git = (...a) => execFileSync('git', ['-C', s.root, ...a], { encoding: 'utf8' });
+  git('checkout', '-q', '-b', 'work');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'on work');
+  s.call('Edit', inBeta(s.root));
+  s.answer([{ item: ID.both, answer: 'not-this', because: 'only beta', symbols: ['beta'] }, ...keeps(ID.prose, ID.rule)]);
+  // Back to main: the session's start (on work) is not under it.
+  git('checkout', '-q', 'main');
+  leave(s.root, { alpha: true });
+  const out = s.stop();
+  const said = String(out?.reason ?? out?.systemMessage ?? '');
+  assert.doesNotMatch(said, /does not bear out/u);
+  assert.match(said, /1 not-this answer\(s\) were not compared with the change: this session started at [0-9a-f]{12}, which is not under the commit checked out now \(a branch switch or a rebase\)\./u);
 });

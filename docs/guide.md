@@ -253,8 +253,9 @@ gate refused were made again at once with no other edit or command in between (t
 how many answers were left unsure or not borne out. It
 keeps that line in `readfirst-acted.jsonl` in the temp folder; `npx readfirst hook --report` adds up every session kept
 there and names each item not done, most often first, and each rule and risk the gate asked: how often, each kind of
-answer, and how many answers the stop did not find borne out. `npx readfirst audit` names the rules and risks most
-sessions answered `not-this`: each is wider than what it is about. Nothing leaves the machine.
+answer, and how many answers the stop did not find borne out. `npx readfirst audit` names the rules and risks that
+3 sessions or more answered and more than half of them last answered `not-this`: each is wider than what it is about
+(a session the gate asked and that gave no answer is not counted). Nothing leaves the machine.
 
 ### See the map
 
