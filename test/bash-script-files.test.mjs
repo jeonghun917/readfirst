@@ -26,6 +26,9 @@ const FILES = {
   'dyn.mjs': "import { writeFileSync } from 'node:fs';\nwriteFileSync(`n-${1}`, 'x');\n",
   'read.mjs': "import { readFileSync } from 'node:fs';\nconsole.log(readFileSync('in', 'utf8'));\n",
   'data.mjs': "const t = \"writeFileSync('q3', '')\"; // writeFileSync('q4', '')\nconsole.log(t);\n",
+  // A write in a template's ${ } or an f-string's { } is code (missed until the review of #222).
+  'tpl.mjs': "import fs from 'node:fs';\nconst s = `${fs.writeFileSync('tpl.txt', 'x')}`;\n",
+  'fstr.py': "x = f'{open(\"infstr.txt\", \"w\")}'\n",
   in: 'x\n',
 };
 const setUp = () => {
@@ -48,7 +51,7 @@ test('the files a python or node script writes are named, and bash agrees', { sk
   // Main (80931d8) named none of these: each made a file.
   for (const script of [
     'python3 w.py', 'python3 -B w.py', 'python3 -W ignore w.py', 'python3 argv.py pa1', 'cd a && python3 ../w.py',
-    'node w.mjs', 'node --no-warnings w.mjs', 'node argv.mjs na1', 'P=w.mjs; node $P',
+    'node w.mjs', 'node --no-warnings w.mjs', 'node argv.mjs na1', 'P=w.mjs; node $P', 'node tpl.mjs', 'python3 fstr.py',
   ]) {
     const dir = setUp();
     const made = bashMade(script, dir);
@@ -92,6 +95,22 @@ test('code from -c names a literal only when it is the whole target, and is not 
   }
   const dir = setUp();
   assert.deepEqual(named(`node -e "const s = \\"open('e', 'w')\\"; console.log(s)"`, dir), [], 'a write call inside a string of -e code is data');
+});
+
+// Each file is read once per command, and the files one command reads come to 4 MiB at most (SCRIPTS_BUDGET): past
+// it a script is not known, with why, never left out. Review of #222: a 750 KB script run 60 times took 7.9 s.
+test('a command reads each script once, and gives the scripts past its budget as not known', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'readfirst-scripts-big-'));
+  const body = `import { writeFileSync } from 'node:fs';\n${'const a = 1;\n'.repeat(57000)}writeFileSync('bw', '');\n`;
+  for (let i = 0; i < 8; i++) writeFileSync(join(dir, `s${i}.mjs`), body);
+  const t = performance.now();
+  const same = shellWrites(Array(60).fill('node s0.mjs').join('; '), dir);
+  assert.ok(performance.now() - t < 3000, `read in ${performance.now() - t} ms`);
+  assert.deepEqual([same.files, same.unknown], [[join(dir, 'bw')], []]);
+  const many = shellWrites(Array.from({ length: 8 }, (_, i) => `node s${i}.mjs`).join('; '), dir);
+  assert.deepEqual(many.files, [join(dir, 'bw')]);
+  assert.deepEqual(many.unknown.map((u) => u.part), ['node s5.mjs', 'node s6.mjs', 'node s7.mjs'], '5 files of 741,066 bytes fit in 4 MiB');
+  assert.ok(many.unknown.every((u) => /more than readfirst reads for one command/u.test(u.why)));
 });
 
 test('the script a runner runs is found after its options, and none where it runs code or a module', () => {

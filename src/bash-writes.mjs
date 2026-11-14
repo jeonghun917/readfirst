@@ -20,6 +20,8 @@ const SHELLS = /^(?:bash|sh|zsh|dash|ksh)$/u;
 // The largest script file whose text is read (runScript); a larger one is not known, never read in part. Reading and
 // lexing src/cli.mjs (157 KB) took 20 ms, and a script of 1,040,066 bytes 198 ms (2026-11-14), of the hook's 15 s.
 const SCRIPT_BYTES = 1024 * 1024;
+// The most bytes of script files one command's reading reads, each file counted once (runScript).
+const SCRIPTS_BUDGET = 4 * 1024 * 1024;
 // The script file a shell runs, from its arguments (dq'd, without -c): the first word after its options and their
 // values (-o/-O/+o/+O NAME, --rcfile/--init-file FILE), or after `--`. None when it reads its commands from stdin (-s,
 // no file) or runs none (-n, --version, --help).
@@ -1482,9 +1484,12 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // Only code counts (runner: what runs it): a write inside a string or a comment is data (lex, the one reader of
   // code, with Python's rules for python, ruby and perl and JavaScript's for the rest). A test file holds commands as
   // data, and `node -e` code quoting `open('e' + 'x', 'w')` named a file it held the path of (2026-11-14).
-  const codeWrites = (code, runner, args, part, why, { fallback = true } = {}) => {
-    const marks = lex(code.split('\n'), /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js').map((r) => r.mark).join('\n');
-    const inCode = (i) => marks[i] === 'c';
+  // The code inside a template's `${ }` or an f-string's `{ }` is code too (lex marks it 'p'): a write there was
+  // missed in silence (review of #222). `read` (a script file read before in this command) keeps its marks.
+  const codeWrites = (code, runner, args, part, why, { fallback = true, read = null } = {}) => {
+    const marks = read?.marks ?? lex(code.split('\n'), /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js').map((r) => r.mark).join('\n');
+    if (read) read.marks = marks;
+    const inCode = (i) => marks[i] === 'c' || marks[i] === 'p';
     if (![...code.matchAll(CODE_WRITES_ALL)].some((m) => inCode(m.index))) return;
     let open = false;
     const targets = codeTargets(code, { args, exists: here, glob, unresolved: () => { open = true; }, fallback, inCode });
@@ -1513,10 +1518,22 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       return;
     }
     if (size > SCRIPT_BYTES) { missing({ part, word: shown, why: `${cmd} runs that file, over ${SCRIPT_BYTES} bytes, and readfirst does not read one that large`, prefix: '' }); return; }
-    let code;
-    try { code = readFileSync(at, 'utf8'); } catch { missing({ part, word: shown, why: `${cmd} runs that file, and readfirst could not read it`, prefix: '' }); return; }
-    codeWrites(code, cmd, rest.filter((a) => !a.startsWith('-')), part, `${cmd} runs that file, and it writes files whose names are known only when it runs`, { fallback: false });
+    // Each file is read and lexed once per command, and the files one command reads come to SCRIPTS_BUDGET bytes at
+    // most: one command running a 750 KB script 60 times read it 60 times, 7.9 s of the hook's 15 (review of #222).
+    const lang = /^(?:python|ruby|perl)/u.test(cmd) ? 'py' : 'js';
+    let read = scriptsRead.get(`${lang}\0${at}`);
+    if (!read) {
+      if (scriptBytes + size > SCRIPTS_BUDGET) { missing({ part, word: shown, why: `${cmd} runs that file, and the files this command runs come to over ${SCRIPTS_BUDGET} bytes, more than readfirst reads for one command`, prefix: '' }); return; }
+      let code;
+      try { code = readFileSync(at, 'utf8'); } catch { missing({ part, word: shown, why: `${cmd} runs that file, and readfirst could not read it`, prefix: '' }); return; }
+      scriptBytes += size;
+      read = { code, marks: null };
+      scriptsRead.set(`${lang}\0${at}`, read);
+    }
+    codeWrites(read.code, cmd, rest.filter((a) => !a.startsWith('-')), part, `${cmd} runs that file, and it writes files whose names are known only when it runs`, { fallback: false, read });
   };
+  const scriptsRead = new Map();
+  let scriptBytes = 0;
   const exportedOnly = (v) => new Map([...v].filter(([, x]) => x.exported));
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
