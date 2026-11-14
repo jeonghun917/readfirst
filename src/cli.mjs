@@ -1240,7 +1240,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
         // (review of readfirst#204), so it leaves the diff too.
         const unkept = [...new Set([...targets, ...changes.keys()])].filter((f) => before.has(f)).sort();
         for (const f of unkept) changes.delete(f);
-        if (unkept.length) noStart = `readfirst${at}: ${unkept.map((f) => `\`${f}\``).join(', ')} ${unkept.length === 1 ? 'was' : 'were'} not tracked by git when the session began, so what the session changed there was not compared with its ${notThis.length} not-this answer(s).`;
+        if (unkept.length) noStart = `readfirst${at}: ${unkept.map((f) => `\`${f}\``).join(', ')} ${unkept.length === 1 ? 'was' : 'were'} not tracked by git when the session began; anything changed there since was not compared with its ${notThis.length} not-this answer(s).`;
       } catch (e) { changes = null; noStart = notCompared(`the session's diff could not be read (${errorText(e)})`); }
       if (changes) try {
         judge(list, { changes, read: readText(root), files, imports });

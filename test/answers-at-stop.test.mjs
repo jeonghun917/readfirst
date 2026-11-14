@@ -190,7 +190,7 @@ test('a file git did not track before the session is not counted whole, and the 
   writeFileSync(join(before.root, 'src/b.js'), `${ALPHA_TOO}\nexport const note = 2;\n`);
   const out = said(before.stop());
   assert.doesNotMatch(out, /does not bear out/u, 'src/b.js was there before the session: its alpha is not the session\'s');
-  assert.match(out, /`src\/b\.js` was not tracked by git when the session began, so what the session changed there was not compared with its 1 not-this answer\(s\)\./u);
+  assert.match(out, /`src\/b\.js` was not tracked by git when the session began; anything changed there since was not compared with its 1 not-this answer\(s\)\./u);
   const during = session();
   during.call('Edit', inBeta(during.root));
   notThisBeta(during);
@@ -214,7 +214,7 @@ test('a file untracked at the start that the session then adds to git is not jud
   execFileSync('git', ['-C', s.root, 'add', 'src/b.js']);
   const out = said(s.stop());
   assert.doesNotMatch(out, /does not bear out/u, 'alpha in src/b.js was there before the session');
-  assert.match(out, /`src\/b\.js` was not tracked by git when the session began, so what the session changed there was not compared/u);
+  assert.match(out, /`src\/b\.js` was not tracked by git when the session began; anything changed there since was not compared/u);
 });
 
 test('the first call leaves the index as it was: the snapshot is taken on a copy, and git status takes no optional lock', () => {
