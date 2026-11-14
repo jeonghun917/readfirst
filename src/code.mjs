@@ -18,11 +18,15 @@ const REGEX_KEYWORD = /(?:^|[^\w$.])(?:return|typeof|case|in|of|do|else|void|del
 let counting = false;
 let steps = 0;
 export function countSteps(on) { const n = steps; counting = on; steps = 0; return n; }
+// One step of a reader built on this one's tokens (src/scopes.mjs), counted with this reader's own.
+export function countStep() { if (counting) steps++; }
 // One pass. lang is 'js' (JavaScript and TypeScript) or 'py'. Per line:
 // - code: the line at the same length, with the insides of strings, template text, comments and regular expressions
 //   as spaces. Names inside a template's `${ }` stay (they are code); the `${` and its `}` are spaces.
 // - mark, per character: 'c' code, 'l' part of a literal, 't' the backtick that opens a template, 'p' code inside a
-//   template's placeholder, ' ' nothing (a comment, or space).
+//   template's or an f-string's placeholder, 'o' and 'e' the `${` (`{`) that opens one and the `}` that ends it, ' '
+//   nothing (a comment, or space). A Python placeholder's code is marked but left as spaces in `code`, as the rest of
+//   its string is, so what reads `code` sees the line it saw before f-strings were read.
 // - startsIn: '' or what the line begins inside: 'block' (a /* */ comment), 'template', 'string3' (Python's triple quotes),
 //   'string' (a quoted string the line above carried on with a backslash at its end).
 // - comment: part of the line is a comment. tplOpen: the line ends inside a template's `${ }`.
@@ -34,6 +38,10 @@ export function lex(lines, lang, state = null) {
   let q = state?.q ?? null;
   const tpl = state?.tpl ? [...state.tpl] : [];
   let last = state?.last ?? '';
+  // Python: the placeholders of f-strings open around (fs), and whether the string open is an f-string (fq) or raw.
+  const fs = state?.fs ? state.fs.map((f) => ({ ...f })) : [];
+  let fq = state?.fq ?? false;
+  let raw = state?.raw ?? false;
   const out = [];
   for (const text of lines) {
     const startsIn = q === 'block' ? 'block' : q === '`' ? 'template' : q && q.length === 3 ? 'string3' : q === "'" || q === '"' ? 'string' : '';
@@ -49,12 +57,44 @@ export function lex(lines, lang, state = null) {
       const c = text[i];
       if (py) {
         if (q) {
-          if (c === '\\') { carriesOn = i === text.length - 1; blank(Math.min(2, text.length - i), 'l'); continue; }
-          if (q.length === 3 ? text.startsWith(q, i) : c === q) { const n = q.length; q = null; keep(n, 'l'); continue; }
+          // A backslash keeps the next character from ending the string, in a raw string too (`r'\''`); only a raw
+          // f-string's `\{` still opens a placeholder.
+          if (c === '\\' && !(raw && fq && text[i + 1] === '{')) { carriesOn = i === text.length - 1; blank(Math.min(2, text.length - i), 'l'); continue; }
+          if (q.length === 3 ? text.startsWith(q, i) : c === q) { const n = q.length; q = null; fq = false; raw = false; if (fs.length) blank(n, 'l'); else keep(n, 'l'); continue; }
+          // An f-string's `{` opens a placeholder (`{{` is a brace); its code is marked 'p', its `{` 'o' and `}` 'e'.
+          if (fq && c === '{' && text[i + 1] !== '{') { fs.push({ q, raw, spec: false, depth: 0 }); q = null; fq = false; raw = false; blank(1, 'o'); continue; }
+          if (fq && (c === '{' || c === '}') && text[i + 1] === c) { blank(2, 'l'); continue; }
           blank(1, 'l'); continue;
         }
-        if (c === '#') { comment = true; blank(text.length - i); break; }
-        if (c === '"' || c === "'") { const n = text.startsWith(c.repeat(3), i) ? 3 : 1; q = c.repeat(n); keep(n, 'l'); continue; }
+        const f = fs.at(-1);
+        if (f) {
+          // Inside a placeholder: code to its `}` at its own depth, then the f-string goes on. After a `:` at that depth
+          // the format spec is text, but a `{` in it opens a placeholder of its own; `!r`, `!s`, `!a` are text.
+          const close = () => { fs.pop(); blank(1, 'e'); if (!fs.at(-1)?.spec) { q = f.q; raw = f.raw; fq = true; } };
+          if (f.spec) {
+            if (c === '{') { fs.push({ q: f.q, raw: f.raw, spec: false, depth: 0 }); blank(1, 'o'); continue; }
+            if (c === '}') { close(); continue; }
+            blank(1, 'l'); continue;
+          }
+          if (f.depth === 0 && c === '}') { close(); continue; }
+          if (f.depth === 0 && c === ':') { f.spec = true; blank(1, 'l'); continue; }
+          if (f.depth === 0 && c === '!' && /[rsa]/u.test(text[i + 1] ?? '') && /[:}]/u.test(text[i + 2] ?? '')) { blank(2, 'l'); continue; }
+          if ('([{'.includes(c)) f.depth++;
+          else if (')]}'.includes(c)) f.depth--;
+        }
+        if (c === '#' && !f) { comment = true; blank(text.length - i); break; }
+        if (c === '"' || c === "'") {
+          const n = text.startsWith(c.repeat(3), i) ? 3 : 1;
+          // A prefix right before the quote (`f`, `rb`, `Rf`, `t`): f and t interpolate, r keeps backslashes.
+          const prefix = /(?:^|[^\w])([A-Za-z]{1,2})$/u.exec(text.slice(Math.max(0, i - 3), i))?.[1] ?? '';
+          const prefixed = /^(?:[rRbBuUfFtT]|[rR][bBfFtT]|[bBfFtT][rR])$/u.test(prefix);
+          fq = prefixed && /[fFtT]/u.test(prefix);
+          raw = prefixed && /[rR]/u.test(prefix);
+          q = c.repeat(n);
+          if (f) blank(n, 'l'); else keep(n, 'l');
+          continue;
+        }
+        if (f) { blank(1, 'p'); continue; }
         keep(); continue;
       }
       if (q === 'block') { if (c === '*' && text[i + 1] === '/') { q = null; blank(2); last = ''; } else blank(); continue; }
@@ -78,7 +118,7 @@ export function lex(lines, lang, state = null) {
       if (q === '`') {
         if (c === '\\') blank(Math.min(2, text.length - i), 'l');
         else if (c === '`') { q = null; last = 'x'; keep(1, 'l'); }
-        else if (c === '$' && text[i + 1] === '{') { tpl.push(0); q = null; blank(2, 'l'); last = '{'; }
+        else if (c === '$' && text[i + 1] === '{') { tpl.push(0); q = null; blank(2, 'o'); last = '{'; }
         else blank(1, 'l');
         continue;
       }
@@ -89,14 +129,14 @@ export function lex(lines, lang, state = null) {
       if (c === '"' || c === "'" || c === '`') { q = c; keep(1, c === '`' ? 't' : 'l'); continue; }
       if (tpl.length) {
         if (c === '{') tpl[tpl.length - 1]++;
-        else if (c === '}') { if (tpl[tpl.length - 1] === 0) { tpl.pop(); q = '`'; blank(1, 'l'); continue; } tpl[tpl.length - 1]--; }
+        else if (c === '}') { if (tpl[tpl.length - 1] === 0) { tpl.pop(); q = '`'; blank(1, 'e'); continue; } tpl[tpl.length - 1]--; }
       }
       if (!/\s/u.test(c) && !(c === '!' && last === 'x' && text[i + 1] !== '=' && !REGEX_KEYWORD.test(code.trimEnd()))) last = /[A-Za-z0-9_$)\]]/u.test(c) ? 'x' : c;
       keep(1, tpl.length ? 'p' : 'c'); // code inside a template's ${ } is part of that literal for the token walk
     }
     if (q === 're' || ((q === "'" || q === '"') && !carriesOn)) q = null;
     if (startsIn === 'block') comment = true;
-    out.push({ code, mark, startsIn, comment, text, tplOpen: tpl.length > 0, state: { q, tpl: tpl.length ? [...tpl] : NO_TEMPLATES, last } });
+    out.push({ code, mark, startsIn, comment, text, tplOpen: tpl.length > 0 || fs.length > 0, state: { q, tpl: tpl.length ? [...tpl] : NO_TEMPLATES, last, fs: fs.length ? fs.map((f) => ({ ...f })) : NO_TEMPLATES, fq, raw } });
   }
   return out;
 }
@@ -106,19 +146,57 @@ export function lex(lines, lang, state = null) {
 // is what it is written as on its first line.
 // `>>` and `>>>` are left as single `>`: closing generics (`Promise<Res<T>>`) cannot be told from a shift here.
 const OPS = ['...', '===', '!==', '**=', '<<=', '&&=', '||=', '??=', '=>', '==', '!=', '<=', '>=', '&&', '||', '??', '?.', '++', '--', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**'];
-export function tokens(rows, from = 0, to = rows.length) {
+// With { placeholders: true }, the code of each placeholder (a template's `${ }`, an f-string's `{ }`) is given as
+// tokens too, between a `(` and a `)` marked `synthetic`, after the literal it is in: `` `a ${x} b` `` is the literal,
+// `(`, `x`, `)`. A string inside a placeholder is a literal of its own.
+export function tokens(rows, from = 0, to = rows.length, { placeholders = false } = {}) {
   const out = [];
+  let open = 0; // placeholders open (with { placeholders })
+  const lits = []; // per depth of open placeholders, the literal read there: its rest after a placeholder joins it
   for (let l = from; l < to; l++) {
-    const { code, mark, startsIn } = rows[l];
+    const { code, mark, startsIn, text } = rows[l];
     let first = true;
     let carried = startsIn === 'template' || startsIn === 'string3' || startsIn === 'string' || (l > from && rows[l - 1].tplOpen);
     for (let i = 0; i < code.length;) {
       if (counting) steps++;
       const c = code[i];
       if (mark[i] === ' ' || (mark[i] === 'c' && /\s/u.test(c))) { i++; continue; }
+      if (placeholders && mark[i] !== 'c') {
+        const m = mark[i];
+        const at = { line: l + 1, endLine: l + 1, first: false };
+        if (m === 'o') { open++; lits[open] = null; out.push({ k: 'punct', v: '(', synthetic: true, ...at }); i += code.startsWith('${', i) || text.startsWith('${', i) ? 2 : 1; continue; }
+        if (m === 'e') { lits[open] = null; open--; out.push({ k: 'punct', v: ')', synthetic: true, ...at }); i++; carried = Boolean(lits[open]); continue; }
+        if (m === 'p') {
+          lits[open] = null; // code after a literal in a placeholder: a later literal there is another
+          // Code in a placeholder: a word, a number or punctuation, read from the line's text (a Python
+          // placeholder's code is spaces in `code`).
+          if (/\s/u.test(text[i])) { i++; continue; }
+          let j = i + 1;
+          if (/[\w$#]/u.test(text[i])) { while (j < code.length && /[\w$]/u.test(text[j]) && mark[j] === 'p') j++; const v = text.slice(i, j); out.push({ k: /^\d/u.test(v) ? 'val' : 'word', v, ...at }); }
+          else { const v = OPS.find((o) => text.startsWith(o, i) && [...o].every((_, d) => mark[i + d] === 'p')) ?? text[i]; out.push({ k: 'punct', v, ...at }); j = i + v.length; }
+          i = j;
+          continue;
+        }
+        // Literal text: the rest of the literal at this depth (after a placeholder, or from the line above), or a new one.
+        let j = i;
+        while (j < code.length && /[lt]/u.test(mark[j])) j++;
+        // The rest of a literal from the line above takes the line's start: what follows it is not first on its line.
+        if (carried && lits[open]) { lits[open].endLine = l + 1; if (open === 0) first = false; }
+        else if (open === 0 && carried && out.length && out.at(-1).k === 'val') { out.at(-1).endLine = l + 1; first = false; }
+        else {
+          const t = { k: 'val', v: m === 't' ? '`' : "''", line: l + 1, endLine: l + 1, first: open === 0 && first, text: text.slice(i, j) };
+          out.push(t);
+          lits[open] = t;
+          if (open === 0) first = false;
+        }
+        carried = false;
+        i = j;
+        continue;
+      }
+      if (placeholders && open === 0) lits[0] = null;
       if (mark[i] !== 'c') {
         let j = i;
-        while (j < code.length && (mark[j] !== 'c' && mark[j] !== ' ' || (mark[j] === ' ' && /[ltp]/u.test(mark[j + 1] ?? '') && /\s/u.test(code[j])))) j++;
+        while (j < code.length && (mark[j] !== 'c' && mark[j] !== ' ' || (mark[j] === ' ' && /[ltpoe]/u.test(mark[j + 1] ?? '') && /\s/u.test(code[j])))) j++;
         // The rest of a template or string that began on an earlier line is the same literal, not a new token.
         if (carried && out.length && out.at(-1).k === 'val') out.at(-1).endLine = l + 1;
         else { out.push({ k: 'val', v: mark[i] === 't' ? '`' : "''", line: l + 1, endLine: l + 1, first, text: rows[l].text.slice(i, j) }); first = false; }
@@ -142,12 +220,12 @@ const NEEDS_MORE = new Set(['=>', '=', '(', '[', '{', ',', '+', '-', '*', '/', '
 const NEEDS_MORE_WORD = new Set(['extends', 'implements', 'as', 'satisfies', 'keyof', 'typeof', 'infer', 'in', 'of', 'instanceof', 'is', 'new']);
 const CONTINUES = new Set(['?', ':', '.', '?.', '>', ',', '(', '[', ')', ']', '}', '{', '&&', '||', '??', '+', '-', '*', '/', '%', '|', '&', '^', '=', '=>', '==', '===', '!=', '!==', '<=', '>=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**', '**=', '&&=', '||=', '??=']);
 const CONTINUES_WORD = new Set(['extends', 'implements', 'in', 'instanceof']);
-const needsMore = (t) => (t.k === 'punct' ? NEEDS_MORE.has(t.v) : t.k === 'word' && NEEDS_MORE_WORD.has(t.v));
-const continues = (t) => (t.k === 'punct' ? CONTINUES.has(t.v) : t.k === 'word' ? CONTINUES_WORD.has(t.v) : t.v === '`');
+export const needsMore = (t) => (t.k === 'punct' ? NEEDS_MORE.has(t.v) : t.k === 'word' && NEEDS_MORE_WORD.has(t.v));
+export const continues = (t) => (t.k === 'punct' ? CONTINUES.has(t.v) : t.k === 'word' ? CONTINUES_WORD.has(t.v) : t.v === '`');
 // After one of these a brace opens a type, not a body: `): { a: number } {`, `<T extends { id: string }>`.
 const TYPE_BEFORE = new Set([':', '|', '&', ',', '<', '(', '=', '?', '[', '=>', 'extends', 'keyof', 'typeof', 'in', 'is', 'infer', 'readonly']);
 // After one of these a brace in an expression opens an object (or a type), not a block of statements.
-const OBJECT_BEFORE = new Set(['(', '[', ',', '=', ':', '?', '{', '&', '|', '!', '+', '-', '*', '%', '<', '.', '...', '&&', '||', '??', '==', '===', '!=', '!==', 'return', 'case', 'yield', 'await', 'typeof', 'in', 'of', 'as', 'satisfies', 'default', 'export', 'import', 'from', 'type']);
+export const OBJECT_BEFORE = new Set(['(', '[', ',', '=', ':', '?', '{', '&', '|', '!', '+', '-', '*', '%', '<', '.', '...', '&&', '||', '??', '==', '===', '!=', '!==', 'return', 'case', 'yield', 'await', 'typeof', 'in', 'of', 'as', 'satisfies', 'default', 'export', 'import', 'from', 'type']);
 // Words that begin a statement with a parenthesis after them. A class body is known to be one, so any name is a
 // member there (`delete(id) {`, `catch(e) {`); whether a brace opened an object is read from the token before it, so
 // there these words are taken as what they usually are.
@@ -155,8 +233,8 @@ const STATEMENT_HEADS = new Set(['if', 'for', 'while', 'switch', 'catch', 'retur
 const STATEMENT_WORDS = new Set(['export', 'default', 'declare', 'async', 'abstract']);
 const MEMBER_WORDS = new Set(['public', 'private', 'protected', 'static', 'async', 'override', 'readonly', 'abstract', 'declare', 'accessor', 'get', 'set']);
 
-const isWord = (t, v) => t?.k === 'word' && (v === undefined || t.v === v);
-const isPunct = (t, v) => t?.k === 'punct' && t.v === v;
+export const isWord = (t, v) => t?.k === 'word' && (v === undefined || t.v === v);
+export const isPunct = (t, v) => t?.k === 'punct' && t.v === v;
 // The token that closes the bracket opened at token k, or -1.
 export function closeOf(toks, k) {
   let depth = 0;
@@ -174,7 +252,7 @@ export function closeOf(toks, k) {
 // all its tokens (angleEnds): read from each `<`, a `<` left open went to the end every time, and `<` after `<`
 // (`function f<a` line after line, members `m<a` in a class) took time growing with the square of the text.
 const ANGLE_ENDS = new WeakMap();
-function afterAngle(toks, k) {
+export function afterAngle(toks, k) {
   if (counting) steps++;
   let ends = ANGLE_ENDS.get(toks);
   if (!ends) { ends = angleEnds(toks); ANGLE_ENDS.set(toks, ends); }
@@ -182,18 +260,10 @@ function afterAngle(toks, k) {
 }
 // For each token j, where reading on from it first meets a `>` that no `<` read since opened: the token after that
 // `>`, or -1. Filled from the last token back, so each answer is made of later ones: a `>` is its own; a `<` skips to
-// past its own `>` and goes on from there; a bracket skips to past its match (closesFrom, the matches closeOf gives);
-// anything else is the next token's. The `<` at k is then closed by the answer for k + 1.
+// past its own `>` and goes on from there; a bracket skips to past its match (bracketMatches, the matches closeOf
+// gives); anything else is the next token's. The `<` at k is then closed by the answer for k + 1.
 function angleEnds(toks) {
-  const closes = new Map();
-  for (let j = 0; j < toks.length; j++) {
-    if (counting) steps++;
-    if (toks[j].k !== 'punct' || !'([{'.includes(toks[j].v)) continue;
-    const at = closesFrom(toks, j);
-    for (const [open, close] of at) closes.set(open, close);
-    if (!at.has(j)) break; // never closed: everything after it is inside it, and closesFrom has read it all
-    j = at.get(j);
-  }
+  const closes = bracketMatches(toks);
   const ends = new Int32Array(toks.length + 1).fill(-1);
   for (let j = toks.length - 1; j >= 0; j--) {
     if (counting) steps++;
@@ -304,6 +374,20 @@ function closesFrom(toks, open) {
     else if (')]}'.includes(toks[j].v)) { at.set(opened.pop(), j); if (!opened.length) break; }
   }
   return at;
+}
+// The match of every bracket of a list of tokens, the same matches closeOf gives: closesFrom from each bracket that
+// no other holds, which is passed whole. A bracket never closed holds the rest, which closesFrom has read already.
+export function bracketMatches(toks) {
+  const closes = new Map();
+  for (let j = 0; j < toks.length; j++) {
+    if (counting) steps++;
+    if (toks[j].k !== 'punct' || !'([{'.includes(toks[j].v)) continue;
+    const at = closesFrom(toks, j);
+    for (const [open, close] of at) closes.set(open, close);
+    if (!at.has(j)) break;
+    j = at.get(j);
+  }
+  return closes;
 }
 // The names a destructuring pattern binds, from its bracket at `open`: { key, name } each. key: the property it is
 // taken from (an object's key; null for an array's element and a `...rest`); an inner pattern's names take the key
