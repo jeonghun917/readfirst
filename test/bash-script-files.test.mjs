@@ -1,0 +1,107 @@
+// A script file run by python, node, ruby, perl, deno or bun is read as code from -c or -e is (runScript in
+// src/bash-writes.mjs): the targets of its write calls are named, a write whose target is known only when it runs is
+// not known, with why, and a file with no write call is quiet. Until 2026-11-14 `node build.mjs` and `python3 gen.py`
+// were read as writing nothing. Only code counts: a write call inside a string or a comment is data (a test file
+// holds commands as data). Each command runs through bash, in a folder holding an empty folder a and the files of
+// FILES; the files it makes are what shellWrites must name. The helpers are copied from test/here-docs.test.mjs,
+// since importing a test file runs its tests.
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
+import { test } from 'node:test';
+import { shellWrites } from '../src/bash-writes.mjs';
+
+const has = (cmd) => spawnSync('bash', ['-c', `command -v ${cmd}`], { env: { PATH: process.env.PATH } }).status === 0;
+const hasBoth = has('python3') && has('node');
+const FILES = {
+  'w.py': "open('pw1', 'w').write('x')\n",
+  'argv.py': "import sys\nopen(sys.argv[1], 'w').write('x')\n",
+  'dyn.py': "open('d-%d' % 1, 'w').write('x')\n",
+  'read.py': "print(open('in').read())\n",
+  'data.py': "s = \"open('q1', 'w')\"  # open('q2', 'w')\nprint(s)\n",
+  'w.mjs': "import { writeFileSync } from 'node:fs';\nwriteFileSync('nw1', 'x');\n",
+  'argv.mjs': "import { writeFileSync } from 'node:fs';\nwriteFileSync(process.argv[2], 'x');\n",
+  'dyn.mjs': "import { writeFileSync } from 'node:fs';\nwriteFileSync(`n-${1}`, 'x');\n",
+  'read.mjs': "import { readFileSync } from 'node:fs';\nconsole.log(readFileSync('in', 'utf8'));\n",
+  'data.mjs': "const t = \"writeFileSync('q3', '')\"; // writeFileSync('q4', '')\nconsole.log(t);\n",
+  in: 'x\n',
+};
+const setUp = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'readfirst-scripts-'));
+  mkdirSync(join(dir, 'a'));
+  for (const [f, t] of Object.entries(FILES)) writeFileSync(join(dir, f), t);
+  return dir;
+};
+// The files bash makes, besides the ones the folder starts with (and python's cache).
+const bashMade = (script, dir) => {
+  spawnSync('bash', ['-c', script], { cwd: dir, env: { PATH: process.env.PATH }, stdio: 'ignore', timeout: 10000 });
+  const out = [];
+  const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) { if (e.name !== '__pycache__') walk(join(d, e.name)); } else if (!(e.name in FILES)) out.push(relative(dir, join(d, e.name))); } };
+  walk(dir);
+  return out.sort();
+};
+const named = (script, dir) => { const r = shellWrites(script, dir); return [...r.files.map((f) => relative(dir, f)), ...r.unknown.map((u) => `?${u.part}`)].sort(); };
+
+test('the files a python or node script writes are named, and bash agrees', { skip: !hasBoth && 'python3 or node is not installed' }, () => {
+  // Main (80931d8) named none of these: each made a file.
+  for (const script of [
+    'python3 w.py', 'python3 -B w.py', 'python3 -W ignore w.py', 'python3 argv.py pa1', 'cd a && python3 ../w.py',
+    'node w.mjs', 'node --no-warnings w.mjs', 'node argv.mjs na1', 'P=w.mjs; node $P',
+  ]) {
+    const dir = setUp();
+    const made = bashMade(script, dir);
+    assert.ok(made.length > 0, `bash makes a file: ${script}`);
+    assert.deepEqual(named(script, dir), made, script);
+  }
+});
+
+test('a script that only reads, holds writes as data, or runs no file is quiet, and bash agrees', { skip: !hasBoth && 'python3 or node is not installed' }, () => {
+  for (const script of [
+    'python3 read.py', 'python3 data.py', 'node read.mjs', 'node data.mjs', 'python3 -c "print(1)"', 'python3 -m json.tool in',
+    'python3 nothere.py', 'python3 - <<E\nprint(1)\nE', 'node -e "1"', 'node --input-type module -e "1"', 'node nothere.mjs',
+    'node --check w.mjs',
+  ]) {
+    const dir = setUp();
+    assert.deepEqual(bashMade(script, dir), [], `bash makes nothing: ${script}`);
+    assert.deepEqual(named(script, dir), [], script);
+  }
+});
+
+test('a script that writes where it is known only when it runs is given as not known', { skip: !hasBoth && 'python3 or node is not installed' }, () => {
+  for (const script of ['python3 dyn.py', 'node dyn.mjs']) {
+    const dir = setUp();
+    assert.ok(bashMade(script, dir).length > 0, `bash makes a file: ${script}`);
+    const r = shellWrites(script, dir);
+    assert.deepEqual(r.files, [], script);
+    assert.deepEqual(r.unknown.map((u) => u.part), [script], script);
+    assert.match(r.unknown[0].why, /names are known only when it runs/u, script);
+  }
+});
+
+// A literal is a write call's target only when it is the whole argument; code from -c with a target known only when
+// it runs, that the fallback names nothing for, is not known. Main named e for `open('e' + 'x', 'w')`, which writes ex.
+test('code from -c names a literal only when it is the whole target, and is not known otherwise', { skip: !hasBoth && 'python3 or node is not installed' }, () => {
+  for (const script of [`python3 -c "open('e' + 'x', 'w')"`, `python3 -c "open('d-%d' % 1, 'w')"`]) {
+    const dir = setUp();
+    assert.ok(bashMade(script, dir).length > 0, `bash makes a file: ${script}`);
+    const r = shellWrites(script, dir);
+    assert.deepEqual(r.files, [], script);
+    assert.deepEqual(r.unknown.map((u) => u.part), ['python3 -c'], script);
+  }
+  const dir = setUp();
+  assert.deepEqual(named(`node -e "const s = \\"open('e', 'w')\\"; console.log(s)"`, dir), [], 'a write call inside a string of -e code is data');
+});
+
+test('the script a runner runs is found after its options, and none where it runs code or a module', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => `?${u.part}`)]; };
+  assert.deepEqual(s('node $D/x.mjs'), ['?node $D/x.mjs'], 'a path known only when the command runs');
+  assert.deepEqual(s('python3 -mjson.tool f'), []);
+  assert.deepEqual(s('perl -ne "print" f'), []);
+  assert.deepEqual(s('perl -l /nonexistent/x.pl'), [], 'perl -l takes no next word: the file is /nonexistent/x.pl, not there');
+  assert.deepEqual(s('ruby -e "1"'), []);
+  assert.deepEqual(s('deno fmt x.ts'), []);
+  assert.deepEqual(s('bun install'), []);
+  assert.deepEqual(s('node --version'), []);
+});
