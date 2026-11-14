@@ -738,6 +738,7 @@ function readScript(T) {
     for (const stop = k - 4; k >= 0 && k > stop && (isWord(toks[k]) || isPunct(toks[k], '*')); k--) if (toks[k].v === what) return true;
     return false;
   };
+  let forOfAt = -1; // the last `of` read as a `for`'s keyword
   const keywordAt = (j) => {
     const v = toks[j].v;
     if (!T.data.keywords.has(v)) return false;
@@ -751,7 +752,15 @@ function readScript(T) {
       if (T.scopes[varScope()].kind === 'function') return headHas(varScope(), head);
       return Boolean(top && sameLine && (isWord(next) || next.k === 'val' || (next.k === 'punct' && top.has(next.v))));
     }
-    if (T.data.forHead.has(v) && !inForHead()) return false;
+    // In a `for`'s parentheses, `of` is the keyword right after the loop's binding (a name that is no declaration word,
+    // or a pattern's `]` or `}`), wherever the line ends; a second `of` after that one is a name (`of of(1)`).
+    if (T.data.forHead.has(v)) {
+      if (!inForHead()) return false;
+      const p = toks[j - 1];
+      const bound = (isWord(p) && !['var', 'let', 'const', 'await'].includes(p.v) && (!T.data.keywords.has(p.v) || T.data.contextual[p.v]) && j - 1 !== forOfAt) || isPunct(p, ']') || isPunct(p, '}');
+      if (bound) forOfAt = j;
+      return bound;
+    }
     const after = T.data.contextual[v];
     if (!after) return true;
     return sameLine && (isWord(next) || next.k === 'val' || (next.k === 'punct' && after.has(next.v)));

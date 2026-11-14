@@ -433,6 +433,10 @@ test('scopes: a word that is a keyword only in its own construct is a name elsew
     assert.deepEqual(scopes(path, text).references.filter((r) => r.name === 'await' || r.to.unknown), [], `${path}: ${text}`);
   }
   assert.deepEqual(resolved(scopes('a.js', 'import { of, from } from "rxjs";\nof(1); from([2]);\nfor (const a of (xs)) a;\n')).filter((r) => /^(of|from)@/u.test(r)), ['of@2->import@1', 'from@2->import@1']);
+  // In a `for`'s parentheses `of` is the keyword after the loop's binding, also at a line's end; any other is a name.
+  const f = scopes('a.js', 'import { of } from "rxjs";\nconst xs = [], ofs = [];\nfor (const x of of(1, 2)) x;\nfor (let i = of(1); i; i = 0) i;\nfor (const y of\n  xs) y;\nfor (const of of ofs) of;\nfor (const z in of) z;\nfor (let of of ofs) of;\nfor (const [a, b] of ofs) a + b;\n');
+  assert.deepEqual(resolved(f).filter((r) => /^of@/u.test(r)), ['of@3->import@1', 'of@4->import@1', 'of@7->const@7', 'of@8->import@1', 'of@9->let@9']);
+  assert.ok(!f.references.some((r) => r.to.unknown), JSON.stringify(resolved(f)));
   // A line's end ends the construct: `type` and `module` at the end of a line are names, whatever starts the next.
   assert.deepEqual(resolved(scopes('a.ts', 'function f(type, module) {\n  const a = type\n  const b = module\n  g()\n}\n')).filter((r) => /^(type|module)@/u.test(r)), ['type@2->parameter@1', 'module@3->parameter@1']);
   // Strict-mode words are keywords anywhere in a module or a class body; Node's `global` is a builtin.
