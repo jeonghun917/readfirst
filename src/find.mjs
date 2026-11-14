@@ -96,30 +96,42 @@ function docOf(lines, i, py, top = null) {
 // Python docstring right below. The list also carries the file's own header comment (`header`), which says what the
 // module is for: find matches it for the file as a whole, once, not for each definition in it.
 // The names a module exports by a statement after their declaration, which declarations does not mark as exported
-// (review of 86b02f2: what was exported so, and its members, were no longer asked about): `module.exports = X`,
-// `module.exports = { a, b: c }` (the words inside its braces), `export default X` and `export { a, b as c }` (the
-// local names). Read from the lexed tokens, only when the file says `export`.
+// (review of 86b02f2: what was exported so, and its members, were no longer asked about). The value of
+// `module.exports = <value>`, `export default <value>` and TypeScript's `export = <value>` is read by one reader
+// (`valueNames`): a name is that name, and an object or array written out gives the names in its value places (a
+// shorthand `{ makeUser }`, `{ key: makeUser }`, `[makeUser]`, `...rest`), never its keys. `export { a, b as c }` gives
+// its local names. Read from the lexed tokens, only when the file says `export`.
 function laterExports(rows) {
   const out = new Set();
   if (!rows.some((r) => /\bexports?\b/u.test(r.code ?? r.text ?? String(r)))) return out;
   const t = tokens(rows);
   const is = (i, v) => t[i]?.v === v;
-  // The words inside the braces that open at `i`, one level deep; `as` and the name after it are left out.
-  const braced = (i) => {
+  const opens = (i) => t[i]?.k === 'punct' && /^[{([]$/u.test(t[i].v);
+  const closes = (i) => t[i]?.k === 'punct' && /^[})\]]$/u.test(t[i].v);
+  // Where the statement's value ends after `i`: a ; or a new line at the same bracket depth, or the end.
+  const ends = (i) => i >= t.length || is(i, ';') || closes(i) || is(i, ',');
+  // The names the value that starts at `i` hands over.
+  const valueNames = (i) => {
+    if (t[i]?.k === 'word' && (ends(i + 1) || t[i + 1].line > t[i].line)) { out.add(t[i].v); return; }
+    if (!is(i, '{') && !is(i, '[')) return;
+    // One level inside the literal: a word is a value when it stands alone between separators, and is not a key.
     for (let j = i + 1, depth = 1; j < t.length && depth; j++) {
-      if (t[j].k === 'punct' && /^[{([]$/u.test(t[j].v)) depth++;
-      else if (t[j].k === 'punct' && /^[})\]]$/u.test(t[j].v)) depth--;
-      else if (depth === 1 && t[j].k === 'word' && t[j].v !== 'as' && !is(j - 1, 'as')) out.add(t[j].v);
+      if (opens(j)) { depth++; continue; }
+      if (closes(j)) { depth--; continue; }
+      if (depth !== 1 || t[j].k !== 'word') continue;
+      const before = t[j - 1]?.v;
+      const after = t[j + 1]?.v;
+      if (['{', '[', ',', ':', '...'].includes(before) && [',', '}', ']'].includes(after)) out.add(t[j].v);
     }
   };
-  // A single name and nothing after it in the statement: `= X;` or `default X`.
-  const alone = (i) => t[i]?.k === 'word' && (i + 1 >= t.length || is(i + 1, ';') || t[i + 1].line > t[i].line);
   for (let i = 0; i < t.length; i++) {
-    if (is(i, 'module') && is(i + 1, '.') && is(i + 2, 'exports') && is(i + 3, '=')) {
-      if (is(i + 4, '{')) braced(i + 4);
-      else if (alone(i + 4)) out.add(t[i + 4].v);
-    } else if (t[i].k === 'word' && t[i].v === 'export' && is(i + 1, '{')) braced(i + 1);
-    else if (t[i].k === 'word' && t[i].v === 'export' && is(i + 1, 'default') && alone(i + 2)) out.add(t[i + 2].v);
+    if (is(i, 'module') && is(i + 1, '.') && is(i + 2, 'exports') && is(i + 3, '=')) valueNames(i + 4);
+    else if (t[i].k !== 'word' || t[i].v !== 'export') continue;
+    else if (is(i + 1, 'default')) valueNames(i + 2);
+    else if (is(i + 1, '=')) valueNames(i + 2);
+    else if (is(i + 1, '{')) {
+      for (let j = i + 2; j < t.length && !is(j, '}'); j++) if (t[j].k === 'word' && t[j].v !== 'as' && !is(j - 1, 'as')) out.add(t[j].v);
+    }
   }
   return out;
 }

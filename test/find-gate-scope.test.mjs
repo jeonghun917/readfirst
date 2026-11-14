@@ -80,6 +80,15 @@ test('a name exported by a later statement is exported, and so are its members',
   assert.deepEqual(added('src/b.js', 'const api = {\n  fetchUser() {},\n};\nexport { api };\n'), ['fetchUser']);
 });
 
+// Review of 784c348: the value of `export default`, `export =` and `module.exports =` is read by one reader: a name,
+// or the names in the value places of an object or array written out, never its keys.
+test('an exported value written as an object or array exports the names in its value places', () => {
+  assert.deepEqual(added('test/g.js', 'function makeUser() {}\nexport default { makeUser };\n'), ['makeUser']);
+  assert.deepEqual(added('test/h.ts', 'function makeUser() {}\nexport = makeUser;\n'), ['makeUser']);
+  assert.deepEqual(added('test/i.js', 'function makeUser() {}\nmodule.exports = [makeUser];\n'), ['makeUser']);
+  assert.deepEqual(added('test/j.js', 'function makeUser() {}\nfunction keyOnly() {}\nmodule.exports = { keyOnly: makeUser };\n'), ['makeUser'], 'a key is not a value');
+});
+
 test('a local of an unnamed default function is not asked about', { todo: 'declarations reads the body of `export default function () {}` as the top level' }, () => {
   assert.deepEqual(added('src/d.js', 'export default function () {\n  const computeTotal = () => 1;\n}\n'), []);
 });
