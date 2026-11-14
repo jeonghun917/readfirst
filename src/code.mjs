@@ -184,18 +184,10 @@ function afterAngle(toks, k) {
 }
 // For each token j, where reading on from it first meets a `>` that no `<` read since opened: the token after that
 // `>`, or -1. Filled from the last token back, so each answer is made of later ones: a `>` is its own; a `<` skips to
-// past its own `>` and goes on from there; a bracket skips to past its match (closesFrom, the matches closeOf gives);
-// anything else is the next token's. The `<` at k is then closed by the answer for k + 1.
+// past its own `>` and goes on from there; a bracket skips to past its match (bracketMatches, the matches closeOf
+// gives); anything else is the next token's. The `<` at k is then closed by the answer for k + 1.
 function angleEnds(toks) {
-  const closes = new Map();
-  for (let j = 0; j < toks.length; j++) {
-    if (counting) steps++;
-    if (toks[j].k !== 'punct' || !'([{'.includes(toks[j].v)) continue;
-    const at = closesFrom(toks, j);
-    for (const [open, close] of at) closes.set(open, close);
-    if (!at.has(j)) break; // never closed: everything after it is inside it, and closesFrom has read it all
-    j = at.get(j);
-  }
+  const closes = bracketMatches(toks);
   const ends = new Int32Array(toks.length + 1).fill(-1);
   for (let j = toks.length - 1; j >= 0; j--) {
     if (counting) steps++;
