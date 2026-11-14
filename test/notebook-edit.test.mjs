@@ -57,3 +57,16 @@ test('install puts NotebookEdit in the matcher, and adds it to an older readfirs
   assert.equal(JSON.parse(readFileSync(join(old, '.claude/settings.json'), 'utf8')).hooks.PreToolUse[0].matcher, 'Edit|Write|MultiEdit|Bash|NotebookEdit');
   assert.equal(installHook(old), false, 'a second install writes nothing');
 });
+
+// The plugin's hook (plugins/readfirst/hooks/hooks.json) matches the same tools install does. It lacks NotebookEdit
+// until the release's version PR, which changes it together with the plugin's version.
+test('the plugin\'s hook matches the tools install matches', { todo: 'plugins/readfirst/hooks/hooks.json gets NotebookEdit in the release version PR, with the plugin version' }, () => {
+  const tools = (m) => m.split('|').sort();
+  const fresh = mkdtempSync(join(tmpdir(), 'readfirst-notebook-install-'));
+  execFileSync('git', ['-C', fresh, 'init', '-q', '-b', 'main']);
+  installHook(fresh);
+  const installed = JSON.parse(readFileSync(join(fresh, '.claude/settings.json'), 'utf8')).hooks.PreToolUse[0].matcher;
+  const plugin = JSON.parse(readFileSync(new URL('../plugins/readfirst/hooks/hooks.json', import.meta.url), 'utf8')).hooks.PreToolUse
+    .find((m) => (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? ''))).matcher;
+  assert.deepEqual(tools(plugin), tools(installed));
+});
