@@ -81,7 +81,8 @@ const checkList = (v, where, p) => {
   if (!Array.isArray(v)) { p.push(`${where}: a list`); return; }
   v.forEach((c, i) => {
     if (!isRecord(c)) { p.push(`${where}[${i}]: { run, why? } (${kindOf(c)})`); return; }
-    needText(c.run, `${where}[${i}].run`, p, 500);
+    // The line keeps its old start (`{ run, why? }`), with what is wrong with `run` after it.
+    if (textWhy(c.run, 500)) p.push(`${where}[${i}]: { run, why? } (run: ${textWhy(c.run, 500)})`);
     only(c, ['run', 'why'], `${where}[${i}]`, p);
     if (c.why !== undefined) needText(c.why, `${where}[${i}].why`, p);
   });
@@ -385,17 +386,19 @@ export function mapProblems(map, files, { placement = true } = {}) {
     // every group id is known.
     if (g.deprecated !== undefined) {
       if (!isRecord(g.deprecated)) p.push(`${at}.deprecated: { why, use? } (${kindOf(g.deprecated)})`);
-      else if (textWhy(g.deprecated.why)) { p.push(`${at}.deprecated: { why, use? } (why: ${textWhy(g.deprecated.why)})`); only(g.deprecated, ['why', 'use'], `${at}.deprecated`, p); }
       else {
+        // Every problem at once: a bad why does not hide a bad use (review of readfirst#215).
+        if (textWhy(g.deprecated.why)) p.push(`${at}.deprecated: { why, use? } (why: ${textWhy(g.deprecated.why)})`);
         only(g.deprecated, ['why', 'use'], `${at}.deprecated`, p);
-        if (g.deprecated.use !== undefined && !text(g.deprecated.use, 500)) p.push(`${at}.deprecated.use: a group id or a path`);
+        if (g.deprecated.use !== undefined && textWhy(g.deprecated.use, 500)) p.push(`${at}.deprecated.use: a group id or a path (${textWhy(g.deprecated.use, 500)})`);
       }
     }
     if (g.risks !== undefined) {
       if (!Array.isArray(g.risks)) p.push(`${at}.risks: a list`);
       else g.risks.forEach((r, j) => {
         if (!isRecord(r)) { p.push(`${at}.risks[${j}]: { text, files? } (${kindOf(r)})`); return; }
-        needText(r.text, `${at}.risks[${j}].text`, p);
+        // The line keeps its old start (`{ text, files? }`), with what is wrong with `text` after it.
+        if (textWhy(r.text)) p.push(`${at}.risks[${j}]: { text, files? } (text: ${textWhy(r.text)})`);
         only(r, ['text', 'files'], `${at}.risks[${j}]`, p);
         if (r.files !== undefined) strings(r.files, `${at}.risks[${j}].files`, p);
       });
