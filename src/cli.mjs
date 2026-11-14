@@ -522,6 +522,19 @@ function physical(abs) {
 // (the notes were likely not read: nothing was done between the refusal and the retry). The Stop hook counts them with
 // what the map asked and what was done (actedLine), and keeps one line per session in ACTED_LOG for `hook --report`.
 const callSig = (tool, targets) => createHash('sha1').update(`${tool}\0${targets.join('\0')}`).digest('hex').slice(0, 12);
+// A call as a refusal names it, so the agent can tell which of the calls it sent in one response was refused (an Edit
+// by the first line of its old text; review of 2026-11-14: an error read against the wrong edit sent that edit twice).
+function callWhat(tool, input, targets) {
+  const known = new Map();
+  const files = targets.map((abs) => { const root = rootOf(abs, known); return root ? relative(root, abs) : abs; }).join(', ');
+  const first = (text) => String(text ?? '').split('\n').find((l) => l.trim()) ?? '';
+  if (tool === 'Edit') return `Edit of ${files} (the edit of \`${clip(first(input?.old_string))}\`)`;
+  if (tool === 'MultiEdit') return `MultiEdit of ${files} (${input?.edits?.length ?? 0} edits)`;
+  if (tool === 'Bash') return `Bash command \`${clip(first(input?.command))}\`${files ? ` (writing ${files})` : ''}`;
+  return `${tool} of ${files}`;
+}
+// Said with every refusal: the hook sees one call, never the others of its response.
+const BATCH_LINE = 'If it was one of several calls in one response, the others were not refused by this: those before it ran, those after it are judged on their own. Check that what went in still fits without this one.';
 // The key of a Bash command the gate asks about once (`unknown:`, `misread:`): the command with where it runs, the
 // folder (through symlinks) and the repository holding it. Until 2026-11-14 it was the command's text alone, so a
 // command refused once in one folder went through with no word in any other folder or repository, where the same
@@ -790,7 +803,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       if (!(gate && askUnknown)) Object.assign(seen, reads);
       const saved = save();
       if (!unknownLine) return null;
-      if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: unknownLine } });
+      if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst refused this ${callWhat(tool, event.tool_input, targets)}${event.tool_use_id ? ` (call ${event.tool_use_id})` : ''}. ${BATCH_LINE}\n\n${unknownLine}` } });
       return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: unknownLine } });
     }
     { const roots = new Map(); for (const abs of targets) markHead(seen, rootOf(abs, roots), now); }
@@ -823,6 +836,20 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     if (!(late.length && !asks.length && !askFind && !askUnknown)) markResent();
     if (gate && (asks.length || askLate || askFind || askUnknown)) seen[`denied:${sig}`] = now;
     if (!(gate && (asks.length || askLate || askFind || askUnknown))) Object.assign(seen, reads);
+    // A refusal is kept with what was refused (`refused:<sig>:<call>`), so the stop can name a refused call never made
+    // again: the others of its response went in without it.
+    // A call let through that writes a file of a refused one, by any tool, makes that change again (`redone:<sig>`):
+    // the same edit is often made again as a MultiEdit, a Write or a `sed -i` (review of readfirst#212).
+    const what = callWhat(tool, event.tool_input, targets);
+    if (gate && (asks.length || askLate || askFind || askUnknown)) seen[`refused:${sig}:${JSON.stringify([what, targets])}`] = now;
+    else {
+      for (const k of Object.keys(before)) {
+        const m = k.match(/^refused:([0-9a-f]{12}):(.+)$/su);
+        let files = [];
+        try { files = JSON.parse(m?.[2] ?? 'null')?.[1] ?? []; } catch { files = []; }
+        if (m && files.some((f) => targets.includes(f))) seen[`redone:${m[1]}`] = now;
+      }
+    }
     const saved = save();
     const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate && askLate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
     if (!notes.length && !waiting.length && !lateLine && !findLine && !unknownLine && !askLine) return null;
@@ -832,7 +859,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const text = [...notes, ...(askLine ? [askLine] : []), ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...(unknownLine ? [unknownLine] : []), ...waiting].join('\n\n');
     // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
     // the notes as context instead.
-    if (gate && (asks.length || askLate || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    if (gate && (asks.length || askLate || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst refused this ${what}${event.tool_use_id ? ` (call ${event.tool_use_id})` : ''}. ${BATCH_LINE}\nRead this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch (e) {
     // Never fails closed (the call goes through), but what failed is kept (failed:<tool>:<error>) for the Stop hook and
@@ -1128,8 +1155,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -1158,7 +1185,11 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   }
   const gated = Object.keys(seen).some((k) => k.startsWith('denied:'));
   // Every item asked or answered in this session, by any file.
-  const asked = new Set(Object.keys(seen).filter((k) => /^(?:ask|answer):/u.test(k)).map((k) => { try { return JSON.parse(k.slice(k.indexOf(':') + 1))[0]; } catch { return null; } }));
+  const idsOf = (re) => new Set(Object.keys(seen).filter((k) => re.test(k)).map((k) => { try { return JSON.parse(k.slice(k.indexOf(':') + 1))[0]; } catch { return null; } }));
+  const asked = idsOf(/^(?:ask|answer):/u);
+  // Asked by the gate and never answered at all (an unsure answer is an answer: openUnsure names it).
+  const answeredIds = idsOf(/^answer:/u);
+  const unanswered = new Set([...idsOf(/^ask:/u)].filter((id) => id && !answeredIds.has(id)));
   const passed = [];
   const blocks = [];
   // Checks that did not run block once for a state of the files: the mark says so to the next stop.
@@ -1181,13 +1212,26 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     if (said(key)) notes.push(line); else { say(key); blocks.push(line); }
   }
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
-    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root), start: baseOf(seen, root), unlooked: gated ? unlooked.get(root) ?? [] : [], asked });
+    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root), start: baseOf(seen, root), unlooked: gated ? unlooked.get(root) ?? [] : [], asked, unanswered });
     if (r?.note) notes.push(r.note);
     if (r?.unchecked) unchecked.push(r.unchecked);
     if (r?.found) found.push(...r.found);
     if (r?.pass) passed.push(r.pass);
     if (r?.block) blocks.push(r.block);
     if (r?.tally) { tally.asked += r.tally.asked; tally.acted += r.tally.acted; tally.notActed.push(...r.tally.notActed); }
+  }
+  // Calls the gate refused and that were never made again (no later `call:` with their sig): if one was among several
+  // calls of a response, the others went in without it (ledger gate-refuses-one-edit-of-a-batch). Named once for that
+  // set (`refused:said:<hash>`), when the session changed files at all.
+  const dropped = byRoot.size ? Object.keys(seen).flatMap((k) => {
+    const m = k.match(/^refused:([0-9a-f]{12}):(.+)$/su);
+    if (!m || (seen[`redone:${m[1]}`] ?? 0) > seen[k]) return [];
+    try { return [String(JSON.parse(m[2])[0])]; } catch { return [m[2]]; }
+  }).sort() : [];
+  const droppedKey = dropped.length ? `refused:said:${createHash('sha1').update(dropped.join('\0')).digest('hex').slice(0, 12)}` : null;
+  if (droppedKey && !said(droppedKey)) {
+    say(droppedKey);
+    blocks.push(`readfirst: the gate refused these calls and they were never made again:\n- ${dropped.join('\n- ')}\nIf one was among several calls of a response, the others went in without it: check that the files still fit together (run the tests, read the change), make it again, or say why it is not needed, before you finish.`);
   }
   // Answers left unsure with no later answer of another kind block the stop once for that set of items (plan 2.6:
   // `unsure:<hash of their ids>`), named with what each said.
@@ -1272,7 +1316,7 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
 // names the items whose last answer the change does not bear out.
 // head: the commit the session started from there (headOf), null when the state does not say; start: what the working
 // tree held then (baseOf), null when the state does not say.
-function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [], head = null, start = null, unlooked = [], asked = new Set() } = {}) {
+function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [], head = null, start = null, unlooked = [], asked = new Set(), unanswered = new Set() } = {}) {
   try {
     if (!existsSync(join(root, MAP_PATH))) {
       // No map here means nothing to check, unless the commit has one that is not in the working tree (a sparse
@@ -1362,6 +1406,23 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
         const one = lateHere.length === 1;
         unaskedSaid = `readfirst${at}: the gate had no time to look up ${lateHere.join(', ')}, so ${one ? 'its' : 'their'} rules and risks were never asked:\n- ${open.map((i) => `\`${i.id}\`: ${i.text}`).join('\n- ')}\nRead ${one ? 'its' : 'their'} notes (\`npx readfirst read ${lateHere.join(' ')}\`) and say how the change keeps each, before you finish.`;
       }
+    }
+    // The items of the changed files the gate asked and no answer came for: the edit it asked about was refused and the
+    // file changed another way (a command, a script), so the question was left with nothing (review of 2026-11-14: the
+    // stop passed with its checks). Named with the files, once for that set (an `unasked:` key too); an asked item can
+    // still be answered.
+    const rows = new Map();
+    for (const [id, row, text] of [...list.rules.map((r) => [itemId('rule', r.id, r.rule), r, `Rule ${r.id}: ${r.rule}`]), ...list.risks.map((r) => [itemId('risk', r.group, r.text), r, `Risk: ${r.text}`])]) {
+      if (!unanswered.has(id)) continue;
+      const was = rows.get(id);
+      rows.set(id, { id, text, for: [...new Set([...(was?.for ?? []), ...(row.for ?? []).filter((f) => targets.includes(f))])].sort() });
+    }
+    const silent = [...rows.values()].sort((a, b) => a.id.localeCompare(b.id));
+    const silentKey = silent.length ? `unasked:${root}:${createHash('sha1').update(`asked\0${silent.map((i) => i.id).join('\0')}`).digest('hex').slice(0, 12)}` : null;
+    if (silentKey && !said(silentKey)) {
+      say(silentKey);
+      const where = [...new Set(silent.flatMap((i) => i.for))].sort();
+      unaskedSaid = [unaskedSaid, `readfirst${at}: the gate asked about ${where.join(', ')} and these were never answered, though the ${where.length === 1 ? 'file' : 'files'} changed:\n- ${silent.map((i) => `\`${i.id}\`: ${i.text}`).join('\n- ')}\nAnswer each (${ANSWER_HOW}), or say why it need not be, before you finish.`].filter(Boolean).join('\n');
     }
     // Answers the change does not bear out (plan 2.7), by each item's last answer: a not-this whose item the final diff
     // (judged again, as `readfirst diff` judges it) touches by a name outside its symbols; below, a done whose item's

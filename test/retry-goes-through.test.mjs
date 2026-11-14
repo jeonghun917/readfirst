@@ -31,7 +31,8 @@ function session({ risk = RISK, a = 'export function alpha() {\n  return 1;\n}\n
   git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'start');
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-retry-state-'));
   const id = `retry-${process.pid}-${++n}`;
-  let now = 1000;
+  // After the repository's first commit, so the stop does not count that commit as the session's.
+  let now = Date.now() + 2000;
   const call = (tool, input, opts = {}) => {
     const out = runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input }), { stateDir, gate: true, now: (now += 1000), ...opts });
     return out ? JSON.parse(out).hookSpecificOutput : null;
@@ -126,6 +127,32 @@ test('the items of a file the gate let through unlooked are named at the stop, o
   assert.match(s3.call('Edit', c3).additionalContext, /not touched/u, 'a later call with time shows the item as not touched');
   writeFileSync(join(s3.root, 'src/a.js'), two.replace('return 3;', 'return 4;'));
   assert.doesNotMatch(s3.stop()?.reason ?? '', /were never asked/u);
+});
+
+// An item the gate asked and the session never answered, on a file the session changed another way (the Edit refused,
+// the file then written by a command or a script): the stop passed with its checks and said nothing of the question
+// (review of 2026-11-14). It names it, once, next to the items never asked.
+test('an item asked and never answered, on a file changed another way, is named at the stop, once', () => {
+  const { root, call, stop } = session();
+  const id = itemId('risk', 'src', RISK);
+  const first = call('Edit', { file_path: join(root, 'src/a.js'), old_string: 'return 1;', new_string: 'return 2;' });
+  assert.ok(refused(first));
+  assert.match(first.permissionDecisionReason, new RegExp(`\`${id}\``, 'u'));
+  writeFileSync(join(root, 'src/a.js'), 'export function alpha() {\n  return 2;\n}\n');
+  const out = stop();
+  assert.equal(out?.decision, 'block');
+  assert.match(out.reason, new RegExp(`the gate asked about src/a\\.js and these were never answered, though the file changed:\\n- \`${id}\`: Risk: ${RISK}`, 'u'));
+  assert.notEqual(stop()?.decision, 'block', 'said once');
+  // Asked and answered: nothing to name.
+  const s2 = session();
+  s2.call('Edit', { file_path: join(s2.root, 'src/a.js'), old_string: 'return 1;', new_string: 'return 2;' });
+  assert.equal(s2.call('Bash', { command: `npx readfirst answer '${JSON.stringify([{ item: id, answer: 'done', because: 'alpha now returns 2, as asked' }])}'` }), null);
+  writeFileSync(join(s2.root, 'src/a.js'), 'export function alpha() {\n  return 2;\n}\n');
+  assert.doesNotMatch(s2.stop()?.reason ?? '', /never answered/u);
+  // Asked and the file left as it was: nothing changed, nothing to name.
+  const s3 = session();
+  s3.call('Edit', { file_path: join(s3.root, 'src/a.js'), old_string: 'return 1;', new_string: 'return 2;' });
+  assert.doesNotMatch(String(s3.stop()?.reason ?? ''), /never answered/u);
 });
 
 test('the same command that removes a folder and writes a checkout into it is asked once', () => {

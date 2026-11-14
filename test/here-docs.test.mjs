@@ -80,6 +80,35 @@ test('a $( ) or backtick in a here-document whose tag is not quoted runs, and ba
   }
 });
 
+// 2026-11-14 (review of #206): bash expands a here-document's body right before its command runs, with the folder
+// and variables where that command stands. Its $( ) were read with the state outside the $( ), backticks or <( ) the
+// command stood in (`x=$(cd a; cat <<E` with `$(echo > f)`: bash a/f, readfirst f), and after the command's own words
+// (`cd a <<E`: bash f, readfirst a/f). A script fed a here-document did not get the words after its tag as arguments
+// (`python3 - <<E x1`: sys.argv[1] is x1, and nothing was named).
+test('a here-document is expanded where its command stands, before it runs, and bash agrees', { skip: !hasBash && 'bash is not installed' }, () => {
+  for (const [script, mainNamed] of [
+    ['x=$(cd a; cat <<E\n$(echo > f1)\nE\n)', ['f1']],
+    ['echo `cd a; cat <<E\n$(echo > f2)\nE\n`', ['f2']],
+    ['cat <(cd a; cat <<E\n$(echo > f3)\nE\n) > /dev/null', ['f3']],
+    ['x=$(cd a; y=$(cat <<E\n$(echo > f4)\nE\n))', ['f4']],
+    ['S=a; x=$(cd $S; cat <<E\n$(echo > f5)\nE\n); cat <<F\n$(echo > f6)\nF', ['f5', 'f6']],
+    ['x=$(cd a; bash <<E\necho > f7\nE\n)', ['f7']],
+    ['cd a <<E\n$(echo > f8)\nE', ['a/f8']],
+    ['cd a <<E; echo > f9\n$(echo > f10)\nE', ['a/f10', 'a/f9']],
+    ['cd a; python3 - <<E x1\nimport sys; open(sys.argv[1], "w")\nE', []],
+    ['python3 - <<E x2 > o\nimport sys; open(sys.argv[1], "w")\nE', ['o']],
+    // As before: a subshell's cd, a cd before the command, two documents on one line, a loop.
+    ['(cd a; cat <<E\n$(echo > g1)\nE\n)', null],
+    ['cd a; x=$(cat <<E\n$(echo > g2)\nE\n)', null],
+    ['cat <<A <<B\n$(echo > g3)\nA\n$(cd a; echo > g4)\nB', null],
+    ['for d in . a; do cat <<E\n$(echo > $d/g5)\nE\ndone', null],
+  ]) {
+    const made = bashMade(script);
+    assert.deepEqual(named(script), made, script);
+    if (mainNamed) assert.notDeepEqual(mainNamed, made, `what main named is not what bash makes: ${script}`);
+  }
+});
+
 // 2026-11-14 (review of #200): withoutComments took a # right after a closing quote for a comment, as the quote is
 // blanked to spaces where it looks: bash reads `'[1]'#x` as the word [1]#x, and `echo 'a'#b > f` writes f.
 test('a # glued to the end of a quoted word is part of the word, and bash agrees', { skip: !hasBash && 'bash is not installed' }, () => {

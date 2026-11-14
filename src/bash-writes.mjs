@@ -1356,88 +1356,61 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // #202, 2026-11-14), and then taken out everywhere first, so `# note \\` took the next line into the comment.
   // hereDocs gives each here-document with where it opens in the text without bodies (`at`) and where its line starts.
   const { text: bare, docs } = hereDocs(String(command ?? ''));
-  // The state where each here-document stands comes from one walk of the text (below), each document read when the
-  // walk reaches it. Until 2026-11-14 the text before each one was walked again (stateAt), so n of them took time by
-  // the square: 4,000 `cat <<E` took 13 s, near the hook's 15 (readfirst review).
-  // hw: the words before it of the command it feeds, as dq gives them; at: where the runner stands in them.
+  // Each here-document is read where bash expands it: right before its command runs, with the folder and variables
+  // where that command stands, not after its own words (`cd a <<E` expands the body before cd runs) and, in a $( ),
+  // backticks or ( ), with those inside it (`x=$(cd s; cat <<E` expands it in s). The walk of the segments below reads
+  // it when it reaches its mark. Until 2026-11-14 a walk of its own found the state before each command, and one in a
+  // $( ) got the state outside it; before that, the text before each document was walked again (stateAt), so n of them
+  // took time by the square: 4,000 `cat <<E` took 13 s, near the hook's 15 (readfirst review).
   const isRunner = (w) => RUNNER.test(w.split('/').pop());
-  const readDoc = ({ quote, body }, hw, at = hw.findIndex(isRunner)) => {
-    // Only the command the here-document feeds: in `node x.mjs; cat > f <<E` it goes to cat (2026-11-08).
-    // The script's arguments: words after the runner that are not options, the script itself ('-') or a redirect.
-    const args = at < 0 ? [] : hw.slice(at + 1).filter((w) => w !== '-' && !w.startsWith('-') && !/^[<>|&]/u.test(w));
+  // runner: the command it feeds, as dq gives it, when that is a runner standing before the document (in
+  // `node x.mjs; cat > f <<E` it goes to cat, 2026-11-08); args: the script's arguments.
+  const readDoc = ({ quote, body }, runner, args) => {
     // A shell fed a here-document runs its body as commands: read them as commands. With a quoted tag (<<'E') the
     // body is read by that shell alone, which sees only exported variables; without, the outer shell expands it first.
-    const fed = at >= 0 && SHELLS.test(hw[at].split('/').pop());
+    const fed = runner != null && SHELLS.test(runner.split('/').pop());
     if (fed) inner(body, quote ? exportedOnly(state.vars) : state.vars);
-    else if (at >= 0 && CODE_WRITES.test(body)) codeTargets(body, { args, exists: here, glob }).forEach(add);
+    else if (runner != null && CODE_WRITES.test(body)) codeTargets(body, { args, exists: here, glob }).forEach(add);
     // With a tag not quoted, the shell expands the body before the command gets it: each $( ) and backtick in it runs,
     // as a subshell where the command stands (`cat <<E` with `$(echo > f)` in its body makes f; nothing was named
     // until 2026-11-14). A shell fed the body reads them with its commands (above).
     if (!quote && !fed) { const subs = docSubstitutions(body); if (subs.length) inner(subs.join('\n'), state.vars); }
   };
-  if (docs.length) {
+  const mark = docs.length ? docMark(bare) : null;
+  const marked = [];
+  if (mark) {
     // The text with a mark where each here-document opens (` N `, N its number: hereDocs left a space there),
-    // walked once as stateAt walks it. In a command's own words the words before the mark are the command the document
-    // feeds, and the state is the one before that command with its words before its first mark followed; a mark inside
-    // a $( ) the command holds (lifted) gets the state before the command, as the text cut there gave (its $( ) not
-    // closed), and the words before it in its line's command. A mark the walk does not reach is read as before.
-    // Each command's words are read once, left to right, for all its marks: each mark read its words again from the
-    // command's start (or its line's), so n here-documents on one line or in one $( ) took time by the square (review
-    // of #206). The same goes for the bodies a word holds: one stack, no recursion.
-    const mark = docMark(bare);
-    const done = new Set();
-    if (mark) {
-      const marked = [];
-      let from = 0;
-      docs.forEach((d, k) => { marked.push(bare.slice(from, d.at), ` ${mark}${k} `); from = d.at + 1; });
-      marked.push(bare.slice(from));
-      const st = start();
-      const notMark = (w) => !w.startsWith(mark);
-      // A command's words (ws) read from i on: hw and run as readDoc takes them. A body is its lines not read yet.
-      const frame = (ws) => ({ ws, i: 0, hw: [], run: -1 });
-      const take = (text, ws, how) => {
-        // A mark in a $( ) the command holds is in its body (lifted): the text has its place.
-        if (done.size === docs.length || (!text.includes(mark) && !text.includes(PLACE))) return;
-        const here = snapshot(st);
-        const opens = ws.findIndex((w) => !notMark(w));
-        if (opens >= 0) follow(here, opening(ws.slice(0, opens)), { maybe: how?.maybe, body: how?.body });
-        Object.assign(state, here);
-        const work = [frame(ws)];
-        while (work.length) {
-          const f = work.at(-1);
-          if (f.lines) {
-            if (f.li >= f.lines.length) { work.pop(); continue; }
-            const line = f.lines[f.li++];
-            // A line's commands, where a mark or a body that may hold one stands.
-            if (!line.includes(mark) && !line.includes(PLACE)) continue;
-            const segs = segments(line);
-            for (let s = segs.length - 1; s >= 0; s--) work.push(frame(words(segs[s])));
-            continue;
-          }
-          if (f.i >= f.ws.length) { work.pop(); continue; }
-          const w = f.ws[f.i++];
-          if (!notMark(w)) {
-            const k = Number(w.slice(mark.length));
-            if (!done.has(k) && docs[k]) { done.add(k); readDoc(docs[k], f.hw, f.run); }
-            continue;
-          }
-          f.hw.push(dq(w));
-          if (f.run < 0 && isRunner(f.hw.at(-1))) f.run = f.hw.length - 1;
-          // The bodies the word holds, read before the words after it (the first on top).
-          const inside = bodiesIn(w).map((n) => BODIES.get(n)?.text).filter((t) => t?.includes(mark) || t?.includes(PLACE));
-          for (let s = inside.length - 1; s >= 0; s--) work.push({ lines: inside[s].split('\n'), li: 0 });
-        }
-      };
-      eachCommand(marked.join(''), st, (p, raw, how) => { take(p.body, raw, how); follow(st, opening(raw.filter(notMark)), how); }, (t) => take(t, words(t)));
-    }
-    // Not reached (a mark the walk dropped, or no mark free): the text before it is walked, as before 2026-11-14.
-    docs.forEach((d, k) => {
-      if (done.has(k)) return;
-      Object.assign(state, stateAt(bare.slice(0, d.at)));
-      readDoc(d, words(segments(lift(withoutComments(bare.slice(d.line, d.at)))).at(-1) ?? '').map(dq));
-    });
+    // walked by the segments below: a mark is a word of the command, read by docsIn and taken out of what else reads it.
+    // In a $( ), backticks or <( ) it is in the body lift took out, read when the body is (after the command, from a
+    // copy of the state where the substitution stood, its own cds followed).
+    let from = 0;
+    docs.forEach((d, k) => { marked.push(bare.slice(from, d.at), ` ${mark}${k} `); from = d.at + 1; });
+    marked.push(bare.slice(from));
   }
-  const shell = withoutComments(bare);
+  const done = new Set();
+  const markWord = mark ? new RegExp(`${mark}\\d+`, 'gu') : null;
+  // A segment's text without its marks.
+  const unmark = (t) => (mark && t.includes(mark) ? t.replace(markWord, ' ') : t);
+  // The here-documents a command opens (raw: its words as written, with their marks), read with the state the walk has
+  // there: the one before the command. The script's arguments are its words after the runner, before the mark or after
+  // it (`python3 - <<E x1`: sys.argv[1] is x1, missed until 2026-11-14), that are not options, the script itself ('-')
+  // or a redirect and its target. Each command's words are read once for all its marks (n on one line: review of #206).
+  const docsIn = (raw) => {
+    if (!mark || !raw.some((w) => w.startsWith(mark))) return;
+    const plain = raw.filter((w) => !w.startsWith(mark));
+    const said = plain.map(dq);
+    const run = said.findIndex(isRunner);
+    const args = run < 0 ? [] : withoutRedirects(plain.slice(run + 1)).map(dq).filter((w) => w !== '-' && !w.startsWith('-'));
+    let before = 0;
+    for (const w of raw) {
+      if (!w.startsWith(mark)) { before++; continue; }
+      const k = Number(w.slice(mark.length));
+      if (done.has(k) || !docs[k]) continue;
+      done.add(k);
+      readDoc(docs[k], run >= 0 && run < before ? said[run] : null, args);
+    }
+  };
+  const shell = withoutComments(mark ? marked.join('') : bare);
   Object.assign(state, start()); // the segments below follow the cds and assignments again themselves
   // Redirects anywhere in a segment, not 2> or >&, and not a > inside quotes (an arrow `=>` in node -e "..." code
   // is not a redirect): quoted text is blanked to find them, the target is read from the segment itself. &> and &>>
@@ -1554,14 +1527,23 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // `cp $(cat l; echo x) dest` lost their writes, and a > in them was read as the outer command's.
   const pending = [];
   const sub = (text) => { for (const id of bodiesIn(text)) pending.push({ id, at: snapshot(state) }); };
-  const visit = (p, raw, how) => { sub(p.body); writesIn(p.body, how); };
-  const after = (text) => { sub(text); redirects(text); };
+  // A command's here-documents are read first, with the state before it (bash expands them before the command runs).
+  const visit = (p, raw, how) => { docsIn(raw); sub(p.body); writesIn(unmark(p.body), how); };
+  const after = (text) => { if (mark && text.includes(mark)) docsIn(words(text)); sub(text); redirects(unmark(text)); };
   eachCommand(shell, state, visit, after);
   for (let k = 0; k < pending.length; k++) {
     const { id, at } = pending[k];
     Object.assign(state, at, { blocks: [], chain: null, fnDepth: 0, fnAwait: false, paren: 0 });
     eachCommand(BODIES.get(id).text, state, visit, after);
   }
+  // Not reached (no mark free, or a mark the walks did not reach): the text before it is walked, as before 2026-11-14.
+  docs.forEach((d, k) => {
+    if (done.has(k)) return;
+    Object.assign(state, stateAt(bare.slice(0, d.at)));
+    const hw = words(segments(lift(withoutComments(bare.slice(d.line, d.at)))).at(-1) ?? '').map(dq);
+    const at = hw.findIndex(isRunner);
+    readDoc(d, at < 0 ? null : hw[at], at < 0 ? [] : hw.slice(at + 1).filter((w) => w !== '-' && !w.startsWith('-') && !/^[<>|&]/u.test(w)));
+  });
   repos.delete('');
   // A file in a checkout the command itself makes is not there when the hook runs, so its notes cannot be read yet: it
   // is listed as not known, in that checkout (`git worktree add $S/w-a main && cp t.js $S/w-a/test/`). Only a checkout
