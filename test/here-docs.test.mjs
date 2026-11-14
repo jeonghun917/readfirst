@@ -59,6 +59,14 @@ test('a `readfirst read` in a here-document body is no read; one run as a comman
   assert.deepEqual(reads('cat <<< "npx readfirst read a.js"; npx readfirst read b.js'), [['/r/b.js']]);
 });
 
+// The text before each here-document was kept as a copy, and finding its line flattened the whole text each time: 16,000
+// small here-documents ran Node out of memory (a crash no catch stops). They are kept as places in the text now.
+test('16,000 here-documents in one command are read without running out of memory', () => {
+  const many = 'cat <<E >/dev/null\nbody\nE\n'.repeat(16000);
+  assert.equal(commandWords(many, '/r').length, 16000);
+  assert.deepEqual(bashReads(`${many}npx readfirst read a.js`, '/r').map((r) => r.files), [['/r/a.js']]);
+});
+
 test('commandWords and the other walks see the same commands around a here-document', () => {
   const cmds = (c) => commandWords(c, '/r').map((x) => x.words.map((w) => w.text).join(' '));
   assert.deepEqual(cmds('y=$((1<<x))\nreadfirst answer k\nx --f'), ['readfirst answer k', 'x --f']);

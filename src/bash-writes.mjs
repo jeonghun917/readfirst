@@ -240,9 +240,11 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
 // after a space or a digit, so `echo hi>file`, `ls>out` and `cat a>b` wrote nothing readfirst could see.
 const OPERATOR = String.raw`&>>|&>|<<<|<<-|<<|<>|<&|<|>>|>\||>&|>`;
 // The here-documents of some shell text, read as bash reads them: `text`, the text without their bodies, their end
-// lines and the `<<TAG` that opens each; and `docs`, in order, { before, head, quote, tag, body }: `before` is `text`
-// up to where the here-document opens, `head` the part of that line before it, `quote` whether the tag was quoted (the
-// body is then not expanded). A << opens one where the shell reads code (at the top, in $( ), ( ) or backticks, also
+// lines and the `<<TAG` that opens each; and `docs`, in order, { at, line, quote, tag, body }: `at` is where in `text`
+// the here-document opens and `line` where that line starts (so `text.slice(0, at)` is the text before it, and
+// `text.slice(line, at)` the part of its line before it), `quote` whether the tag was quoted (the body is then not
+// expanded). Places, not copies: a copy of the text so far for each of 16,000 here-documents ran Node out of memory
+// (review of 2026-11-14). A << opens one where the shell reads code (at the top, in $( ), ( ) or backticks, also
 // inside "..." when in a $( ) there), never inside quotes, a comment or arithmetic ($(( )), (( )), $[ ]: a shift), and
 // never as part of <<< (a here-string). Its body starts after the line that opens it and ends at a line that is exactly
 // the tag (after leading tabs with <<-); with no such line it runs to the end, as bash reads it. Each walk of the
@@ -250,7 +252,12 @@ const OPERATOR = String.raw`&>>|&>|<<<|<<-|<<|<>|<&|<|>>|>\||>&|>`;
 // Until 2026-11-14 one regex found them: `$((1<<x))` took the lines up to one starting with x for a body, `<<< EOF` was
 // a here-document, and a line only starting with the tag (`END of the doc`) ended one, so a cd after it was followed.
 function hereDocs(s) {
-  let out = '';
+  // The text is kept as parts with its length and where its last line starts (lineAt), so nothing is copied per
+  // here-document.
+  const parts = [];
+  let len = 0;
+  let lineAt = 0;
+  const put = (chunk) => { parts.push(chunk); const k = chunk.lastIndexOf('\n'); if (k >= 0) lineAt = len + k + 1; len += chunk.length; };
   const docs = [];
   let pending = [];
   const stack = []; // 'dq' inside "...", 'sub' in $( ) or ( ), 'bt' in backticks
@@ -258,11 +265,11 @@ function hereDocs(s) {
   for (let i = 0; i < s.length;) {
     const c = s[i];
     const mode = stack.at(-1);
-    if (c === '\\') { out += s.slice(i, i + 2); i += 2; wordStart = false; continue; }
+    if (c === '\\') { put(s.slice(i, i + 2)); i += 2; wordStart = false; continue; }
     // Arithmetic is copied whole: a << in it is a shift.
     if ((s.startsWith('$((', i) || s.startsWith('$[', i) || (mode !== 'dq' && s.startsWith('((', i))) && arithEnd(s, i) >= 0) {
       const e = arithEnd(s, i);
-      out += s.slice(i, e);
+      put(s.slice(i, e));
       i = e;
       wordStart = false;
       continue;
@@ -270,24 +277,24 @@ function hereDocs(s) {
     if (mode === 'dq') {
       if (c === '"') stack.pop();
       else if (c === '`') stack.push('bt');
-      else if (c === '$' && s[i + 1] === '(') { stack.push('sub'); out += '$('; i += 2; wordStart = true; continue; }
-      out += c;
+      else if (c === '$' && s[i + 1] === '(') { stack.push('sub'); put('$('); i += 2; wordStart = true; continue; }
+      put(c);
       i++;
       continue;
     }
     if (c === "'") {
       const k = s.indexOf("'", i + 1);
-      if (k >= 0) { out += s.slice(i, k + 1); i = k + 1; wordStart = false; continue; }
+      if (k >= 0) { put(s.slice(i, k + 1)); i = k + 1; wordStart = false; continue; }
     } else if (c === '"') stack.push('dq');
     else if (c === '`') { if (mode === 'bt') stack.pop(); else stack.push('bt'); } else if (c === '(') stack.push('sub');
     else if (c === ')' && mode === 'sub') stack.pop();
     else if (c === '#' && wordStart) {
       const k = s.indexOf('\n', i);
       const e = k < 0 ? s.length : k;
-      out += s.slice(i, e);
+      put(s.slice(i, e));
       i = e;
       continue;
-    } else if (s.startsWith('<<<', i)) { out += '<<<'; i += 3; wordStart = true; continue; } else if (s.startsWith('<<', i)) {
+    } else if (s.startsWith('<<<', i)) { put('<<<'); i += 3; wordStart = true; continue; } else if (s.startsWith('<<', i)) {
       let j = i + 2;
       const dash = s[j] === '-';
       if (dash) j++;
@@ -299,14 +306,14 @@ function hereDocs(s) {
       }
       const word = s.slice(j, k);
       if (word) {
-        pending.push({ before: out, head: out.slice(out.lastIndexOf('\n') + 1), quote: /['"\\]/u.test(word), tag: word.replace(/\\(.)/gu, '$1').replace(/['"]/gu, ''), dash });
-        out += ' ';
+        pending.push({ at: len, line: lineAt, quote: /['"\\]/u.test(word), tag: word.replace(/\\(.)/gu, '$1').replace(/['"]/gu, ''), dash });
+        put(' ');
         i = k;
         wordStart = true;
         continue;
       }
     } else if (c === '\n' && pending.length) {
-      out += c;
+      put(c);
       let at = i + 1;
       for (const p of pending) {
         const lines = [];
@@ -317,20 +324,20 @@ function hereDocs(s) {
           if ((p.dash ? line.replace(/^\t+/u, '') : line) === p.tag) break;
           lines.push(line);
         }
-        docs.push({ before: p.before, head: p.head, quote: p.quote, tag: p.tag, body: lines.join('\n') });
+        docs.push({ at: p.at, line: p.line, quote: p.quote, tag: p.tag, body: lines.join('\n') });
       }
       pending = [];
       i = at;
       wordStart = true;
       continue;
     }
-    out += c;
+    put(c);
     wordStart = /[\s;&|()<>]/u.test(c);
     i++;
   }
   // A here-document opened on the last line has no body.
-  for (const p of pending) docs.push({ before: p.before, head: p.head, quote: p.quote, tag: p.tag, body: '' });
-  return { text: out, docs };
+  for (const p of pending) docs.push({ at: p.at, line: p.line, quote: p.quote, tag: p.tag, body: '' });
+  return { text: parts.join(''), docs };
 }
 const REDIRECT = new RegExp(String.raw`^\d*(?:${OPERATOR})`, 'u');
 const OPERATOR_AT = new RegExp(OPERATOR, 'uy');
@@ -747,7 +754,10 @@ const CHAINED = /^(?:&&|\|\||\|&?)$/u;
 function eachCommand(text, state, visit, tail = () => {}) {
   // Here-documents first, then comments, in one place for every walk (hereDocs): a body's lines are no commands, and a
   // ' in a body (`it's`) would otherwise open a quote for the comment reader. Both are no change on text without them.
-  const shell = withoutComments(hereDocs(text).text);
+  // Each is skipped where it has nothing to find (no << or no #): stateAt walks the text before each here-document
+  // again, and reading it twice more made a command of 2,000 here-documents half as slow again (2026-11-14).
+  const docless = text.includes('<<') ? hereDocs(text).text : text;
+  const shell = docless.includes('#') ? withoutComments(docless) : docless;
   const outer = [];
   let before = '';
   let ticks = false;
@@ -1067,12 +1077,12 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
   // the hook showed another repository's notes for a relative path after a cd).
   // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`).
-  // hereDocs gives each here-document with the text before it (`before`, earlier bodies taken out).
+  // hereDocs gives each here-document with where it opens in the text without bodies (`at`) and where its line starts.
   const { text: bare, docs } = hereDocs(String(command ?? '').replace(/\\\r?\n/gu, ' '));
-  for (const { before, head, quote, body } of docs) {
-    Object.assign(state, stateAt(before));
+  for (const { at: opens, line, quote, body } of docs) {
+    Object.assign(state, stateAt(bare.slice(0, opens)));
     // Only the command the here-document feeds: in `node x.mjs; cat > f <<E` it goes to cat (2026-11-08).
-    const hw = words(segments(withoutComments(head)).at(-1) ?? '').map(dq);
+    const hw = words(segments(withoutComments(bare.slice(line, opens))).at(-1) ?? '').map(dq);
     const at = hw.findIndex((w) => RUNNER.test(w.split('/').pop()));
     // The script's arguments: words after the runner that are not options, the script itself ('-') or a redirect.
     const args = at < 0 ? [] : hw.slice(at + 1).filter((w) => w !== '-' && !w.startsWith('-') && !/^[<>|&]/u.test(w));
