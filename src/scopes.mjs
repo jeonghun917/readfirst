@@ -14,7 +14,7 @@
 // `REASONS`, never a guess. Where an import's module text points is `resolveImport`, from the resolvers importEdges
 // uses (src/imports.mjs); following a re-export (`export * from`, `export { x } from`) to the file that defines the
 // name is not done here.
-import { codeRows, tokens, bracketMatches, countStep, needsMore, continues, OBJECT_BEFORE, isWord, isPunct, reads } from './code.mjs';
+import { codeRows, tokens, bracketMatches, afterAngle, countStep, needsMore, continues, OBJECT_BEFORE, isWord, isPunct, reads } from './code.mjs';
 import { importResolver } from './imports.mjs';
 
 // Why a name or a module is not known: the closed list.
@@ -153,12 +153,25 @@ function annotationOf(T, a, b) {
     const t = toks[j];
     marks[j] = SKIP;
     if (t.k !== 'word' || isPunct(toks[j - 1], '.') || data.keywords.has(t.v)) continue;
+    if (T.lang !== 'py' && typeMemberName(toks, j)) continue;
     const member = isPunct(toks[j + 1], '.') && isWord(toks[j + 2]) ? toks[j + 2].v : null;
     if (data.wrappers.has(t.v) || (member && data.typingModules.has(t.v) && data.wrappers.has(member))) continue;
     marks[j] = TREF;
     names.push({ name: t.v, member, pos: j });
   }
   return { names };
+}
+
+// A name a TS type gives to a member or a parameter, not a type it uses: the key of an object type (`{ k: T; m?(): T }`),
+// an index signature's (`[key: string]: T`), a parameter of a function type (`(err: E, val?: T) => R`), a labelled tuple
+// member. It starts a member (after `{ ; , ( [`, `readonly`, or first on its line) and a `:` or `(` follows; the
+// branches of a conditional type (`A extends B ? C : D`) follow a `?` or a type and are names used.
+function typeMemberName(toks, j) {
+  const prev = toks[j - 1];
+  const starts = toks[j].first || isWord(prev, 'readonly') || (prev && ['{', ';', ',', '(', '['].includes(prev.v) && prev.k === 'punct');
+  if (!starts) return false;
+  const k = isPunct(toks[j + 1], '?') ? j + 2 : j + 1;
+  return isPunct(toks[k], ':') || isPunct(toks[k], '(');
 }
 
 // The parts of the inside of a bracket, from token a to the one before b, split at its own commas: [start, end) pairs.
@@ -168,18 +181,23 @@ function partsBetween(T, a, b) {
   for (let j = a; j < b; j++) {
     countStep();
     if (isOpen(T.toks[j])) { const c = T.match.get(j); if (c === undefined || c >= b) break; j = c; continue; }
+    const angle = T.typeAngles?.get(j);
+    if (angle !== undefined && angle <= b) { j = angle - 1; continue; }
     if (isPunct(T.toks[j], ',')) { out.push([start, j]); start = j + 1; }
   }
   if (b > start) out.push([start, b]);
   return out;
 }
 
-// The first token from a to the one before b, at a's bracket depth, that `stop` accepts, or b.
+// The first token from a to the one before b, at a's bracket depth, that `stop` accepts, or b. Type angles
+// (T.typeAngles) are passed whole like brackets.
 function firstAt(T, a, b, stop) {
   for (let j = a; j < b; j++) {
     countStep();
     if (stop(T.toks[j], j)) return j;
-    if (isOpen(T.toks[j])) { const c = T.match.get(j); if (c === undefined) return b; j = c; }
+    if (isOpen(T.toks[j])) { const c = T.match.get(j); if (c === undefined) return b; j = c; continue; }
+    const angle = T.typeAngles?.get(j);
+    if (angle !== undefined) j = angle - 1;
   }
   return b;
 }
@@ -468,6 +486,68 @@ const MEMBER_WORDS = wordSet('public private protected static readonly abstract 
 const PARAM_WORDS = wordSet('public private protected readonly override');
 const stringOf = (t) => (t.text ?? '').replace(/^['"`]|['"`]$/gu, '');
 
+// Tokens that only a value holds: a `<…>` with one of them at its own depth is a comparison, not type arguments.
+const VALUE_OPS = new Set(['&&', '||', '??', '==', '===', '!=', '!==', '<=', '>=', '+', '-', '*', '/', '%', '**', '!', '=', '+=', '-=', '*=', '/=', '%=', '++', '--', ';', '?', ':', '?.']);
+// Words a type can follow: a `Name<…>` after one of them is a type, whatever follows its `>`. Narrower than
+// TYPE_BEFORE in src/code.mjs, which is read inside a type already and so may hold `,`, `(`, `=` and `?`.
+const TYPE_BEFORE_WORDS = wordSet('as satisfies extends implements keyof readonly typeof');
+
+// The `<…>` of a script that are types, each `<` → the token after its `>` (afterAngle in src/code.mjs, which knows
+// where a `<` ends) in T.typeAngles, so firstAt and partsBetween pass them whole as they do a bracket:
+// - type arguments of a value: `new Map<K, V>()`, `f<T>(x)`, a tagged template `tag<T>\`…\``;
+// - a type's own: `Name<…>` after `:`, `as`, `extends`, `|`, `&` and the like (`a: Map<K, V>, b`);
+// - a generic arrow's type parameters, `<T,>(a: T) => a`, also kept in arrowTypeParams by its `(`.
+// A `<…>` holding a value's operator at its own depth (`a < b && c > (d)`) is a comparison. Each `<` inside an
+// accepted one is passed with it, and the depth table is filled once from the end, so the work grows with the text.
+function typeAngles(T, arrowTypeParams) {
+  const { toks, n, match } = T;
+  T.typeAngles = new Map();
+  // The first token from j on, at j's depth, that type arguments cannot hold: a value's operator or the bracket that
+  // closes the depth (afterAngle reads past one); n if none.
+  const opAt = new Int32Array(n + 1).fill(n);
+  for (let j = n - 1; j >= 0; j--) {
+    countStep();
+    const t = toks[j];
+    if (t.k === 'punct' && (VALUE_OPS.has(t.v) || ')]}'.includes(t.v))) opAt[j] = j;
+    else if (isOpen(t)) { const c = match.get(j); opAt[j] = c === undefined ? j : opAt[c + 1]; }
+    else opAt[j] = opAt[j + 1];
+  }
+  for (let j = 0; j < n; j++) {
+    countStep();
+    if (!isPunct(toks[j], '<')) continue;
+    const a = afterAngle(toks, j);
+    if (a <= 0 || opAt[j + 1] < a - 1) continue;
+    const prev = toks[j - 1];
+    const next = toks[a];
+    const called = isPunct(next, '(') || (next?.k === 'val' && next.v === '`');
+    let kind = null;
+    if (isWord(prev) && prev.v !== 'async') {
+      let s = j - 1; // the start of the name before: `a.b.C`
+      while (isPunct(toks[s - 1], '.') && isWord(toks[s - 2])) s -= 2;
+      const before = toks[s - 1];
+      if (called || isWord(before, 'new') || (before && ((before.k === 'punct' && [':', '|', '&', '=>'].includes(before.v)) || (isWord(before) && TYPE_BEFORE_WORDS.has(before.v))))) kind = 'type';
+    } else if (isPunct(next, '(') && match.has(a)) {
+      const after = toks[match.get(a) + 1];
+      if (isPunct(after, '=>') || isPunct(after, ':')) { kind = 'parameters'; arrowTypeParams.set(a, j); }
+    }
+    if (!kind) continue;
+    typeAngle(T, j, a);
+    j = a - 1;
+  }
+}
+
+// The `<` at j, whose `>` is the token before a, is a type's, and so is every `<…>` inside it (`<T extends Map<A, B>,
+// U = D>`): each `<` is visited once.
+function typeAngle(T, j, a) {
+  T.typeAngles.set(j, a);
+  for (let q = j + 1; q < a - 1; q++) {
+    countStep();
+    if (!isPunct(T.toks[q], '<')) continue;
+    const e = afterAngle(T.toks, q);
+    if (e > 0 && e < a) T.typeAngles.set(q, e);
+  }
+}
+
 function readScript(T) {
   const { toks, n, marks, match, back } = T;
   const moduleScope = T.scope('module', null, 0, n);
@@ -481,10 +561,15 @@ function readScript(T) {
   const varScope = () => stack.at(-1).fn;
   const blockScope = () => stack.at(-1).s;
   const endsStatement = (j) => j > 0 && toks[j].first && !needsMore(toks[j - 1]) && !continues(toks[j]);
+  // Where the look for an arrow's `=>` past `): R` stops: the `=>`, or what ends the type (a ternary's `?` or `:` too,
+  // so `c ? (a) : c ? (b) : …` is not read to its end for each `)`).
+  const arrowLookStop = (x, q) => isPunct(x, '=>') || isPunct(x, ',') || isPunct(x, ';') || isPunct(x, ')') || isPunct(x, ']') || isPunct(x, '}') || isPunct(x, '=') || isPunct(x, '?') || isPunct(x, ':') || endsStatement(q);
   let declared = -1; // `declare` seen at this token: the statement's bindings are types
   let typed = null; // the parameters of `(a: T): R => …`: the last `)` a `:` followed
   const arefs = new Set(); // names a `++` or `--` before them updates
   const caseColons = new Set();
+  const arrowTypeParams = new Map(); // `(` of a generic arrow's parameters → its `<`
+  typeAngles(T, arrowTypeParams);
 
   // A destructuring pattern (or a plain name) from token a to the one before b: the names marked BIND and bound, keys
   // KEY, defaults left to be read as uses; a type after `:` at a parameter's top is its annotation.
@@ -502,8 +587,9 @@ function readScript(T) {
         const object = isPunct(toks[j], '{');
         for (const [pa, pb] of partsBetween(T, j + 1, c)) {
           if (object && !isPunct(toks[pa], '...')) {
-            const colon = firstAt(T, pa, pb, (t) => isPunct(t, ':'));
-            if (colon < pb) { if (isWord(toks[pa])) marks[pa] = KEY; work.push([colon + 1, pb, 'inner']); continue; }
+            // A key's `:` comes before any default: the `:` of a ternary in a default (`{ a = c ? 1 : 2 }`) is no key.
+            const colon = firstAt(T, pa, pb, (t) => isPunct(t, ':') || isPunct(t, '='));
+            if (colon < pb && isPunct(toks[colon], ':')) { if (isWord(toks[pa])) marks[pa] = KEY; work.push([colon + 1, pb, 'inner']); continue; }
           }
           work.push([pa, pb, 'inner']);
         }
@@ -545,6 +631,9 @@ function readScript(T) {
         if ([',', ';', ')', ']', '}', '=', '?', '&&', '||'].includes(t.v)) break;
         if (t.v === '{' && atom) break;
         if (isOpen(t)) { const c = match.get(j) ?? n; for (let q = j; q <= c && q < n; q++) marks[q] = SKIP; j = c; atom = true; continue; }
+        // Type arguments (`Map<K, V>`): passed whole, their commas no end of the type.
+        const angle = t.v === '<' ? afterAngle(toks, j) : -1;
+        if (angle > 0 && angle <= b) { for (let q = j; q < angle; q++) marks[q] = SKIP; j = angle - 1; atom = true; continue; }
         marks[j] = SKIP;
         atom = t.v === '>';
         continue;
@@ -556,21 +645,36 @@ function readScript(T) {
     return j;
   };
   const skipAngles = (p) => { let d = 0; for (; p < n; p++) { countStep(); marks[p] = SKIP; if (isPunct(toks[p], '<')) d++; else if (isPunct(toks[p], '>') && --d === 0) return p + 1; } return p; };
+  // The type parameters `<T extends C = D, U>` from the `<` at open to the `>` at close, bound in scope s as types; the
+  // names in their constraints and defaults are types used.
+  const bindTypeParams = (open, close, s) => {
+    for (const [pa, pb] of partsBetween(T, open + 1, close)) {
+      let k = pa;
+      while (k + 1 < pb && isWord(toks[k]) && ['const', 'in', 'out'].includes(toks[k].v) && isWord(toks[k + 1])) { marks[k] = SKIP; k++; }
+      if (!isWord(toks[k])) continue;
+      marks[k] = SKIP;
+      T.bind(s, toks[k].v, k, 'type-parameter', { type: true, pos: open });
+      if (k + 1 < pb) annotationOf(T, k + 1, pb);
+    }
+  };
 
   // A function from its parameters (or type parameters) at token p: the scope from the `(` to its body's end, the
   // parameters bound in it. The index of its body's `{`, or -1 (no body: an overload or an abstract method).
   const callableAt = (p, name) => {
-    if (isPunct(toks[p], '<')) p = skipAngles(p);
+    const typeOpen = isPunct(toks[p], '<') ? p : -1;
+    if (typeOpen >= 0) { const e = afterAngle(toks, p); if (e > 0) typeAngle(T, p, e); p = skipAngles(p); }
     if (!isPunct(toks[p], '(')) return -1;
     const c = match.get(p);
     if (c === undefined) return -1;
     let q = c + 1;
-    if (isPunct(toks[q], ':')) { marks[q] = SKIP; q = skipType(q + 1); }
+    // A return type: the names in it are types used.
+    if (isPunct(toks[q], ':')) { marks[q] = SKIP; const from = q + 1; q = skipType(from); annotationOf(T, from, q); }
     if (!isPunct(toks[q], '{')) { for (let r = p; r < q; r++) if (!marks[r] || marks[r] === REF) marks[r] = SKIP; return -1; }
     const end = (match.get(q) ?? n - 1) + 1;
     const s = T.scope('function', name, p, end);
     scopeStartAt(p, s);
     roles.set(q, 'body');
+    if (typeOpen >= 0) bindTypeParams(typeOpen, p - 1, s);
     params(p, c, s);
     return q;
   };
@@ -714,6 +818,17 @@ function readScript(T) {
     const prev = toks[j - 1];
     const role = ctx.at(-1).role;
     if (t.k === 'punct') {
+      // Type arguments (`new Map<K, V>()`, `f<T>(x)`, `a: Map<K, V>`): types used. A generic arrow's type parameters
+      // are bound at its `=>`, a declaration's where it is read (its `<` already marked).
+      const angle = T.typeAngles.get(j);
+      if (angle !== undefined) {
+        if (!marks[j]) {
+          if (arrowTypeParams.get(angle) === j) for (let q = j; q < angle; q++) marks[q] = SKIP;
+          else annotationOf(T, j + 1, angle - 1);
+        }
+        j = angle - 1;
+        continue;
+      }
       if (isOpen(t)) {
         const c = match.get(j) ?? n;
         let r = roles.get(j);
@@ -730,13 +845,23 @@ function readScript(T) {
           else r = 'block';
           if (r === 'block') { const s = T.scope('block', null, j, c + 1); enterScope({ s, end: c + 1 }); }
         }
-        if (r === 'class') {
+        // A generic class's scope was made at its `<` (its type parameters), and entered there.
+        if (r === 'class' && !T.classAt?.has(j)) {
           const s = T.scope('class', T.classNames?.get(j) ?? null, j, c + 1);
           T.scopes[s].isClass = true;
           (T.classAt ??= new Map()).set(j, s);
           enterScope({ s, end: c + 1 });
         }
         if (r === 'skip') { for (let q = j; q <= c && q < n; q++) if (!marks[q]) marks[q] = SKIP; j = c; continue; }
+        // An arrow's parameters (`(cb: (e: V) => V) =>`, `(a: T): R =>`): their types are read now, before the walk
+        // goes in, so the `=>` of a function type among them is known as a type's, not taken for an arrow. A `(` already
+        // marked is inside a type read so (each nested function type read again would grow with the square of the depth).
+        if (r === 'paren' && !marks[j] && c < n && (isPunct(toks[c + 1], '=>') || (isPunct(toks[c + 1], ':') && isPunct(toks[firstAt(T, c + 2, n, arrowLookStop)], '=>')))) {
+          for (const [pa, pb] of partsBetween(T, j + 1, c)) {
+            const colon = firstAt(T, pa, pb, (x) => isPunct(x, ':') || isPunct(x, '='));
+            if (isPunct(toks[colon], ':')) annotationOf(T, colon + 1, firstAt(T, colon, pb, (x) => isPunct(x, '=')));
+          }
+        }
         ctx.push({ open: j, close: c, role: r });
         continue;
       }
@@ -746,17 +871,21 @@ function readScript(T) {
           // A `:` after a `)` starts a return type only when a `=>` follows the type at this depth.
           // A `?` or `:` ends the look as well: the next branch of a ternary, so `c ? (a) : c ? (b) : …` is not read to
           // its end for each `)` (a conditional type as an arrow's return type is not seen as one).
-          const arrow = firstAt(T, j + 2, n, (x, q) => isPunct(x, '=>') || isPunct(x, ',') || isPunct(x, ';') || isPunct(x, ')') || isPunct(x, ']') || isPunct(x, '}') || isPunct(x, '=') || isPunct(x, '?') || isPunct(x, ':') || endsStatement(q));
+          const arrow = firstAt(T, j + 2, n, arrowLookStop);
           typed = isPunct(toks[arrow], '=>') ? { open: back.get(j), close: j, depth: ctx.length, arrow } : null;
+          // The return type is read now, so a function type in it (`): ((r: V) => V) =>`) is not taken for an arrow.
+          if (typed) { marks[j + 1] = SKIP; annotationOf(T, j + 2, arrow); }
         }
         continue;
       }
+      // A `=>` already marked is a function type's, inside a type read before (`<T extends (p: A) => B>`).
+      if (t.v === '=>' && marks[j]) continue;
       if (t.v === '=>') {
         let a = -1;
         let open = -1;
         let close = -1;
         // `(a: T): R => …`: the parameters a `:` and a return type follow, before a name that would be one parameter.
-        if (typed && typed.arrow === j) { open = typed.open; close = typed.close; a = open; for (let q = close + 1; q < j; q++) marks[q] = SKIP; }
+        if (typed && typed.arrow === j) { open = typed.open; close = typed.close; a = open; }
         else if (isWord(prev) && !T.data.keywords.has(prev.v)) a = j - 1;
         else if (isPunct(prev, ')')) { open = back.get(j - 1) ?? -1; close = j - 1; a = open; }
         typed = null;
@@ -765,6 +894,8 @@ function readScript(T) {
         const bodyOpen = isPunct(toks[j + 1], '{') ? j + 1 : -1;
         const end = bodyOpen >= 0 ? (match.get(bodyOpen) ?? n - 1) + 1 : null;
         const s = T.scope('function', null, a, end ?? n);
+        const typeOpen = open >= 0 ? arrowTypeParams.get(open) : undefined;
+        if (typeOpen !== undefined) bindTypeParams(typeOpen, open - 1, s);
         if (open >= 0) params(open, close, s);
         else { marks[j - 1] = BIND; T.bind(s, prev.v, j - 1, 'parameter'); }
         if (bodyOpen >= 0) { roles.set(bodyOpen, 'body'); enterScope({ s, end }); } else enterScope({ s, end: null, depth: ctx.length, after: j });
@@ -804,6 +935,14 @@ function readScript(T) {
       continue;
     }
     const v = t.v;
+    // `x as T`, `x satisfies T`: the names in the type are types used (an import's or export's `as` is read there).
+    if ((v === 'as' || v === 'satisfies') && j > 0 && !isPunct(toks[j + 1], ',') && !isPunct(toks[j + 1], ')')) {
+      marks[j] = SKIP;
+      const end = skipType(j + 1);
+      annotationOf(T, j + 1, end);
+      j = end - 1;
+      continue;
+    }
     if (v === 'import' && !isPunct(toks[j + 1], '(') && !isPunct(toks[j + 1], '.')) { j = importDecl(j) - 1; continue; }
     if (v === 'import' && isPunct(toks[j + 1], '(')) {
       if (!(toks[j + 2]?.k === 'val' && isPunct(toks[j + 3], ')'))) T.unknownAt(j, 'dynamic-import', 'import()', false);
@@ -842,11 +981,20 @@ function readScript(T) {
       const expression = Boolean(prev) && OBJECT_BEFORE.has(prev.v) && !isWord(prev, 'export') && !isWord(prev, 'default');
       if (named) marks[k] = BIND;
       let q = named ? k + 1 : k;
-      if (isPunct(toks[q], '<')) q = skipAngles(q);
+      const typeOpen = isPunct(toks[q], '<') ? q : -1;
+      if (typeOpen >= 0) { const e = afterAngle(toks, q); if (e > 0) typeAngle(T, q, e); q = skipAngles(q); }
       const bodyOpen = firstAt(T, q, n, (x) => isPunct(x, '{') || isWord(x, 'implements'));
       if (isWord(toks[bodyOpen], 'implements')) skipType(bodyOpen + 1);
       const open = isPunct(toks[bodyOpen], '{') ? bodyOpen : firstAt(T, bodyOpen, n, (x) => isPunct(x, '{'));
       if (open < n) { roles.set(open, 'class'); T.classNames ??= new Map(); if (named) T.classNames.set(open, toks[k].v); }
+      // `class C<K> extends B<K> {`: the class scope opens at its type parameters, so the heritage sees them too.
+      if (open < n && typeOpen >= 0) {
+        const s = T.scope('class', named ? toks[k].v : null, typeOpen, (match.get(open) ?? n - 1) + 1);
+        T.scopes[s].isClass = true;
+        (T.classAt ??= new Map()).set(open, s);
+        scopeStartAt(typeOpen, s);
+        bindTypeParams(typeOpen, q - 1, s);
+      }
       if (named) {
         if (expression && open < n) (T.classExpressions ??= []).push({ at: open, name: toks[k].v, pos: k });
         else T.bind(blockScope(), toks[k].v, k, 'class', declared >= 0 ? { type: true } : {});

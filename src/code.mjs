@@ -176,7 +176,7 @@ export function closeOf(toks, k) {
 // all its tokens (angleEnds): read from each `<`, a `<` left open went to the end every time, and `<` after `<`
 // (`function f<a` line after line, members `m<a` in a class) took time growing with the square of the text.
 const ANGLE_ENDS = new WeakMap();
-function afterAngle(toks, k) {
+export function afterAngle(toks, k) {
   if (counting) steps++;
   let ends = ANGLE_ENDS.get(toks);
   if (!ends) { ends = angleEnds(toks); ANGLE_ENDS.set(toks, ends); }

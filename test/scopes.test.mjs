@@ -197,7 +197,7 @@ test('scopes: arrow functions are scopes with no name; typed parameters and retu
   assert.deepEqual([a.how, t.scopes[a.scope].kind, t.scopes[a.scope].name], ['parameter', 'function', null]);
   assert.deepEqual(a.annotation.names.map((x) => x.name), ['Store']);
   assert.ok(t.references.filter((r) => r.name === 'Store' || r.name === 'Opts').every((r) => r.type));
-  assert.ok(!t.references.some((r) => r.name === 'R'));
+  assert.ok(t.references.filter((r) => r.name === 'R').every((r) => r.type) && t.references.some((r) => r.name === 'R'));
   assert.equal(bindingOf(t, referenceAt(t, 'x', 3)).how, 'parameter');
   assert.equal(bindingOf(t, referenceAt(t, 'p', 4)).how, 'parameter');
   assert.ok(!t.references.some((r) => r.name === 'm' || r.name === 'v'));
@@ -217,6 +217,52 @@ test('scopes: an object or array in a destructuring default is a value: its keys
   assert.deepEqual(t.bindings.map((b) => b.name).sort(), ['R', 'a', 'b', 'c', 'e', 'f', 'g']);
   const u = scopes('a.js', 'for (const { a = { k: 1 } } of xs) a;\ntry {} catch ({ b = { k: 1 } }) { b; }\nclass C { m({ c = { k: 1 } }) { return c; } }\nfunction h({ d: { e = { k: 1 } } = {} }) { return e; }\n');
   assert.ok(!u.references.some((r) => r.name === 'k' || r.name === 'd'), JSON.stringify(u.references.map((r) => r.name)));
+  // A default with a body of its own, and a ternary whose `:` is no key.
+  const v = scopes('a.js', 'const R = 1, c = 0;\nfunction f({ a = () => { return R; } }) {}\nconst { b = class { m() { return R; } } } = {};\nconst { d = ({ e }) => e } = {};\nfunction g({ h = c ? { k: 1 } : { k: 2 }, i }) { return h + i; }\n');
+  assert.equal(bindingOf(v, referenceAt(v, 'R', 2)).line, 1);
+  assert.equal(bindingOf(v, referenceAt(v, 'R', 3)).line, 1);
+  assert.equal(bindingOf(v, referenceAt(v, 'e', 4)).how, 'parameter');
+  assert.equal(bindingOf(v, referenceAt(v, 'h', 5)).how, 'parameter');
+  assert.deepEqual(v.bindings.map((b) => b.name).sort(), ['R', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i']);
+  assert.ok(!v.references.some((r) => r.name === 'k'), JSON.stringify(v.references.map((r) => r.name)));
+});
+
+test('scopes: in a TS object type, member names, index and function-type parameter names are not names used', () => {
+  const t = scopes('a.ts', 'type V = number;\nfunction f(a: { k: V; m?: V; n(): V; [key: string]: V }) { return a; }\nfunction g({ b }: { b: V }, cb: (err: V, val?: V) => V) { return b + cb; }\n');
+  const types = t.references.filter((r) => r.type && !r.to.builtin);
+  assert.deepEqual(types.map((r) => r.name), ['V', 'V', 'V', 'V', 'V', 'V', 'V', 'V']);
+  assert.ok(types.every((r) => t.bindings[r.to.binding].name === 'V'));
+});
+
+test('scopes: a comma inside type arguments splits no parameter, declarator or pattern; type parameters are bound', () => {
+  const t = scopes('a.ts', [
+    'type V = number;',
+    'function f(m: Map<string, V>, b) { return m + b; }',
+    'const a: Map<string, V> = new Map<string, V>(), c = 1;',
+    'const { d = new Map<string, V>(), e } = {};',
+    'const x = f<string, V>(a, c);',
+    'function g<T extends Map<string, V>, U = Record<string, V>, F extends (z: V) => V = (y: V) => V>(p: T, q: U): T { return p; }',
+    'class C<K> { m(k: K): K { return k; } }',
+    'const h = <W,>(w: W): W => w;',
+  ].join('\n') + '\n');
+  const names = (how) => t.bindings.filter((b) => b.how === how).map((b) => b.name).sort();
+  // A return type is a type used: `: T` and `: K` as well as the parameters'.
+  assert.equal(t.references.filter((r) => r.name === 'T' && r.line === 6).length, 2);
+  assert.equal(t.references.filter((r) => r.name === 'K' && r.line === 7).length, 2);
+  // A `<` whose `>` lies past a closing bracket is a comparison: `[a < b], c > (d)`.
+  const u = scopes('a.ts', 'const a = 1, b = 2, c = 3, d = 4, k = (x, y) => x + y;\nconst w = k([a < b], c > (d));\n');
+  assert.ok(u.references.every((r) => !r.type), JSON.stringify(u.references.filter((r) => r.type)));
+  // A function type's parameters are no parameters: in a declaration's, an arrow's or a method's types.
+  const v = scopes('a.ts', 'type V = 1;\nfunction g(cb: (e: V) => V, d) { return cb(d); }\nconst h = (cb2: (e2: V) => V): ((r: V) => V) => cb2;\nclass C { m(cb3: (e3: V) => V): (r3: V) => V { return cb3; } }\nlet x: (e4: V) => V;\n');
+  assert.deepEqual(v.bindings.map((b) => b.name).sort(), ['C', 'V', 'cb', 'cb2', 'cb3', 'd', 'g', 'h', 'x']);
+  assert.deepEqual(names('parameter'), ['b', 'k', 'm', 'p', 'q', 'w']);
+  assert.deepEqual(names('const'), ['a', 'c', 'h', 'x']);
+  assert.deepEqual(names('destructure'), ['d', 'e']);
+  assert.deepEqual(names('type-parameter'), ['F', 'K', 'T', 'U', 'W']);
+  assert.ok(t.bindings.filter((b) => b.how === 'type-parameter').every((b) => b.type));
+  for (const r of t.references.filter((x) => x.name === 'V')) assert.equal(t.bindings[r.to.binding]?.how, 'type', `V at ${r.line}`);
+  for (const [name, line] of [['T', 6], ['U', 6], ['K', 7], ['W', 8]]) assert.equal(bindingOf(t, referenceAt(t, name, line)).how, 'type-parameter', name);
+  assert.ok(!t.references.some((r) => r.to.unknown), JSON.stringify(t.references.filter((r) => r.to.unknown)));
 });
 
 test('scopes: every reason given is one of REASONS', () => {
@@ -286,6 +332,12 @@ const SCOPE_SHAPES = {
   'js: a long else-if chain': (n) => `let y;\nif (x === 0) { y = 0; }${Array.from({ length: n / 30 }, (_, i) => ` else if (x === ${i}) { y = x; }`).join('')}\n`,
   'js: many reassignments': (n) => `let z = 0;\n${'z = z + 1;\n'.repeat(n / 11)}`,
   'ts: a ternary chain with parentheses': (n) => `const v = ${'c ? (a) : '.repeat(n / 10)}z;\n`,
+  // Each `<` is read once for type arguments: nested ones, ones that are comparisons, and type parameters with defaults.
+  'ts: deep type arguments': (n) => `function f(m: ${'Map<A, '.repeat(n / 16)}A${'>'.repeat(n / 16)}, b) { return b; }\n`,
+  'ts: comparisons that look like type arguments': (n) => `const v = ${'a < b && c > (d) || '.repeat(n / 20)}z;\n`,
+  'ts: comparisons left open': (n) => `const v = ${'a < b, '.repeat(n / 8)}z;\n`,
+  'ts: nested callback types': (n) => `const f = (a: ${'(b: '.repeat(n / 12)}X${') => X'.repeat(n / 12)}): ${'((c: X) => '.repeat(n / 16)}X${')'.repeat(n / 16)} => a;\n`,
+  'ts: many type parameters with defaults': (n) => `function f<${Array.from({ length: n / 24 }, (_, i) => `T${i} extends Map<A, B> = C`).join(', ')}>(a: T0) { return a; }\n`,
 };
 
 test('scopes: linear steps in the length of a file, its nesting and its lists', () => {
