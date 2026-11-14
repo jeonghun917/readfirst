@@ -209,6 +209,9 @@ call made again without an answer is refused again, with the items still open. A
 the Stop hook stops once to name every item still unsure. Once the session has been asked 4 items or more, an answer
 is refused when it would leave more than half of them with `unsure` as their last answer. The `readfirst answer` command itself only prints what it was
 given; it writes nothing.
+At the stop, each item's last answer is checked against what the session changed: a `not-this` whose item the final
+diff touches by a name outside its `symbols`, and a `done` whose item's checks did not pass, are named, and the stop is
+refused once for them.
 Notes count as seen on the branch they were seen on, and a `readfirst read` that Claude Code ran in Bash counts too,
 when its whole output came back: one sent to `/dev/null`, a file or a pipe (`| head`), or cut by `--limit`, does not.
 Notes already seen are not shown again; their items are still asked until answered.
@@ -246,9 +249,11 @@ to cover all the checks together.
 Whether the notes were acted on: the Stop hook ends with one line for the session, what the map asked for the files
 you edited (checks to run, files that change together), what was done, every item that was not, and how many edits the
 gate refused were made again at once with no other edit or command in between (their notes were likely not read), and
-how many answers were left unsure. It
+how many answers were left unsure or not borne out. It
 keeps that line in `readfirst-acted.jsonl` in the temp folder; `npx readfirst hook --report` adds up every session kept
-there and names each item not done, most often first. Nothing leaves the machine.
+there and names each item not done, most often first, and each rule and risk the gate asked: how often, each kind of
+answer, and how many answers the stop did not find borne out. `npx readfirst audit` names the rules and risks most
+sessions answered `not-this`: each is wider than what it is about. Nothing leaves the machine.
 
 ### See the map
 

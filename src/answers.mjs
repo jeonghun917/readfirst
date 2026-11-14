@@ -170,13 +170,50 @@ export function openUnsure(seen) {
 }
 // The items of a list of answers whose last answer is unsure.
 function lastUnsure(answers) {
+  return [...lastAnswers(answers).values()].filter((a) => a.answer === 'unsure').sort((a, b) => a.item.localeCompare(b.item));
+}
+// Each item's last answer: item -> answer. An answer of another kind given in the same call as an unsure wins.
+export function lastAnswers(answers) {
   const last = new Map();
   for (const a of answers) {
     const was = last.get(a.item);
-    // An answer of another kind given in the same call clears it.
     if (!was || a.at > was.at || (a.at === was.at && a.answer !== 'unsure')) last.set(a.item, a);
   }
-  return [...last.values()].filter((a) => a.answer === 'unsure').sort((a, b) => a.item.localeCompare(b.item));
+  return last;
+}
+
+// A session's items as `hook --report` adds them up (plan 2.8): id -> { asked, keeps, not-this, done, unsure, false }.
+// `asked`: the times the gate asked it (one per set of names it was touched by); a kind: the answers of that kind,
+// every one the session gave; `false`: the answers the Stop hook found the change did not bear out (`found`).
+export function itemTally(seen, found = []) {
+  const out = {};
+  const at = (id) => (out[id] ??= { asked: 0, keeps: 0, 'not-this': 0, done: 0, unsure: 0, false: 0 });
+  for (const k of Object.keys(seen)) {
+    if (!k.startsWith('ask:')) continue;
+    const v = parseKey(k, 'ask:');
+    if (Array.isArray(v) && typeof v[0] === 'string') at(v[0]).asked++;
+  }
+  for (const a of givenAnswers(seen)) if (ANSWER_KINDS.includes(a.answer)) at(a.item)[a.answer]++;
+  for (const id of found) at(id).false++;
+  return out;
+}
+
+// The items most sessions answer not-this (plan 2.8: a risk too wide for what it is about): from each session's tally
+// (itemTally), those answered in 2 sessions or more and not-this in more than half of them. [{ id, sessions, notThis }].
+export function wideItems(tallies) {
+  const by = new Map();
+  for (const t of tallies) {
+    for (const [id, n] of Object.entries(t ?? {})) {
+      if (!n || typeof n !== 'object') continue;
+      const answeredHere = ANSWER_KINDS.some((k) => Number(n[k]) > 0);
+      if (!answeredHere) continue;
+      const row = by.get(id) ?? { id, sessions: 0, notThis: 0 };
+      row.sessions++;
+      if (Number(n['not-this']) > 0) row.notThis++;
+      by.set(id, row);
+    }
+  }
+  return [...by.values()].filter((r) => r.sessions >= 2 && r.notThis * 2 > r.sessions).sort((a, b) => b.notThis - a.notThis || a.id.localeCompare(b.id));
 }
 
 // How to answer, for the gate's refusal.
