@@ -442,7 +442,10 @@ export function evidenceDrift(map, { files = [], read = () => null, history = ()
       const c = history(path, ref);
       const moved = c ? toNew(c, at) : null;
       const now = moved !== null && moved !== at && a.decls.some((d) => moved >= d.top && moved <= d.end) ? moved : null;
-      drift.push({ where, ref, path, at, now, names: [...new Set(a.decls.map((d) => d.name))], lines: a.decls.map((d) => d.line) });
+      // movedWith: the declaration the line is in now, the innermost of those the item names (2026-11-14: `fix` named
+      // the first one the item names, so of two lines moved with alpha and beta both were said to move with alpha).
+      const holding = now === null ? [] : a.decls.filter((d) => now >= d.top && now <= d.end).sort((x, y) => (x.end - x.top) - (y.end - y.top));
+      drift.push({ where, ref, path, at, now, names: [...new Set(a.decls.map((d) => d.name))], lines: a.decls.map((d) => d.line), movedWith: holding[0]?.name ?? null });
     }
   }
   return { drift, unanchored };

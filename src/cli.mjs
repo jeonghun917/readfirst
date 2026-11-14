@@ -1820,7 +1820,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     // Evidence lines outside what their item names (2026-11-10): the line judges the item against a change, so
     // one the code moved away from judges by the wrong code. Listed, failed with --strict; `fix` moves those git traces.
     const { drift, unanchored } = evidenceDrift(map, { files, read, history: evidenceHistory(root) });
-    const driftLine = (d) => `${d.where}: ${d.ref} is outside ${d.names.map((n, i) => `\`${n}\` (line ${d.lines[i]})`).join(', ')}${d.now ? `: it moved to ${d.path}:${d.now}, \`readfirst fix\` writes that` : ': git does not show it moving there, so check it by hand (wrong from the start, or pointing elsewhere on purpose)'}`;
+    const driftLine = (d) => `${d.where}: ${d.ref} is outside ${d.names.map((n, i) => `\`${n}\` (line ${d.lines[i]})`).join(', ')}${d.now ? `: it moved to ${d.path}:${d.now} with \`${d.movedWith}\`, \`readfirst fix\` writes that` : ': git does not show it moving there, so check it by hand (wrong from the start, or pointing elsewhere on purpose)'}`;
     const problems = [...settledMap.problems, ...pinProblems(map, pinnedReadfirst(new Map(pinFiles(files).map((f) => [f, read(f)])))), ...(args.strict ? [...about, ...drift.map(driftLine)] : [])];
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems, settled, unshown, drift, unanchored }, null, 2)}\n`);
     else {
@@ -1878,7 +1878,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       const key = gid !== undefined ? 'text' : 'rule';
       if (!item || typeof item[key] !== 'string') continue;
       item[key] = moveEvidence(item[key], d.ref, d.path, d.now);
-      changes.push(`${d.where}: ${d.ref} -> ${d.path}:${d.now} (\`${d.names[0]}\` moved)`);
+      changes.push(`${d.where}: ${d.ref} -> ${d.path}:${d.now} (\`${d.movedWith}\` moved)`);
     }
     if (changes.length) { mustBeInside(root, MAP_PATH); writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`); }
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, changes, problems }, null, 2)}\n`);
