@@ -11,6 +11,7 @@ import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, s
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { lex } from './code.mjs';
+import { scopes } from './scopes.mjs';
 
 const CODE_WRITES = /\bopen\([^)]*,\s*['"][wax]|\.write_text\(|\.write_bytes\(|writeFileSync\(|writeFile\(|appendFileSync\(|\.writelines?\(|createWriteStream\(|File\.write|>>?\s*\$|\bdump\(/u;
 const CODE_WRITES_ALL = new RegExp(CODE_WRITES.source, 'gu');
@@ -316,7 +317,8 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
   // `open('d-%d' % n, 'w')` d-1, not e or d-%d (named with certainty until 2026-11-14).
   const lit = new RegExp(String.raw`^\s*${LIT}\s*$`, 'u');
   const name = (n) => n.replace(/\$/gu, '\\$');
-  const assigned = (n) => [...code.matchAll(new RegExp(String.raw`(?:^|[\s;(,])(?:const |let |var )?${name(n)}\s*=\s*(?:Path\()?${LIT}`, 'gmu'))].map((m) => m[2]);
+  // The literal must be all the assignment gives: `p = Path('.') / 'x.txt'` named '' (the folder), review of #222.
+  const assigned = (n) => [...code.matchAll(new RegExp(String.raw`(?:^|[\s;(,])(?:const |let |var )?${name(n)}\s*=\s*(?:Path\()?${LIT}(?=\s*\)?\s*(?:$|[;#]|\/\/))`, 'gmu'))].map((m) => m[2]);
   const passed = (n) => {
     const got = [];
     for (const m of code.matchAll(new RegExp(String.raw`(?:def|function)\s+(\w+)\s*\(\s*${name(n)}\b`, 'gu'))) for (const c of code.matchAll(new RegExp(String.raw`\b${m[1]}\(\s*${LIT}`, 'gu'))) got.push(c[2]);
@@ -354,20 +356,47 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
 // one into a temporary folder is still read. inCode: whether an index of the text is code (lex), so a bracket or a
 // comma inside a string does not end an argument. Its own scan: code.mjs's closeOf walks tokens, not the text.
 const TEMP_SOURCE = /\b(?:mkdtempSync|mkdtemp|mkstemp|gettempdir|TemporaryDirectory|NamedTemporaryFile|tmpdir)\s*\(|\bmktemp\b/u;
-const WRITE_NAMES = /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|createWriteStream|open|File\.write)\s*\(|\.(?:write_text|write_bytes)\s*\(/gu;
-export function withoutTempWrites(code, inCode = () => true) {
-  const temp = new Set();
-  const assignments = [...code.matchAll(/(?:^|[\s;{(,])(?:const |let |var )?([A-Za-z_$][\w$]*)\s*=(?!=)\s*([^;\n]*)/gmu)].filter((m) => inCode(m.index + m[0].indexOf(m[1])));
-  for (const m of assignments) if (TEMP_SOURCE.test(m[2])) temp.add(m[1]);
-  for (const m of code.matchAll(/\b(?:TemporaryDirectory|mkdtemp)\([^)\n]*\)\s+as\s+([A-Za-z_]\w*)/gu)) temp.add(m[1]);
-  const startsFrom = (set) => {
-    const names = [...set].map((n) => n.replace(/\$/gu, '\\$')).join('|');
-    return new RegExp(String.raw`^\s*(?:(?:path\.|os\.path\.)?(?:join|resolve)\(\s*|Path\(\s*|\x60\$\{\s*|f?['"]\{\s*|\(\s*)*(?:${names ? String.raw`(?:${names})\b` : '(?!)'}|[^,]*${TEMP_SOURCE.source})`, 'u');
+const WRITE_NAMES = /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|createWriteStream|openSync|open|File\.write)\s*\(|\.(?:write_text|write_bytes)\s*\(/gu;
+// lang: 'py' or 'js', how scopes (src/scopes.mjs, the table of a file's bindings and what each name refers to) reads
+// the text. A name in a write's target is a temporary folder when the binding it refers to there is one: in its
+// scope, every binding of the name is an assignment (`const`, `let`, `var`, a plain `=` or `with … as`) of a
+// temporary folder, all `const` or only one. Each test's own `const root = mkdtempSync(…)` is one; a `const root =
+// repo()` beside it in another test is not, and neither is a name also bound there by `=` to something else, by `+=`,
+// as a parameter, or as a loop's or a catch's variable (`p = mkdtempSync(…)` then `p = 'reused.txt'`; `def f(d)`
+// beside `d = tempfile.mkdtemp()`): its writes stay not known. Told by the name alone across the file, they went
+// silent (review of #222).
+export function withoutTempWrites(code, inCode = () => true, lang = 'js') {
+  const lines = code.split('\n');
+  const lineStarts = [0];
+  for (let i = 0; i < code.length; i++) if (code[i] === '\n') lineStarts.push(i + 1);
+  const lineOf = (i) => { let lo = 0; let hi = lineStarts.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStarts[mid] <= i) lo = mid; else hi = mid - 1; } return lo + 1; };
+  const table = TEMP_SOURCE.test(code) ? scopes(lang === 'py' ? 'script.py' : 'script.mjs', code) : null;
+  const bindings = table?.bindings ?? [];
+  const refAt = new Map();
+  for (const r of table?.references ?? []) { const k = `${r.line}\0${r.name}`; if (!refAt.has(k) && r.to?.binding !== undefined) refAt.set(k, r.to.binding); }
+  // What a binding gives its name, when it is an assignment of the line's text after `name =` (or `with X as name`).
+  const given = (b) => {
+    const line = lines[b.line - 1] ?? '';
+    const n = b.name.replace(/\$/gu, '\\$');
+    if (b.how === 'with') return line.match(new RegExp(String.raw`\bwith\s+(.*)\bas\s+${n}\b`, 'u'))?.[1] ?? null;
+    if (!['assign', 'const', 'let', 'var'].includes(b.how)) return null;
+    return line.match(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*=(?![=>])\s*(.*)`, 'u'))?.[1] ?? null;
   };
-  // One step further: a name assigned an expression that starts from one of those (`const event = join(root, …)`).
-  const first = startsFrom(temp);
-  for (const m of assignments) if (first.test(m[2])) temp.add(m[1]);
-  const fromTemp = startsFrom(temp);
+  const LEAD = /^\s*(?:(?:path\.|os\.path\.)?(?:join|resolve)\(\s*|Path\(\s*|\x60\$\{\s*|f?['"]\{\s*|\(\s*)*/u;
+  const DIRECT = new RegExp(String.raw`^[^,]*(?:${TEMP_SOURCE.source})`, 'u');
+  // Whether an expression on a line is a temporary folder or starts from one; depth: the steps through names left.
+  const isTemp = (expr, line, depth) => {
+    const rest = expr.replace(LEAD, '');
+    if (DIRECT.test(rest)) return true;
+    const name = rest.match(/^([A-Za-z_$][\w$]*)(?![\w$]|\s*[.([])/u)?.[1];
+    const b = name === undefined ? undefined : refAt.get(`${line}\0${name}`);
+    if (b === undefined || depth < 0) return false;
+    const group = bindings.filter((x) => x.name === bindings[b].name && x.scope === bindings[b].scope);
+    if (!(group.length === 1 || group.every((x) => x.how === 'const'))) return false;
+    return group.every((x) => { const g = given(x); return g != null && isTemp(g, x.line, depth - 1); });
+  };
+  // One step through a name to another (`const event = join(root, …)`), as decided for this change.
+  const fromTemp = { test: (target, at) => isTemp(target, lineOf(at), 1) };
   // The arguments of the call whose ( is at i, split at its commas at depth 0, in code.
   const argsOf = (i) => {
     const got = [];
@@ -387,6 +416,9 @@ export function withoutTempWrites(code, inCode = () => true) {
     let depth = 0;
     let j = dot - 1;
     for (; j >= 0; j--) {
+      // A blank or a line's end at depth 0 ends it, code or not (lex marks blanks ' '): skipping them read the line
+      // above into the receiver (review of #222: `(Path('.') / 'x').write_text` after a temporary `(d / 'y')` line).
+      if (depth === 0 && /\s/u.test(code[j])) break;
       if (!inCode(j)) continue;
       const c = code[j];
       if (')]'.includes(c)) depth++;
@@ -401,12 +433,17 @@ export function withoutTempWrites(code, inCode = () => true) {
     const open = m.index + m[0].length - 1;
     const args = m[0].startsWith('.') ? [] : argsOf(open);
     // open writes only with a mode that writes, its second argument or mode=: open(p) and open(p, 'r') read.
+    // A mode that is no literal (`open('f', mode)`) may write: such a write is not known, whatever its target.
+    let unsure = false;
     if (/^open/u.test(m[0])) {
       const mode = args.find((a) => /^\s*mode\s*=/u.test(a)) ?? (args[1] !== undefined && !/^\s*\w+\s*=/u.test(args[1]) ? args[1] : undefined);
-      if (!mode || !/['"][^'"]*[wax+]/u.test(mode)) continue;
+      if (!mode) continue;
+      const literal = mode.replace(/^\s*mode\s*=/u, '').match(/^\s*(?:[rbuf]{0,2})?(['"])([^'"]*)\1\s*$/u);
+      if (literal && !/[wax+]/u.test(literal[2])) continue;
+      unsure = !literal;
     }
     const target = m[0].startsWith('.') ? receiver(m.index) : args[0];
-    if (fromTemp.test(target)) { for (let k = m.index; k < open; k++) out[k] = ' '; } else others.push(target.trim());
+    if (fromTemp.test(target, m.index)) { for (let k = m.index; k < open; k++) out[k] = ' '; } else others.push({ target: target.trim(), unsure });
   }
   return { code: out.join(''), others };
 }
@@ -1570,16 +1607,21 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // A script file: its writes into a temporary folder are left out (withoutTempWrites). Each other write call it
     // finds by its brackets (CODE_WRITES' open( misses `open(os.path.join(a, b), 'w')`) names its target when that is
     // a literal or a name assigned one, and is not known otherwise, as is a write codeTargets cannot place.
-    const t = withoutTempWrites(code, inCode);
+    // A name assigned a literal names it only when each of its assignments is one (`p = 'x'` then `p = f()` is not
+    // known); a write whose mode is not a literal (`unsure`) is not known.
+    const t = withoutTempWrites(code, inCode, /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js');
     let open = false;
     codeTargets(t.code, { args, glob, unresolved: () => { open = true; }, fallback: false, inCode }).forEach(add);
     const lit = new RegExp(String.raw`^${LIT}$`, 'u');
-    for (const target of t.others) {
+    for (const { target, unsure } of t.others) {
+      if (unsure) { open = true; continue; }
       const l = target.match(lit);
       const id = target.match(/^[A-Za-z_$][\w$]*$/u)?.[0];
-      const assigned = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[\s;(,])(?:const |let |var )?${id.replace(/\$/gu, '\\$')}\s*=\s*${LIT}\s*(?:;|$)`, 'gmu'))].map((m) => m[2]) : [];
+      const n = id?.replace(/\$/gu, '\\$');
+      const all = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*(?:[-+*/%|&^]|\*\*|\/\/)?=(?![=>])\s*([^;\n]*)`, 'gmu'))].map((m) => m[1].trim()) : [];
+      const literals = all.map((v) => v.match(lit)?.[2]).filter((v) => v !== undefined);
       if (l) add(l[2]);
-      else if (assigned.length) assigned.forEach(add);
+      else if (all.length && literals.length === all.length) literals.forEach(add);
       else if (!(ARGV.test(target) && args.length)) open = true;
     }
     if (open) missing({ part, word: part, why, prefix: '' });

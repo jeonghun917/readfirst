@@ -38,6 +38,15 @@ const FILES = {
   // open's mode decides: a second argument or mode= that writes; one with brackets in its target is still found.
   'kw.py': "open('kw.txt', mode='w').write('x')\nopen(os.path.join('a', 'r.txt')) if False else None\n",
   'nested.py': "import os\nopen(os.path.join(os.getcwd(), 'n.txt'), 'w').write('x')\n",
+  // A name is a temporary folder where the binding it refers to is one (review of 6094077: told by the name alone,
+  // these went silent): one bound again to a repository path, a parameter beside a temporary name, a variable mode,
+  // and Path('.') / 'x' are not known.
+  'reuse.mjs': "import { mkdtempSync, writeFileSync } from 'node:fs';\nimport { tmpdir } from 'node:os';\nimport { join } from 'node:path';\nlet p = mkdtempSync(join(tmpdir(), 'rf-r-'));\nwriteFileSync(join(p, 'a.txt'), 'x');\np = 'reused.txt';\nwriteFileSync(p, 'x');\n",
+  'after.py': "import tempfile, os\nwith tempfile.TemporaryDirectory() as d:\n    open(os.path.join(d, 'x'), 'w').write('x')\nd = '.'\nopen(os.path.join(d, 'after.txt'), 'w').write('x')\n",
+  'param.py': "import tempfile, os\nd = tempfile.mkdtemp()\ndef f(d):\n    open(os.path.join(d, 'param.txt'), 'w').write('x')\nf('.')\n",
+  'varmode.py': "mode = 'w'\nopen('varmode.txt', mode).write('x')\n",
+  'slash.py': "import tempfile\nfrom pathlib import Path\nd = Path(tempfile.mkdtemp())\n(d / 'x.txt').write_text('x')\n(Path('.') / 'slash.txt').write_text('x')\n",
+  'opened.mjs': "import fs from 'node:fs';\nfs.closeSync(fs.openSync('opened.txt', 'w'));\n",
   in: 'x\n',
 };
 const setUp = () => {
@@ -62,7 +71,7 @@ test('the files a python or node script writes are named, and bash agrees', { sk
   for (const script of [
     'python3 w.py', 'python3 -B w.py', 'python3 -W ignore w.py', 'python3 argv.py pa1', 'cd a && python3 ../w.py',
     'node w.mjs', 'node --no-warnings w.mjs', 'node argv.mjs na1', 'P=w.mjs; node $P', 'node tpl.mjs', 'python3 fstr.py',
-    'node mix.mjs', 'python3 mix.py', 'python3 kw.py',
+    'node mix.mjs', 'python3 mix.py', 'python3 kw.py', 'node opened.mjs',
   ]) {
     const dir = setUp();
     const made = bashMade(script, dir);
@@ -84,11 +93,17 @@ test('a script that only reads, holds writes as data, or runs no file is quiet, 
 });
 
 test('a script that writes where it is known only when it runs is given as not known', { skip: !hasBoth && 'python3 or node is not installed' }, () => {
-  for (const script of ['python3 dyn.py', 'node dyn.mjs', 'python3 nested.py']) {
+  for (const [script, files] of [
+    ['python3 dyn.py', []], ['node dyn.mjs', []], ['python3 nested.py', []],
+    ['python3 after.py', []], ['python3 param.py', []], ['python3 varmode.py', []], ['python3 slash.py', []],
+    // `p = 'reused.txt'` is a literal: named; the write through p, bound to a temporary folder too, is not known.
+    ['node reuse.mjs', ['reused.txt']],
+  ]) {
     const dir = setUp();
-    assert.ok(bashMade(script, dir).length > 0, `bash makes a file: ${script}`);
+    const made = bashMade(script, dir);
+    assert.ok(made.length > 0, `bash makes a file: ${script}`);
     const r = shellWrites(script, dir);
-    assert.deepEqual(r.files, [], script);
+    assert.deepEqual(r.files.map((f) => relative(dir, f)), files, script);
     assert.deepEqual(r.unknown.map((u) => u.part), [script], script);
     assert.match(r.unknown[0].why, /names are known only when it runs/u, script);
   }
