@@ -1176,7 +1176,20 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
 // `text` holds that part between \0s and must not be taken as the argument. `op` is the operator after the command and
 // `pipe` whether its output goes to the next one. The commands are walked with eachCommand and follow, as bashWrites
 // and bashReads walk them, so a variable the command set earlier is known (`J='[]'; readfirst answer "$J"`). A
-// here-document or a pipe into the command is no word of it.
+// here-document or a pipe into the command is no word of it. A word the shell may expand by what is on disk or in the
+// home folder (`expands`) is not known either: unquoted JSON such as [{"a":1}] is a glob, and {"a":1,"b":2} brace
+// expansion (bash passes `a:1 b:2`).
+// Whether the shell may expand a word: an unquoted, unescaped * ? [ or { (a glob, brace expansion; not the { of
+// ${NAME}), or a ~ at its start.
+function expands(word) {
+  const b = blank(word);
+  if (b.startsWith('~')) return true;
+  for (let i = 0; i < b.length; i++) {
+    if (b[i] === '\\') { i++; continue; }
+    if ('*?['.includes(b[i]) || (b[i] === '{' && b[i - 1] !== '$')) return true;
+  }
+  return false;
+}
 export function commandWords(command, cwd = process.cwd(), { vars = new Map() } = {}) {
   const out = [];
   const state = { base: cwd, why: null, vars: copyVars(vars) };
@@ -1185,7 +1198,7 @@ export function commandWords(command, cwd = process.cwd(), { vars = new Map() } 
     const opened = opening(raw);
     const words = withoutRedirects(unwrap(opened)).map((w) => {
       const { unknown, text } = shellWord(w, state.vars);
-      return { text, known: !unknown.length };
+      return { text, known: !unknown.length && !expands(w) };
     });
     follow(state, opened, how);
     if (words.length) out.push({ words, op, pipe: how.pipe });
