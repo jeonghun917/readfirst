@@ -718,9 +718,10 @@ function readScript(T) {
         const c = match.get(j) ?? n;
         let r = roles.get(j);
         if (!r) {
+          // A pattern's own brackets were given their role by bindPattern; one with no role inside a pattern is in a
+          // default value (`{ a = { k: v } }`), an expression like any other.
           if (t.v === '(') r = 'paren';
-          else if (t.v === '[') r = role === 'pattern' ? 'pattern' : 'brack';
-          else if (role === 'pattern') r = 'pattern';
+          else if (t.v === '[') r = 'brack';
           else if (role === 'class' || !prev || isPunct(prev, ')')) r = 'block';
           else if (isWord(prev) && BLOCK_AFTER.has(prev.v)) r = 'block';
           else if (endsStatement(j) || isPunct(prev, ';') || isPunct(prev, '}') || (isPunct(prev, '{') && role !== 'object')) r = 'block';

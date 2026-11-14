@@ -210,6 +210,15 @@ test('scopes: with and eval make unbound names unknown; object keys and properti
   assert.equal(referenceAt(t, 'b', 1).to.unknown, 'undefined-name');
 });
 
+test('scopes: an object or array in a destructuring default is a value: its keys are not names, its uses are', () => {
+  const t = scopes('a.js', 'const R = 1;\nfunction f({ a = [{ id: 1, rule: R }] } = {}) {}\nfunction g([b = { rule: R }]) {}\nconst { c = { rule: R }, d: [e = [R]] } = {};\n');
+  assert.ok(!t.references.some((r) => r.name === 'id' || r.name === 'rule'), JSON.stringify(t.references.map((r) => r.name)));
+  for (const line of [2, 3, 4]) assert.equal(bindingOf(t, referenceAt(t, 'R', line)).line, 1);
+  assert.deepEqual(t.bindings.map((b) => b.name).sort(), ['R', 'a', 'b', 'c', 'e', 'f', 'g']);
+  const u = scopes('a.js', 'for (const { a = { k: 1 } } of xs) a;\ntry {} catch ({ b = { k: 1 } }) { b; }\nclass C { m({ c = { k: 1 } }) { return c; } }\nfunction h({ d: { e = { k: 1 } } = {} }) { return e; }\n');
+  assert.ok(!u.references.some((r) => r.name === 'k' || r.name === 'd'), JSON.stringify(u.references.map((r) => r.name)));
+});
+
 test('scopes: every reason given is one of REASONS', () => {
   const t = scopes('a.js', "with (o) { a; }\neval('x');\nimport(name);\nrequire(name);\n");
   for (const r of [...t.references.filter((x) => x.to.unknown).map((x) => x.to.unknown), ...t.unknown.map((x) => x.reason)]) assert.ok(REASONS.includes(r), r);
@@ -241,16 +250,20 @@ test('resolveImport: JavaScript relative paths, a tsconfig alias, a package from
 
 // ------------------------------------------------------------------------------------------------ this repository
 
+// This repository has no undefined names, so an undefined-name here is a misread (an object key read as a use).
 test('scopes: every code file of this repository is read, each reference joined to a binding, a builtin or a reason', () => {
   const files = execFileSync('git', ['ls-files', 'src', 'bin', 'test', 'examples'], { encoding: 'utf8' }).split('\n').filter(Boolean);
   let read = 0;
+  const undefinedNames = [];
   for (const f of files) {
     const t = scopes(f, readFileSync(f, 'utf8'));
     if (!t) continue;
     read++;
     for (const r of t.references) assert.ok(r.to.binding !== undefined ? t.bindings[r.to.binding].name === r.name : r.to.builtin || REASONS.includes(r.to.unknown), `${f}:${r.line} ${r.name}`);
+    for (const r of t.references) if (r.to.unknown === 'undefined-name') undefinedNames.push(`${f}:${r.line} ${r.name}`);
   }
   assert.ok(read > 80, `${read} files read`);
+  assert.deepEqual(undefinedNames, []);
 });
 
 // ---------------------------------------------------------------------------------------------------------- linear
