@@ -26,10 +26,10 @@ test('a shell reader that throws: refused once as a write it cannot place, let t
   assert.equal(runHook(bash('m1', cwd, 'echo hi > out.txt'), { stateDir, gate: true, now: 2000, readers }), null, 'made again, it goes through');
 
   const stop = JSON.parse(runStopHook(JSON.stringify({ session_id: 'm1', cwd, stop_hook_active: false }), { stateDir, timeout: 30 }));
-  assert.match(stop.systemMessage, /readfirst hit an error reading 1 command\(s\), refused once as writes it could not place/u);
+  assert.match(stop.systemMessage, /readfirst hit an error reading 1 command\(s\), each counted once per folder it ran in, refused once as writes it could not place/u);
   const logged = readFileSync(join(stateDir, ACTED_LOG), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.deepEqual(logged.map((r) => [r.session, r.misread, r.failed]), [['m1', 1, []]]);
-  assert.match(hookReport({ stateDir }), /- commands readfirst hit an error reading \(refused once as writes it could not place\): 1, in 1 session\(s\)/u);
+  assert.match(hookReport({ stateDir }), /- commands readfirst hit an error reading, each counted once per folder it ran in \(refused once as writes it could not place\): 1, in 1 session\(s\)/u);
 });
 
 test('a long command is quoted in part, and the line says how much was left out', () => {
@@ -97,7 +97,7 @@ test('report lines written before these fields count them as zero', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-failed-old-'));
   writeFileSync(join(stateDir, ACTED_LOG), `${JSON.stringify({ session: 'old', shown: 1, asked: 1, acted: 1, notActed: [], resent: 0 })}\n`);
   const report = hookReport({ stateDir });
-  assert.match(report, /hit an error reading \(refused once as writes it could not place\): 0, in 0 session\(s\)/u);
+  assert.match(report, /hit an error reading, each counted once per folder it ran in \(refused once as writes it could not place\): 0, in 0 session\(s\)/u);
   assert.match(report, /errors the hook let calls through unchecked on: 0 different, in 0 session\(s\)/u);
   assert.doesNotMatch(report, /Hook errors/u);
 });
