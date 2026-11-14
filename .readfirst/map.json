@@ -574,6 +574,14 @@
       ],
       "risks": [
         {
+          "text": "test/bash-fuzz.test.mjs runs 3,000 random scripts (seed 187, the reviewer's generator copied unchanged) through bash, each in an empty folder under a temporary root with an empty environment and a 5 s limit, and pins the commands whose writes shellWrites misses or names falsely in test/bash-fuzz-baseline.json. A change to src/bash-writes.mjs that fixes one fails it with the line to take out of the baseline; one that adds one fails with the command. Never add a command to the baseline to make it pass. Scripts that differ only for a reason running them shows (an && or || that goes by the exit status, arithmetic that fails when it runs) are under `runtime`, each with that reason, and are not the reader's bugs. It takes about 13 s of npm test's time, and is skipped, with the reason, where bash cannot be found.",
+          "files": [
+            "src/bash-writes.mjs",
+            "test/bash-fuzz.test.mjs",
+            "test/bash-fuzz-baseline.json"
+          ]
+        },
+        {
           "text": "npm test only runs test/*.test.mjs, so a test in a subfolder or with another file name never runs. It loads test/setup.mjs first (`node --import ./test/setup.mjs --test`), which turns commit signing off for the tests' git processes and gives each test process a temp folder of its own, removed when it ends. A test file run by hand without `--import ./test/setup.mjs` gets neither: on a machine set to sign every commit its commits ask the signing service (a hosted agent session's service ran out of file handles after a day of test runs, and then no commit could be made, 2026-11-11), and its temp folders stay. A new way of running the tests (a script, a workflow step) passes the same --import.",
           "files": [
             "test/**",
