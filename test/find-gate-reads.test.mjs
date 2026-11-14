@@ -74,3 +74,31 @@ test('a name made of a stop word counts when find asked that word', () => {
   other.call('Bash', { command: 'npx readfirst find "retry a payment"' });
   assert.ok(noFind(other.add('build')), 'a find that did not ask it does not count');
 });
+
+// Review of 1552438: an option's value was read as a word of the query; a find after a cd was marked for the folder the
+// command started in; and a find that asked nothing still counted as a find run after the gate asked.
+test('the value of an option that takes one is not a word of the query', () => {
+  const { call, add } = session();
+  call('Bash', { command: 'npx readfirst find --lang python "retry a payment"' });
+  assert.ok(noFind(add('pythonPath')), '`python` is the value of --lang, not asked');
+  assert.ok(!noFind(add('retryPayment')), 'the query still counts');
+});
+
+test('a find after a cd counts where it runs, and not at all where that is not known', () => {
+  const away = session();
+  away.call('Bash', { command: `cd ${tmpdir()} && npx readfirst find "retry a payment"` });
+  assert.ok(noFind(away.add('retryPayment')), 'the find ran outside this repository');
+  const unknown = session();
+  unknown.call('Bash', { command: 'cd "$SOMEWHERE" && npx readfirst find "retry a payment"' });
+  assert.ok(noFind(unknown.add('retryPayment')), 'where it ran is not known: not counted');
+  const here = session();
+  here.call('Bash', { command: `cd ${join(here.root, 'src')} && npx readfirst find "retry a payment"` }, tmpdir());
+  assert.ok(!noFind(here.add('retryPayment')), 'a cd into the repository counts there');
+});
+
+test('a find that asks nothing does not count as a find run after the gate asked', () => {
+  const { call, add } = session();
+  assert.ok(noFind(add('qux')), 'asked');
+  call('Bash', { command: 'npx readfirst find' });
+  assert.ok(noFind(add('qux')), 'an empty find opens nothing: the name is still said as not searched for');
+});

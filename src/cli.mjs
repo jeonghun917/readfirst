@@ -664,29 +664,32 @@ export const ACTED_LOG = 'readfirst-acted.jsonl';
 // of the command and the text after it as written, so a second find was not read and a loop's `$q` was the query):
 // each query of every find in the command, in a list or a pipeline, options left out. A word the command does not give
 // as written is left out, but a for loop's variable stands for each of the loop's values written out
-// (`for q in "a" "b"; do readfirst find "$q"; done` asks "a" and "b"). null: the command runs no readfirst find.
+// (`for q in "a" "b"; do readfirst find "$q"; done` asks "a" and "b"). An option that takes a value (`VALUES`, the
+// options parse() reads a value for) takes its value with it: `--lang python` asks nothing of python. Each query comes
+// with the folder its find runs in (`at`, after the command's cd's); a find whose folder readfirst cannot tell, or that
+// asks nothing, gives none, so it opens nothing (review of 1552438: both counted as a find in the starting folder).
 export function findQueries(command, cwd) {
   const text = String(command ?? '');
-  if (!/readfirst/u.test(text) || !/\bfind\b/u.test(text)) return null;
+  if (!/readfirst/u.test(text) || !/\bfind\b/u.test(text)) return [];
   const loops = new Map();
-  let ran = false;
   const out = [];
   for (const c of commandWords(text, cwd)) {
     const w = c.words;
     if (w[0]?.known && w[0].text === 'for' && w[2]?.text === 'in') { loops.set(w[1]?.text, w.slice(3).filter((x) => x.known).map((x) => x.text)); continue; }
-    if (c.body) continue;
-    const at = readfirstAt(w, 'find');
-    if (at < 0) continue;
-    ran = true;
+    if (c.body || c.at == null) continue;
+    const start = readfirstAt(w, 'find');
+    if (start < 0) continue;
     let runs = [[]];
-    for (const x of w.slice(at)) {
-      if (x.known) { if (!x.text.startsWith('-')) runs.forEach((r) => r.push(x.text)); continue; }
+    for (let i = start; i < w.length; i++) {
+      const x = w[i];
+      if (x.known && x.text.startsWith('-')) { if (!x.text.includes('=') && VALUES.has(x.text.replace(/^--?/u, ''))) i++; continue; }
+      if (x.known) { runs.forEach((r) => r.push(x.text)); continue; }
       const values = loops.get(String(x.raw).match(/^"?\$\{?([A-Za-z_]\w*)\}?"?$/u)?.[1]);
       if (values?.length) runs = runs.flatMap((r) => values.map((v) => [...r, v]));
     }
-    out.push(...runs.map((r) => r.join(' ')).filter((q) => q.trim()));
+    out.push(...runs.map((r) => r.join(' ')).filter((q) => q.trim()).map((query) => ({ query, at: c.at })));
   }
-  return ran ? out : null;
+  return out;
 }
 // The plain lowercase words of a text, camelCase split, nothing dropped.
 const plainWords = (text) => String(text).replace(/([a-z0-9])([A-Z])/gu, '$1 $2').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
@@ -771,13 +774,11 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const resentNow = Boolean(prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]);
     const markResent = () => { if (resentNow) seen[`resent:${sig}:${now}`] = now; };
     seen[`call:${sig}`] = now;
-    const queries = tool === 'Bash' ? findQueries(event.tool_input?.command, cwd) : null;
-    if (queries) {
-      const id = repoIdOf(cwd);
-      if (id) {
-        seen[`find:${id}`] = now;
-        for (const q of queries) { const asked = askedWords(q); if (asked.length) seen[`findwords:${id}:${asked.join(' ')}`] = now; }
-      }
+    // Each find is marked in the repository it runs in, and only when it asked something.
+    for (const { query, at } of tool === 'Bash' ? findQueries(event.tool_input?.command, cwd) : []) {
+      const id = repoIdOf(at);
+      const asked = askedWords(query);
+      if (id && asked.length) { seen[`find:${id}`] = now; seen[`findwords:${id}:${asked.join(' ')}`] = now; }
     }
     // `readfirst read` run in Bash shows the same notes the hook would (2026-11-13: the gate did not count it, so a
     // file read that way was refused all the same). It counts for the branch it ran on, and only when its whole

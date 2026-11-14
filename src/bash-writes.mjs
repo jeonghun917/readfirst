@@ -1763,8 +1763,10 @@ export function commandWords(command, cwd = process.cwd(), { vars = new Map() } 
         return { text: unlift(text), known: !refused && !substituted && !unknown.length && !expands(w), raw: unlift(w) };
       });
       const body = how.body || Boolean(definition(opened));
+      // at: the folder the command runs in, as the shell's cd's leave it (null: readfirst cannot tell).
+      const at = state.base;
       follow(state, opened, how);
-      if (words.length) out.push({ words, op, pipe: how.pipe, body });
+      if (words.length) out.push({ words, op, pipe: how.pipe, body, at });
     });
   } finally { liftDone(); }
   return out;
