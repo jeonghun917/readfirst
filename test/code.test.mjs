@@ -408,10 +408,15 @@ test('params: linear steps in the length of a parameter list, its nesting and it
 // by CPU time; 9 of 30 runs failed by the clock, none by CPU time). Each size is read once first (the first read
 // compiles the reader), then read again and again until 20ms of CPU time have passed, and the time of one read is
 // that time over the reads; the fastest of five such runs is taken. One read of the small size can take about 1ms,
-// within the noise of the timer and the compiler, and timed once a read of a long chain of types failed the 32 times
-// below on CI though its steps grow linearly. 16 times the text may take at most 32 times as long
-// (quadratic would be 256); the pair is measured up to three times and one under 32 passes (quadratic fails all
-// three). It runs in a worker stopped after 60 seconds: a test's timeout does not stop synchronous code (a test busy
+// within the noise of the timer and the compiler, and timed once a read of a long chain of types failed on CI though
+// its steps grow linearly. The sizes are 20,000, 80,000 and 320,000 characters, and the test takes the slope of the
+// time's logarithm against the size's (least squares): the power of the size the time grows with. It must be under
+// 1.5. Quadratic work is 2 (the shapes below measured 1.74 to 1.86 before their fixes), and work whose steps grow
+// linearly measured 0.59 to 1.26. At 5,000, 20,000 and 80,000 a quadratic shape measured 1.39, its linear part still
+// as large as the rest, so the smallest size is 20,000. A single ratio of the largest size to the smallest left little
+// room: some linear shapes measured over 32 times at 16 times the text, where the bound was 32. The three sizes are
+// measured up to three times, and one slope under 1.5 passes (quadratic fails all three). It runs in a worker stopped
+// after 60 seconds: a test's timeout does not stop synchronous code (a test busy
 // for 8 seconds passed a 1 second timeout), and a reader that rescans a parameter list for each parameter was still
 // reading after 240 seconds. CPU time is the whole process's: nothing else may run in this process while it is timed.
 const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads');
@@ -432,8 +437,14 @@ const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads')
       parentPort.postMessage({ name, n, ms: best });
       return best;
     };
+    const sizes = [20_000, 80_000, 320_000];
+    const slopeOf = (ms) => {
+      const x = sizes.map(Math.log), y = ms.map(Math.log);
+      const mx = x.reduce((a, b) => a + b) / x.length, my = y.reduce((a, b) => a + b) / y.length;
+      return x.reduce((s, xi, i) => s + (xi - mx) * (y[i] - my), 0) / x.reduce((s, xi) => s + (xi - mx) ** 2, 0);
+    };
     const tries = [];
-    for (let k = 0; k < 3 && !tries.some(([s, b]) => b < s * 32); k++) tries.push([time(20_000), time(320_000)]);
+    for (let k = 0; k < 3 && !tries.some((t) => t.slope < 1.5); k++) { const ms = sizes.map((n) => time(n)); tries.push({ ms, slope: slopeOf(ms) }); }
     parentPort.postMessage({ name, tries });
   }
   parentPort.postMessage(null);
@@ -442,7 +453,7 @@ const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads')
 test('params: linear time in the length of a parameter list, its nesting and its file', async () => {
   const done = [];
   const times = []; // each size as it is measured, for a worker stopped before a pair is done
-  const said = () => done.map(({ name, tries }) => `${name}: ${tries.map(([s, b]) => `${s.toFixed(1)}ms at 20,000, ${b.toFixed(1)}ms at 320,000`).join('; ')}`).join('\n');
+  const said = () => done.map(({ name, tries }) => `${name}: ${tries.map(({ ms, slope }) => `${ms.map((m) => m.toFixed(1)).join(', ')}ms at 20,000, 80,000, 320,000 (slope ${slope.toFixed(2)})`).join('; ')}`).join('\n');
   const worker = new Worker(TIMED(LONG_SHAPES), { eval: true });
   try {
     await new Promise((resolve, reject) => {
@@ -454,5 +465,5 @@ test('params: linear time in the length of a parameter list, its nesting and its
     await worker.terminate();
   }
   assert.equal(done.length, Object.keys(LONG_SHAPES).length);
-  assert.ok(done.every(({ tries }) => tries.some(([s, b]) => b < s * 32)), said());
+  assert.ok(done.every(({ tries }) => tries.some((t) => t.slope < 1.5)), said());
 });
