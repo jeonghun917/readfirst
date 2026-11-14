@@ -5,6 +5,7 @@
 // - fake: readfirst named a file bash did not make, in a script bash can parse (`bash -n`).
 // The commands of both lists are pinned in test/bash-fuzz-baseline.json. A command that is new on either list fails the
 // test; one that is no longer on it fails too, with the line to take out of the baseline, so the baseline only shrinks.
+// Scripts where the two differ for a reason only running them shows are kept apart, under "runtime", with the reason.
 // The pieces, the random numbers (mulberry32) and the way a script is made from them are copied unchanged from the
 // reviewer's generator (fz187d.mjs, sha256 b1947397b684e020fc5395e5db02bf2458a56c26b2e847df46bd165c69da64db).
 import assert from 'node:assert/strict';
@@ -49,10 +50,15 @@ const T=['(( n ))','[[ x ]]','$((echo 1)','$((cd d)','(echo 1)',' > f2','; ','$(
   const base = JSON.parse(readFileSync(BASELINE, 'utf8'));
   const problems = [];
   for (const [name, now] of [['missed', missed], ['fake', fake]]) {
+    // "runtime": scripts where bash and readfirst differ for a reason only running them shows (an && or || that goes
+    // by the exit status before it, arithmetic that fails when it runs), each with that reason. Not counted as the
+    // reader's bugs, and pinned the same way.
+    const runtime = new Set(base.runtime.filter((r) => r.list === name).map((r) => r.command));
     const was = new Set(base[name]);
     const is = new Set(now);
-    for (const c of now) if (!was.has(c)) problems.push(`new ${name} write, not in the baseline: ${JSON.stringify(c)}`);
+    for (const c of now) if (!was.has(c) && !runtime.has(c)) problems.push(`new ${name} write, not in the baseline: ${JSON.stringify(c)}`);
     for (const c of base[name]) if (!is.has(c)) problems.push(`no longer ${name}: take ${JSON.stringify(c)} out of "${name}" in test/bash-fuzz-baseline.json`);
+    for (const c of runtime) if (!is.has(c)) problems.push(`no longer ${name}: take ${JSON.stringify(c)} out of "runtime" in test/bash-fuzz-baseline.json`);
   }
   assert.deepEqual(problems, []);
 });

@@ -574,7 +574,7 @@
       ],
       "risks": [
         {
-          "text": "test/bash-fuzz.test.mjs runs 3,000 random scripts (seed 187, the reviewer's generator copied unchanged) through bash, each in an empty folder under a temporary root with an empty environment and a 5 s limit, and pins the commands whose writes shellWrites misses or names falsely in test/bash-fuzz-baseline.json. A change to src/bash-writes.mjs that fixes one fails it with the line to take out of the baseline; one that adds one fails with the command. Never add a command to the baseline to make it pass. It takes about 13 s of npm test's time, and is skipped, with the reason, where bash cannot be found.",
+          "text": "test/bash-fuzz.test.mjs runs 3,000 random scripts (seed 187, the reviewer's generator copied unchanged) through bash, each in an empty folder under a temporary root with an empty environment and a 5 s limit, and pins the commands whose writes shellWrites misses or names falsely in test/bash-fuzz-baseline.json. A change to src/bash-writes.mjs that fixes one fails it with the line to take out of the baseline; one that adds one fails with the command. Never add a command to the baseline to make it pass. Scripts that differ only for a reason running them shows (an && or || that goes by the exit status, arithmetic that fails when it runs) are under `runtime`, each with that reason, and are not the reader's bugs. It takes about 13 s of npm test's time, and is skipped, with the reason, where bash cannot be found.",
           "files": [
             "src/bash-writes.mjs",
             "test/bash-fuzz.test.mjs",
