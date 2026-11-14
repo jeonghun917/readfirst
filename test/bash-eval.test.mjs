@@ -5,7 +5,7 @@
 // read where it runs (eval: in this shell, with its variables); one it cannot is given as not known, with why.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { test } from 'node:test';
@@ -51,6 +51,27 @@ test('a script file run by source, . or a shell is given as not known: its text 
     const u = shellWrites(script, process.cwd()).unknown;
     assert.ok(u.length > 0, `nothing given as not known: ${script}`);
     assert.match(u[0].why, /does not read the file's text/u, script);
+  }
+});
+
+// Review of #213: a script run as the command itself (`./build.sh`, also after exec or nohup), fed to a shell on stdin
+// (`bash < build.sh`, `bash -s < build.sh`) or through a pipe (`cat build.sh | sh`) was still silent. Each runs in a
+// folder holding build.sh, which writes `made`: bash makes it, and readfirst gives the command as not known, with why.
+// A program run by its path (/bin/true) and a path that is not there stay quiet, and so does a shell given -n.
+test('a script run as the command, or fed to a shell on stdin or by a pipe, is given as not known, and bash runs it', { skip: !hasBash && 'bash is not installed' }, () => {
+  // A new folder holding build.sh, a script that writes `made`.
+  const fixture = () => { const d = mkdtempSync(join(tmpdir(), 'readfirst-eval-run-')); writeFileSync(join(d, 'build.sh'), '#!/bin/sh\necho > made\n'); chmodSync(join(d, 'build.sh'), 0o755); return d; };
+  const dir = fixture();
+  for (const script of ['./build.sh', 'exec ./build.sh', 'nohup ./build.sh', 'bash < build.sh', 'bash -s < build.sh', 'sh <build.sh', 'cat build.sh | sh']) {
+    const d = fixture();
+    spawnSync('bash', ['-c', script], { cwd: d, env: { PATH: process.env.PATH }, stdio: 'ignore', timeout: 5000 });
+    assert.ok(readdirSync(d).includes('made'), `bash runs the script: ${script}`);
+    const u = shellWrites(script, dir).unknown;
+    assert.ok(u.length > 0, `nothing given as not known: ${script}`);
+    assert.match(u[0].why, /runs it, and readfirst does not read the file's text|runs the commands the command before it prints/u, script);
+  }
+  for (const script of ['./no-such.sh', '/bin/true', 'cat build.sh', 'bash -n < build.sh', 'sh -n build.sh']) {
+    assert.deepEqual(shellWrites(script, dir), { files: [], unknown: [], repos: [] }, script);
   }
 });
 
