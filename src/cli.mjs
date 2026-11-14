@@ -252,7 +252,19 @@ function onBaseItself(changed, io) {
 function changedFiles(root, base) {
   if (base !== undefined && !exists(root, base)) throw new Error(`no branch or commit named ${base} here (\`git branch -a\` lists them)`);
   const ref = base ?? ['origin/main', 'main', 'origin/master', 'master'].find((r) => exists(root, r));
-  if (!ref) throw new Error('no base branch found: pass --base <ref>');
+  if (!ref) {
+    // A base branch whose ref is there but names no commit git can read (a broken ref file) is not "no base branch"
+    // (review of readfirst#207): say which one, and what git says of it.
+    for (const [name, full] of [['origin/main', 'refs/remotes/origin/main'], ['main', 'refs/heads/main'], ['origin/master', 'refs/remotes/origin/master'], ['master', 'refs/heads/master']]) {
+      let at = '';
+      try { at = git(root, 'rev-parse', '--git-path', full).trim(); } catch { continue; }
+      if (!existsSync(resolve(root, at))) continue;
+      let said = 'it names no commit';
+      try { git(root, 'rev-parse', '--verify', `${full}^{commit}`); } catch (e) { said = errorText(e); }
+      throw new Error(`the base branch ${name} is there but git cannot read it (${said}): repair the ref, or pass --base <ref>`);
+    }
+    throw new Error('no base branch found: pass --base <ref>');
+  }
   let current = null;
   try { current = git(root, 'symbolic-ref', '--quiet', '--short', 'HEAD').trim(); } catch { /* detached */ }
   const here = base === undefined && ref === current;
@@ -1005,7 +1017,7 @@ function trustedRuns(root, firstSeen) {
   let since;
   let here;
   let current;
-  try { ({ ref, since, here, current } = changedFiles(root)); } catch { return { runs: new Set(), why: 'there is no base branch (main or master) to take trusted commands from' }; }
+  try { ({ ref, since, here, current } = changedFiles(root)); } catch (e) { return { runs: new Set(), why: /^no base branch/u.test(e.message) ? 'there is no base branch (main or master) to take trusted commands from' : `${e.message}; no trusted commands to take from it` }; }
   // Only when the base is the branch the session commits to (main itself, or origin/main while on main): a feature
   // branch's merge-base holds no commit of the session.
   const ownBase = here || (current && ref === `origin/${current}`);
@@ -1040,6 +1052,7 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   // Edited files by repository: absolute paths by the repository that holds them, older relative ones by the session's.
   const byRoot = new Map();
   const firstSeen = new Map(); // the earliest time a file of each repository was marked
+  const lost = []; // marked files whose repository git does not find now
   const here = repoOf(event.cwd ?? process.cwd());
   for (const recorded of Object.keys(seen)) {
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
@@ -1056,7 +1069,10 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     const raw = tag ? tag[2] : recorded;
     const key = isAbsolute(raw) ? physical(raw) : raw;
     const root = isAbsolute(key) ? repoOf(existsSync(dirname(key)) ? dirname(key) : here ?? '/') : here;
-    if (!root) continue;
+    // The hook marks only files inside a repository, so a marked file whose repository git no longer finds (a .git file
+    // pointing at a gitdir that is gone, a moved folder) is a file whose checks cannot run: said below, never dropped
+    // (review of readfirst#207).
+    if (!root) { if (isAbsolute(key)) lost.push(key); continue; }
     const path = isAbsolute(key) ? relative(root, key).replace(/\\/gu, '/') : key;
     if (path.startsWith('..')) continue;
     if (!byRoot.has(root)) byRoot.set(root, []);
@@ -1072,6 +1088,18 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   const found = [];
   const notes = [];
   const unchecked = [];
+  if (lost.length) {
+    // Named with git's own words for the first folder, refused once for these files and that kind of error, as a
+    // stopFor that throws is.
+    const dirs = [...new Set(lost.map((f) => (existsSync(dirname(f)) ? dirname(f) : f)))].sort();
+    let why = 'git finds no repository there';
+    try { git(dirs[0], 'rev-parse', '--show-toplevel'); } catch (e) { why = errorText(e); }
+    const kind = why.replace(/(['"`]).*?\1/gu, '$1…$1').replace(/\d+/gu, 'N');
+    const key = `unchecked:${createHash('sha1').update(`${[...lost].sort().join('\0')}\0${kind}`).digest('hex').slice(0, 12)}`;
+    const line = `readfirst: the stop could not check ${lost.sort().map((f) => `\`${f}\``).join(', ')}: git finds no repository holding ${lost.length === 1 ? 'it' : 'them'} now (${why}), so the checks the map lists for ${lost.length === 1 ? 'it' : 'them'} did not run and no answer was compared with the change. Fix what stopped it, or say why it cannot be fixed, before you finish.`;
+    for (const d of dirs) unchecked.push(`${d}: ${why}`);
+    if (said(key)) notes.push(line); else { say(key); blocks.push(line); }
+  }
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
     const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root), start: baseOf(seen, root) });
     if (r?.note) notes.push(r.note);
