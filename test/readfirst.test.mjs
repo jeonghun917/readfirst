@@ -357,7 +357,7 @@ test('hook: the read list goes to Claude Code as context once per file per sessi
   assert.equal(installHook(root), false);
   const settings = JSON.parse(readFileSync(join(root, '.claude/settings.json'), 'utf8'));
   assert.deepEqual(settings.permissions, { allow: ['Bash(ls)'] });
-  assert.deepEqual(settings.hooks.PreToolUse, [{ matcher: 'Edit|Write|MultiEdit|Bash', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }]);
+  assert.deepEqual(settings.hooks.PreToolUse, [{ matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }]);
 
   // through main: stdin in, JSON out, exit 0
   let printed = '';
