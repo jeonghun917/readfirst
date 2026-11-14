@@ -447,13 +447,15 @@ const callSig = (tool, targets) => createHash('sha1').update(`${tool}\0${targets
 // The key of a Bash command the gate asks about once (`unknown:`, `misread:`): the command with where it runs, the
 // folder (through symlinks) and the repository holding it. Until 2026-11-14 it was the command's text alone, so a
 // command refused once in one folder went through with no word in any other folder or repository, where the same
-// text writes somewhere else. `old`: the key an older readfirst wrote, which a state file may still hold and which
-// still counts as asked.
-function commandKey(tag, command, cwd) {
+// text writes somewhere else. Returns the hash for the tag (`unknown:<here>`), worked out once per call (repoOf runs
+// git), and `old`: the hash an older readfirst wrote, which a state file may still hold and which still counts as
+// asked. So a session that spans the upgrade keeps the old gap for a command asked about before it: it goes through in
+// other folders too.
+function commandKey(command, cwd) {
   let folder = cwd;
   try { folder = realpathSync(cwd); } catch { /* a folder that is gone: as given */ }
   const hash = (text) => createHash('sha1').update(text).digest('hex').slice(0, 12);
-  return { key: `${tag}:${hash(`${folder}\0${repoOf(folder) ?? ''}\0${command}`)}`, old: `${tag}:${hash(command)}` };
+  return { here: hash(`${folder}\0${repoOf(folder) ?? ''}\0${command}`), old: hash(command) };
 }
 function lastCall(seen) {
   let best = null;
@@ -568,18 +570,19 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // Writes whose place the command cannot tell before it runs (a variable from outside it, a $( ), a loop variable;
     // shellWrites): named, never dropped (until 2026-11-13 they were left out without a word), unless they are known to
     // be outside every repository (couldLandIn). With --gate the call is refused once with them
-    // (`unknown:<the command's hash>`) and goes through when made again. Each repository they could land in gets the
-    // session's start mark, so the Stop hook checks the files that change there.
+    // (`unknown:<hash of the command and its folder>`, commandKey) and goes through when made again there. Each
+    // repository they could land in gets the session's start mark, so the Stop hook checks the files that change there.
+    let keys = null;
+    const keysOnce = () => (keys ??= commandKey(command, cwd));
     if (misread) {
       const whole = { part: 'the whole command', word: command, why: `readfirst hit an error reading it (${misread})`, prefix: '' };
       written = { files: written?.files ?? [], unknown: [...(written?.unknown ?? []), whole], repos: written?.repos ?? [] };
-      seen[commandKey('misread', command, cwd).key] = now;
+      seen[`misread:${keysOnce().here}`] = now;
     }
     const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos, Date.now() + budget / 5) : [];
     // Asked once per command and folder (commandKey): the same text run in another folder or repository is asked again.
-    const keys = unplaced.length ? commandKey('unknown', command, cwd) : null;
-    const unknownKey = keys?.key ?? null;
-    const askUnknown = Boolean(keys) && !before[keys.key] && !before[keys.old];
+    const unknownKey = unplaced.length ? `unknown:${keysOnce().here}` : null;
+    const askUnknown = Boolean(unknownKey) && !before[unknownKey] && !before[`unknown:${keys.old}`];
     if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) if (!seen[`start:${r}`]) seen[`start:${r}`] = now; }
     // Said once per command: made again, it goes through without the line.
     // Five repositories are named for a write and the rest counted with where they are (below its folder, or the ones
