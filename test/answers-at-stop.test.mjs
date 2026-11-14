@@ -5,7 +5,7 @@
 // found not borne out; `audit` names the rules and risks most sessions answered not-this, as too wide.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -200,6 +200,55 @@ test('a file git did not track before the session is not counted whole, and the 
   const later = new Date(Date.now() + 60_000);
   utimesSync(join(during.root, 'src/b.js'), later, later);
   assert.match(said(during.stop()), new RegExp(`\`${ID.both}\` was answered not-this \\(\`beta\`\\), but the change touches it by \`alpha\``, 'u'), 'src/b.js made in the session counts whole');
+});
+
+test('a file untracked at the start that the session then adds to git is not judged as new from its first line', () => {
+  const s = session();
+  writeFileSync(join(s.root, 'src/b.js'), `${ALPHA_TOO}\nexport const note = 1;\n`);
+  s.call('Edit', inBeta(s.root));
+  notThisBeta(s);
+  leave(s.root);
+  s.call('Edit', { file_path: join(s.root, 'src/b.js'), old_string: 'note = 1', new_string: 'note = 2' });
+  writeFileSync(join(s.root, 'src/b.js'), `${ALPHA_TOO}\nexport const note = 2;\n`);
+  // Added: `git diff <snapshot>` now shows all of it as added, alpha included.
+  execFileSync('git', ['-C', s.root, 'add', 'src/b.js']);
+  const out = said(s.stop());
+  assert.doesNotMatch(out, /does not bear out/u, 'alpha in src/b.js was there before the session');
+  assert.match(out, /`src\/b\.js` was not tracked by git when the session began, so what the session changed there was not compared/u);
+});
+
+test('the first call leaves the index as it was: the snapshot is taken on a copy, and git status takes no optional lock', () => {
+  const s = session();
+  writeFileSync(join(s.root, 'src/a.js'), A.replace('  return x + one;', '  return x + one + 0;'));
+  // An index older than the files: a refresh would rewrite it.
+  const index = join(s.root, '.git/index');
+  const past = new Date(Date.now() - 3_600_000);
+  utimesSync(index, past, past);
+  const bytes = readFileSync(index);
+  // Read back, not past.getTime(): the file system keeps it as a float that can differ in the last digit.
+  const was = statSync(index).mtimeMs;
+  s.call('Edit', inBeta(s.root));
+  assert.equal(statSync(index).mtimeMs, was, 'the index was rewritten');
+  assert.deepEqual(readFileSync(index), bytes);
+  assert.equal(execFileSync('git', ['-C', s.root, 'stash', 'list'], { encoding: 'utf8' }), '', 'no stash entry');
+});
+
+test('a repository with no commit yet and files already added says why its start was not recorded', () => {
+  const root = mkdtempSync(join(tmpdir(), 'readfirst-stop-answers-nocommit-'));
+  mkdirSync(join(root, 'src'));
+  mkdirSync(join(root, '.readfirst'));
+  writeFileSync(join(root, 'src/a.js'), A);
+  writeFileSync(join(root, '.readfirst/map.json'), JSON.stringify({ format: 'readfirst/map@1', groups: [{ id: 'src', title: 'the code', files: ['src/**'], risks: [{ text: BOTH }, { text: PROSE }] }], rules: [{ id: 'no-net', rule: RULE, files: ['src/**'] }] }));
+  execFileSync('git', ['-C', root, 'init', '-q', '-b', 'main']);
+  execFileSync('git', ['-C', root, 'add', '.']);
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-stop-answers-state-'));
+  const id = `stop-answers-nocommit-${process.pid}`;
+  let now = Date.now() + 5000;
+  const call = (tool, input) => runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input }), { stateDir, gate: true, now: (now += 1000) });
+  call('Edit', inBeta(root));
+  const base = readFileSync(join(stateDir, readdirSync(stateDir).find((f) => f.endsWith('.lines'))), 'utf8').split('\n').find((l) => l.startsWith('["base:'));
+  assert.match(base, /the repository had no commit yet and files were already added/u);
+  assert.doesNotMatch(base, /stash create failed/u);
 });
 
 test('more untracked files at the start than readfirst records compares no not-this, and says how many', () => {

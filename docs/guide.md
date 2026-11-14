@@ -213,7 +213,9 @@ At the stop, each item's last answer is checked against what the session changed
 session's diff (from what the working tree held when the session first wrote there: changes already made then, and
 files git did not track then, are not the session's) touches by a name outside
 its `symbols`, and a `done` whose item's checks did not pass, are named, and the stop is
-refused once for them.
+refused once for them. To know what the working tree held, the hook runs `git stash create` on a copy of the index
+when a session first writes in a repository: it adds git objects nothing refers to (`git gc` removes them), and no
+stash entry, ref or change to your index or files.
 Notes count as seen on the branch they were seen on, and a `readfirst read` that Claude Code ran in Bash counts too,
 when its whole output came back: one sent to `/dev/null`, a file or a pipe (`| head`), or cut by `--limit`, does not.
 Notes already seen are not shown again; their items are still asked until answered.

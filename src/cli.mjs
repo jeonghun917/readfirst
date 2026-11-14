@@ -25,7 +25,7 @@
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>, --version; --name=value works too.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { importEdges } from './imports.mjs';
@@ -127,7 +127,10 @@ function firstWord(argv) {
 }
 
 // stderr is captured, not shown: a repository with no commits yet makes `rev-parse HEAD` complain, and that is expected.
-const git = (root, ...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+// GIT_OPTIONAL_LOCKS=0: readfirst runs beside the user's own git (in hooks, at the same time as their commands), so its
+// `git status` neither refreshes nor locks their index, as git asks of background tools.
+const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
+const git = (root, ...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env: GIT_ENV });
 
 export function repoFiles(root) {
   // Tracked files plus new files not ignored by .gitignore, so a file being added can be looked up before its commit.
@@ -520,10 +523,11 @@ function headOf(seen, root) {
   return null;
 }
 // With it, what the working tree already held then, so changes made before the session are not counted as its own:
-// `base:<JSON [root, snapshot, untracked, count]>`. snapshot: `git stash create` (a commit of the tracked files as they
-// were; it writes git objects and may refresh the index's stat data as `git status` does, never a file's content, a
-// ref or the stash list), HEAD when nothing was changed, '' for a
-// repository with no commit and nothing added, null when it could not be taken. untracked: the files git did not track
+// `base:<JSON [root, snapshot, untracked, count, why]>`. snapshot: `git stash create` (a commit of the tracked files as
+// they were; it writes git objects nothing refers to, which gc removes, and no ref or stash entry), run on a copy of the
+// index in the temp folder, because stash create rewrites the index it reads even with GIT_OPTIONAL_LOCKS=0; HEAD when
+// nothing was changed, '' for a repository with no commit and nothing added, null when it could not be taken, with
+// why saying what stopped it. untracked: the files git did not track
 // then (not ignored), which the stop does not count as the session's; null when there were more than PRE_MAX, with
 // count saying how many: the start is then only partly known and no not-this is compared there.
 const PRE_MAX = 2000;
@@ -532,7 +536,7 @@ function baseOf(seen, root) {
     if (!k.startsWith('base:')) continue;
     let v = null;
     try { v = JSON.parse(k.slice('base:'.length)); } catch { v = null; }
-    if (Array.isArray(v) && v[0] === root) return { snapshot: typeof v[1] === 'string' ? v[1] : null, untracked: Array.isArray(v[2]) ? v[2] : null, count: Number(v[3]) || 0 };
+    if (Array.isArray(v) && v[0] === root) return { snapshot: typeof v[1] === 'string' ? v[1] : null, untracked: Array.isArray(v[2]) ? v[2] : null, count: Number(v[3]) || 0, why: typeof v[4] === 'string' ? v[4] : 'git stash create failed' };
   }
   return null;
 }
@@ -542,11 +546,27 @@ function markHead(seen, root, now) {
   try { sha = git(root, 'rev-parse', '--verify', '-q', 'HEAD').trim(); } catch { sha = ''; }
   seen[`head:${sha}:${root}`] = now;
   let snapshot = null;
-  try { snapshot = sha ? git(root, 'stash', 'create').trim() || sha : git(root, 'ls-files', '-z') ? null : ''; } catch { snapshot = null; }
+  let why = null;
+  if (!sha) {
+    try { snapshot = git(root, 'ls-files', '-z') ? null : ''; } catch (e) { why = `git ls-files failed (${errorText(e)})`; }
+    if (snapshot === null) why ??= 'the repository had no commit yet and files were already added';
+  } else {
+    let copy = null;
+    try {
+      const at = git(root, 'rev-parse', '--git-path', 'index').trim();
+      copy = mkdtempSync(join(tmpdir(), 'readfirst-index-'));
+      const index = join(copy, 'index');
+      // No index to copy: stash create on an empty one would take every file for deleted.
+      if (!existsSync(resolve(root, at))) throw new Error(`no index file at ${at}`);
+      copyFileSync(resolve(root, at), index);
+      snapshot = execFileSync('git', ['-C', root, 'stash', 'create'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...GIT_ENV, GIT_INDEX_FILE: index } }).trim() || sha;
+    } catch (e) { snapshot = null; why = `git stash create failed (${errorText(e)})`; }
+    if (copy) try { rmSync(copy, { recursive: true, force: true }); } catch { /* the temp folder is cleaned by the system */ }
+  }
   let untracked = null;
   let count = 0;
   try { const all = git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean); count = all.length; untracked = count > PRE_MAX ? null : all; } catch { untracked = null; }
-  seen[`base:${JSON.stringify([root, snapshot, untracked, count])}`] = now;
+  seen[`base:${JSON.stringify([root, snapshot, untracked, count, why])}`] = now;
 }
 function lastCall(seen) {
   let best = null;
@@ -1206,7 +1226,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
       // cut: head is a commit sha shortened for the message, not a list.
       try { git(root, 'merge-base', '--is-ancestor', head, 'HEAD'); } catch { noStart = notCompared(`this session started at ${head.slice(0, 12)}, which is not under the commit checked out now (a branch switch or a rebase)`); }
     }
-    if (notThis.length && !noStart && start.snapshot === null) noStart = notCompared('the working tree at the session\'s start could not be recorded (git stash create failed)');
+    if (notThis.length && !noStart && start.snapshot === null) noStart = notCompared(`the working tree at the session's start could not be recorded (${start.why})`);
     if (notThis.length && !noStart && start.untracked === null) noStart = notCompared(start.count > PRE_MAX ? `the session started with ${start.count} untracked files, more than the ${PRE_MAX} readfirst records, so its starting point is only partly known` : 'the files git did not track at the session\'s start could not be listed');
     if (notThis.length && !noStart) {
       let changes = null;
@@ -1215,8 +1235,10 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
         const before = new Set(start.untracked);
         for (const f of git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean)) if (!changes.has(f) && !before.has(f)) changes.set(f, { lines: new Set(), text: [], whole: true });
         // readfirst keeps no copy of an untracked file from the start, so what the session changed in one is not judged:
-        // said, never left out silently.
-        const unkept = targets.filter((f) => before.has(f));
+        // said, never left out silently. One the session then added to git shows in the diff as new from its first line
+        // (review of readfirst#204), so it leaves the diff too.
+        const unkept = [...new Set([...targets, ...changes.keys()])].filter((f) => before.has(f)).sort();
+        for (const f of unkept) changes.delete(f);
         if (unkept.length) noStart = `readfirst${at}: ${unkept.map((f) => `\`${f}\``).join(', ')} ${unkept.length === 1 ? 'was' : 'were'} not tracked by git when the session began, so what the session changed there was not compared with its ${notThis.length} not-this answer(s).`;
       } catch (e) { changes = null; noStart = notCompared(`the session's diff could not be read (${errorText(e)})`); }
       if (changes) try {
@@ -1227,7 +1249,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
           const outside = it.by.filter((s) => !given.has(s));
           if (outside.length) untrue.push({ id: it.id, line: `\`${it.id}\` was answered not-this (${[...given].map((s) => `\`${s}\``).join(', ')}), but the change touches it by ${outside.map((s) => `\`${s}\``).join(', ')}` });
         }
-      } catch (e) { noStart = notCompared(`the session's diff could not be judged (${errorText(e)})`); }
+      } catch (e) { noStart = [noStart, notCompared(`the session's diff could not be judged (${errorText(e)})`)].filter(Boolean).join('\n'); }
     }
     const answerLine = () => {
       if (!untrue.length) return null;
