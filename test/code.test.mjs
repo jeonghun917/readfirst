@@ -353,6 +353,26 @@ test('params: a destructuring pattern nested 5,000 and 50,000 deep is read, in s
   }
 });
 
+test('params: type arguments nested 5,000 and 50,000 deep are read as at 3 deep, in steps that grow with them', () => {
+  // afterAngle's answers come from one table filled by a loop (angleEnds), not by calling itself: a call per level
+  // would run out of stack thousands deep.
+  const shapes = {
+    'nested type arguments': (d) => `const f = <${'A<'.repeat(d)}T${'>'.repeat(d)}>(x) => x;\nfunction g(y) {\n}`,
+    'nested brackets in a default': (d) => `function h<T = ${'('.repeat(d)}a${')'.repeat(d)}>(z) {\n}`,
+  };
+  const read = (text) => declarations('a.ts', text, { params: true }).map((d) => `${d.name} ${d.what} ${d.params ? paramText(d.params) : ''}`).join('; ');
+  for (const [name, make] of Object.entries(shapes)) {
+    const want = read(make(3));
+    const steps = [];
+    for (const depth of [5_000, 50_000]) {
+      countSteps(true);
+      assert.equal(read(make(depth)), want, `${name} at ${depth}`);
+      steps.push(countSteps(false));
+    }
+    assert.ok(steps[1] < steps[0] * 20, `${name}: ${steps[0]} steps at 5,000 deep, ${steps[1]} at 50,000`);
+  }
+});
+
 // Texts of n characters that a reader doing the work twice over would read in time growing with n's square.
 const LONG_SHAPES = {
   'a long list': (n) => `function f(${Array.from({ length: n / 8 }, (_, i) => `a${i}`).join(', ')}) {\n}`,
