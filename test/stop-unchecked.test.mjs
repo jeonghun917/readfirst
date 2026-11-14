@@ -5,6 +5,7 @@
 // The same for a marked file whose repository git no longer finds, and a base branch whose ref cannot be read.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -116,6 +117,32 @@ test('a split index whose shared part has one byte flipped is a stop that could 
   assert.doesNotMatch(said, /check\(s\) passed/u);
   assert.equal(out?.decision, 'block');
   assert.ok(said.includes(`the shared index file .git/${f} does not match the hash at its end and in its name: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`), said);
+});
+
+test('a damaged sharedindex.* the index does not use (an old one git left) does not refuse the stop', () => {
+  const s = edited();
+  s.git('update-index', '--split-index');
+  // Beside the one the index names in its link extension: a file git does not read, damaged.
+  writeFileSync(join(s.root, '.git', `sharedindex.${'ab'.repeat(20)}`), 'garbage, and not the hash it is named by');
+  const out = s.stop();
+  const said = String(out?.reason ?? out?.systemMessage ?? '');
+  assert.doesNotMatch(said, /could not check/u, said);
+  assert.match(said, /check\(s\) passed/u);
+});
+
+test('an index whose extensions cannot be read (its hash still right) is a stop that could not check, with why', () => {
+  const s = edited();
+  s.git('update-index', '--split-index');
+  const index = join(s.root, '.git/index');
+  const bytes = Buffer.from(readFileSync(index));
+  const at = bytes.indexOf('link');
+  assert.ok(at > 0, 'the split index has its link extension');
+  bytes.writeUInt32BE(0x7fffffff, at + 4);
+  createHash('sha1').update(bytes.subarray(0, bytes.length - 20)).digest().copy(bytes, bytes.length - 20);
+  writeFileSync(index, bytes);
+  const out = s.stop();
+  assert.equal(out?.decision, 'block');
+  assert.match(out.reason, /the index file \(\.git\/index\) could not be read to its extensions \(extension "link" runs past the end\), so whether it uses a shared index, and that file's state, are not known/u);
 });
 
 test('git\'s error: and fatal: lines are said whole, never cut mid-word', () => {

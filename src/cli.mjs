@@ -553,6 +553,45 @@ function headOf(seen, root) {
 // then (not ignored), which the stop does not count as the session's; null when there were more than PRE_MAX, with
 // count saying how many: the start is then only partly known and no not-this is compared there.
 const PRE_MAX = 2000;
+// The hash of the shared index a split index uses, from its `link` extension, or null when it has none (git's index
+// format: a 12-byte header, the entries, then extensions of a 4-byte name and a 4-byte length, before the hash at the
+// end). Entries are read as git writes them: v2 and v3 padded to 8 bytes with the path's NUL, v3's extended flags,
+// v4's paths with a varint of bytes to drop from the one before and no padding. size: the hash's length. Throws when
+// the bytes do not follow that shape.
+function sharedIndexOf(bytes, size) {
+  if (bytes.toString('latin1', 0, 4) !== 'DIRC') throw new Error('no DIRC header');
+  const version = bytes.readUInt32BE(4);
+  if (version < 2 || version > 4) throw new Error(`index version ${version}`);
+  const entries = bytes.readUInt32BE(8);
+  const stop = bytes.length - size;
+  let p = 12;
+  for (let i = 0; i < entries; i++) {
+    const start = p;
+    if (p + 40 + size + 2 > stop) throw new Error(`entry ${i + 1} of ${entries} runs past the end`);
+    const flags = bytes.readUInt16BE(p + 40 + size);
+    p += 40 + size + 2;
+    if (flags & 0x4000) { if (version < 3) throw new Error(`entry ${i + 1} has extended flags in a version ${version} index`); p += 2; }
+    if (version === 4) {
+      let c = bytes[p++];
+      while (c & 0x80) { if (p >= stop) throw new Error(`entry ${i + 1}'s path runs past the end`); c = bytes[p++]; }
+    }
+    const nul = bytes.indexOf(0, p);
+    if (nul < 0 || nul >= stop) throw new Error(`entry ${i + 1}'s path runs past the end`);
+    p = version === 4 ? nul + 1 : start + ((nul - start + 8) & ~7);
+  }
+  while (p + 8 <= stop) {
+    const name = bytes.toString('latin1', p, p + 4);
+    const length = bytes.readUInt32BE(p + 4);
+    if (p + 8 + length > stop) throw new Error(`extension ${JSON.stringify(name)} runs past the end`);
+    if (name === 'link') {
+      const hash = bytes.subarray(p + 8, p + 8 + size);
+      return hash.some((b) => b !== 0) ? hash.toString('hex') : null;
+    }
+    p += 8 + length;
+  }
+  if (p !== stop) throw new Error('the extensions do not end where the hash begins');
+  return null;
+}
 function baseOf(seen, root) {
   for (const k of Object.keys(seen)) {
     if (!k.startsWith('base:')) continue;
@@ -1234,11 +1273,14 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
         const bytes = readFileSync(at);
         const end = bytes.subarray(Math.max(0, bytes.length - size));
         if (bytes.length <= size || (end.some((b) => b !== 0) && !createHash(algo).update(bytes.subarray(0, bytes.length - size)).digest().equals(end))) throw Object.assign(new Error(`the index file (${relative(root, at) || at}) does not match the hash at its end: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`), { ours: true });
-        // A split index keeps most entries in sharedindex.<hash> files, named by the hash at their end; git reads a
-        // damaged one without a word too (review of readfirst#207). Each there is checked by its content and its name.
+        // A split index keeps most entries in a sharedindex.<hash> file, named by the hash at its end, and git reads a
+        // damaged one without a word too (review of readfirst#207). The one the index uses is named in its `link`
+        // extension: that one is checked, as git reads it, never an old one left in the folder (that would refuse a
+        // stop for a file nothing reads).
+        let link = null;
+        try { link = sharedIndexOf(bytes, size); } catch (e) { throw Object.assign(new Error(`the index file (${relative(root, at) || at}) could not be read to its extensions (${e.message}), so whether it uses a shared index, and that file's state, are not known`), { ours: true }); }
         const shared = dirname(resolve(root, git(root, 'rev-parse', '--git-path', 'sharedindex.x').trim()));
-        let names = [];
-        try { names = readdirSync(shared).filter((f) => /^sharedindex\.[0-9a-f]{40,64}$/u.test(f)); } catch { names = []; }
+        const names = link ? [`sharedindex.${link}`].filter((f) => existsSync(join(shared, f))) : [];
         for (const f of names) {
           const b = readFileSync(join(shared, f));
           const tail = b.subarray(Math.max(0, b.length - size));
