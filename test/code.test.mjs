@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { Worker } from 'node:worker_threads';
 import { closeOf, countSteps, declarations, lex, scopeOf, scriptBlocks, tokens } from '../src/code.mjs';
+import { linearIn, timeShapes } from './linear-time.mjs';
 
 const L = (...a) => a.join('\n');
 const bounds = (path, body, opts) => declarations(path, body, opts).map((d) => `${d.name}:${d.line}-${d.end}`).join(' ');
@@ -168,6 +168,30 @@ test('lex: code has the length of its line, with strings, template text, comment
   for (const [i, r] of rows.entries()) { assert.equal(r.code.length, lines[i].length); assert.equal(r.mark.length, lines[i].length); }
   assert.deepEqual(rows.map((r) => r.code), ['const a = "  " + `    name + " "   `          ', "const re = /      / , s = '     '", 'x = 1         + 2']);
   assert.deepEqual(rows.map((r) => r.comment), [true, false, true]);
+});
+
+test('lex, Python: an f-string placeholder is code marked p (left as spaces in code); a quote of its own inside it is a string', () => {
+  // Python 3.13's tokenize gives these NAME tokens inside the f-strings: a b r c d g h i join j l (r is b's !r
+  // conversion, text here). rb"…" interpolates nothing; {{k}} is braces.
+  const lines = ['s = f"{a} {b!r:>{c}} {d[\'k\']}" + rb"{e}" + F"""{g', ' + h}""" + f\'{i, \', \'.join(j)}\' + f"{{k}} {l=}"', 't = 1'];
+  const rows = lex(lines, 'py');
+  const words = tokens(rows, 0, rows.length, { placeholders: true }).filter((t) => t.k === 'word').map((t) => t.v);
+  assert.deepEqual(words, ['s', 'f', 'a', 'b', 'c', 'd', 'rb', 'F', 'g', 'h', 'f', 'i', 'join', 'j', 'f', 'l', 't']);
+  // What reads `code` sees the strings blank, as before, and the line after them as code.
+  assert.deepEqual(rows.map((r) => r.code.trim().length > 0 && r.code.includes('t = 1')), [false, false, true]);
+  assert.ok(!rows[0].code.includes('a}') && !rows[1].code.includes('join'));
+  // A placeholder over lines ends no declaration (Python's ast: f 1-3, g 4-4).
+  assert.equal(bounds('a.py', L('def f():', '    s = f"""{a', ' + b} x"""', 'def g(): pass')), 'f:1-3 g:4-4');
+  // Without the option, a literal is still one token.
+  assert.deepEqual(tokens(rows).map((t) => t.k === 'val' ? 'V' : t.v), ['s', '=', 'f', 'V', '+', 'rb', 'V', '+', 'F', 'V', '+', 'f', 'V', '+', 'f', 'V', 't', '=', 'V']);
+});
+
+test('lex: a template placeholder\'s code comes as tokens between synthetic parentheses only when asked for', () => {
+  const lines = ['const s = `a ${x + y} b ${`${z}`} ${f("s", q)}`;', 'let m = `', '${w}', '`;'];
+  const rows = lex(lines, 'js');
+  const shown = (ts) => ts.map((t) => (t.k === 'val' ? 'V' : t.v + (t.synthetic ? '*' : ''))).join(' ');
+  assert.equal(shown(tokens(rows)), 'const s = V ; let m = V ;');
+  assert.equal(shown(tokens(rows, 0, rows.length, { placeholders: true })), 'const s = V (* x + y )* (* V (* z )* )* (* f ( V , q ) )* ; let m = V (* w )* ;');
 });
 
 test('lex: a regular expression after return, a JSX closing tag, and a division after a non-null assertion', () => {
@@ -401,69 +425,8 @@ test('params: linear steps in the length of a parameter list, its nesting and it
   }
 });
 
-// The time, for the work the steps do not count (a builtin's: a slice per token was 600 times slower at 16 times the
-// text, with the same steps). The time is the process's CPU time, not the clock's: on a CPU shared with other work a
-// short read can fit in one turn on the CPU while a long one always waits out the others' turns, which doubled the
-// ratio (pinned to one CPU beside a busy loop, a long chain of types measured 36 times by the clock in the median, 23
-// by CPU time; 9 of 30 runs failed by the clock, none by CPU time). Each size is read once first (the first read
-// compiles the reader), then read again and again until 20ms of CPU time have passed, and the time of one read is
-// that time over the reads; the fastest of five such runs is taken. One read of the small size can take about 1ms,
-// within the noise of the timer and the compiler, and timed once a read of a long chain of types failed on CI though
-// its steps grow linearly. The sizes are 20,000, 80,000 and 320,000 characters, and the test takes the slope of the
-// time's logarithm against the size's (least squares): the power of the size the time grows with. It must be under
-// 1.5. Quadratic work is 2 (the shapes below measured 1.74 to 1.86 before their fixes), and work whose steps grow
-// linearly measured 0.59 to 1.26. At 5,000, 20,000 and 80,000 a quadratic shape measured 1.39, its linear part still
-// as large as the rest, so the smallest size is 20,000. A single ratio of the largest size to the smallest left little
-// room: some linear shapes measured over 32 times at 16 times the text, where the bound was 32. The three sizes are
-// measured up to three times, and one slope under 1.5 passes (quadratic fails all three). It runs in a worker stopped
-// after 60 seconds: a test's timeout does not stop synchronous code (a test busy
-// for 8 seconds passed a 1 second timeout), and a reader that rescans a parameter list for each parameter was still
-// reading after 240 seconds. CPU time is the whole process's: nothing else may run in this process while it is timed.
-const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads');
-(async () => {
-  const { declarations } = await import(${JSON.stringify(new URL('../src/code.mjs', import.meta.url).href)});
-  const shapes = { ${Object.entries(shapes).map(([name, make]) => `${JSON.stringify(name)}: ${make}`).join(',\n')} };
-  for (const [name, make] of Object.entries(shapes)) {
-    const time = (n) => {
-      const text = make(n);
-      declarations('a.ts', text, { params: true });
-      let best = Infinity;
-      for (let k = 0; k < 5; k++) {
-        const t = process.cpuUsage();
-        let calls = 0, us = 0;
-        do { declarations('a.ts', text, { params: true }); calls++; const u = process.cpuUsage(t); us = u.user + u.system; } while (us < 20_000);
-        best = Math.min(best, us / 1e3 / calls);
-      }
-      parentPort.postMessage({ name, n, ms: best });
-      return best;
-    };
-    const sizes = [20_000, 80_000, 320_000];
-    const slopeOf = (ms) => {
-      const x = sizes.map(Math.log), y = ms.map(Math.log);
-      const mx = x.reduce((a, b) => a + b) / x.length, my = y.reduce((a, b) => a + b) / y.length;
-      return x.reduce((s, xi, i) => s + (xi - mx) * (y[i] - my), 0) / x.reduce((s, xi) => s + (xi - mx) ** 2, 0);
-    };
-    const tries = [];
-    for (let k = 0; k < 3 && !tries.some((t) => t.slope < 1.5); k++) { const ms = sizes.map((n) => time(n)); tries.push({ ms, slope: slopeOf(ms) }); }
-    parentPort.postMessage({ name, tries });
-  }
-  parentPort.postMessage(null);
-})();`;
-
+// The time, for the work the steps do not count: test/linear-time.mjs says how it is measured and why.
 test('params: linear time in the length of a parameter list, its nesting and its file', async () => {
-  const done = [];
-  const times = []; // each size as it is measured, for a worker stopped before a pair is done
-  const said = () => done.map(({ name, tries }) => `${name}: ${tries.map(({ ms, slope }) => `${ms.map((m) => m.toFixed(1)).join(', ')}ms at 20,000, 80,000, 320,000 (slope ${slope.toFixed(2)})`).join('; ')}`).join('\n');
-  const worker = new Worker(TIMED(LONG_SHAPES), { eval: true });
-  try {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`not done in 60 seconds; measured: ${times.map(({ name, n, ms }) => `${name} ${ms.toFixed(1)}ms at ${n}`).join(', ')}`)), 60_000);
-      worker.on('message', (m) => { if (!m) { clearTimeout(timer); resolve(); } else if (m.tries) done.push(m); else times.push(m); });
-      worker.on('error', (e) => { clearTimeout(timer); reject(e); });
-    });
-  } finally {
-    await worker.terminate();
-  }
-  assert.equal(done.length, Object.keys(LONG_SHAPES).length);
-  assert.ok(done.every(({ tries }) => tries.some((t) => t.slope < 1.5)), said());
+  const { done, said } = await timeShapes(LONG_SHAPES, new URL('../src/code.mjs', import.meta.url).href, 'declarations', (fn, text) => fn('a.ts', text, { params: true }));
+  assert.ok(linearIn(done, LONG_SHAPES), said);
 });
