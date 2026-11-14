@@ -1242,16 +1242,38 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
         const unkept = [...new Set([...targets, ...changes.keys()])].filter((f) => before.has(f)).sort();
         for (const f of unkept) changes.delete(f);
         if (unkept.length) noStart = `readfirst${at}: ${unkept.map((f) => `\`${f}\``).join(', ')} ${unkept.length === 1 ? 'was' : 'were'} not tracked by git when the session began; anything changed there since was not compared with its ${notThis.length} not-this answer(s).`;
-        // A merge into the branch since the start (git merge main, a pull) brings other people's changes into the diff,
-        // and a not-this about the session's own edit would be refused for them (review of readfirst#204). The files a
-        // merge on the first-parent line changed leave the diff and are named as not compared.
-        const merges = head ? git(root, 'rev-list', '--merges', '--first-parent', `${head}..HEAD`).split('\n').filter(Boolean) : [];
-        const merged = new Set();
-        for (const m of merges) for (const f of git(root, 'diff', '--name-only', '-z', '--no-renames', `${m}^1`, m).split('\0').filter(Boolean)) merged.add(f);
-        const mergedHere = [...merged].filter((f) => changes.has(f)).sort();
-        for (const f of mergedHere) changes.delete(f);
-        // cut: the merge commits' shas are shortened for the message; every one is named.
-        if (mergedHere.length) noStart = [noStart, `readfirst${at}: ${mergedHere.map((f) => `\`${f}\``).join(', ')} ${mergedHere.length === 1 ? 'was' : 'were'} changed by ${merges.length} merge(s) into this branch since the session began (${merges.map((m) => m.slice(0, 12)).join(', ')}); what changed there was not compared with its ${notThis.length} not-this answer(s).`].filter(Boolean).join('\n');
+        // Other people's commits reach the branch by more than merges: a pull that fast-forwards, a rebase, a
+        // cherry-pick, a `merge --squash` then commit (review of readfirst#204: each refused a right not-this). git's
+        // HEAD reflog says how HEAD moved since the start, read back to the last entry at the starting commit: a
+        // `commit:`, `commit (amend):` or `commit (initial):` is the session's own (but not one with git's squash
+        // message); every other move (pull, merge, rebase, cherry-pick, reset, checkout...) brought what changed between
+        // its old and new commit, and those files leave the diff and are named as not compared, with the moves. Never by
+        // dates: a clock is a guess. A reflog that does not reach back to the start (reflogs off, expired) compares no
+        // not-this and says so.
+        // No starting commit, no move to read (and rev-parse HEAD fails in a repository with no commit).
+        const at0 = head ? git(root, 'rev-parse', '--verify', '-q', 'HEAD').trim() : '';
+        if (head && at0 !== head) {
+          const log = git(root, 'reflog', 'show', '--format=%H%x09%gs', 'HEAD').split('\n').filter(Boolean).map((l) => ({ sha: l.slice(0, l.indexOf('\t')), what: l.slice(l.indexOf('\t') + 1) }));
+          const back = log.findIndex((e) => e.sha === head);
+          if (back < 0) {
+            changes = null;
+            // cut: the commit shas are shortened for the message.
+            noStart = notCompared(`HEAD moved since the session began (${head.slice(0, 12)} to ${at0.slice(0, 12)}), and git's HEAD reflog does not reach back to the start, so the session's own commits cannot be told from what came in (reflog unavailable)`);
+          } else {
+            const brought = new Set();
+            const moves = new Set();
+            for (let i = 0; i < back; i++) {
+              const { what } = log[i];
+              const squash = /^commit[^:]*: Squashed commit of the following/u.test(what);
+              if (/^commit(?: \((?:amend|initial)\))?: /u.test(what) && !squash) continue;
+              moves.add(squash ? 'merge --squash' : what.slice(0, what.indexOf(':') < 0 ? what.length : what.indexOf(':')));
+              for (const f of git(root, 'diff', '--name-only', '-z', '--no-renames', log[i + 1].sha, log[i].sha).split('\0').filter(Boolean)) brought.add(f);
+            }
+            const broughtHere = [...brought].filter((f) => changes.has(f)).sort();
+            for (const f of broughtHere) changes.delete(f);
+            if (broughtHere.length) noStart = [noStart, `readfirst${at}: ${broughtHere.map((f) => `\`${f}\``).join(', ')} ${broughtHere.length === 1 ? 'was' : 'were'} changed since the session began by moves of HEAD it did not commit itself (${[...moves].join('; ')}); what changed there was not compared with its ${notThis.length} not-this answer(s).`].filter(Boolean).join('\n');
+          }
+        }
       } catch (e) { changes = null; noStart = notCompared(`the session's diff could not be read (${errorText(e)})`); }
       if (changes) try {
         judge(list, { changes, read: readText(root), files, imports });

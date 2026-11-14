@@ -268,7 +268,53 @@ test('a merge of main into the branch during the session is not counted against 
   git('-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', '-q', '--no-edit', 'main');
   const out = said(s.stop());
   assert.doesNotMatch(out, /does not bear out/u, 'alpha came from main by the merge, not from the session');
-  assert.match(out, /`src\/a\.js` was changed by 1 merge\(s\) into this branch since the session began \([0-9a-f]{12}\); what changed there was not compared with its 1 not-this answer\(s\)\./u);
+  // The session also went to main and back: those checkouts are moves it did not commit, named too.
+  assert.match(out, /`src\/a\.js` was changed since the session began by moves of HEAD it did not commit itself \([^)]*\bmerge main\b[^)]*\); what changed there was not compared with its 1 not-this answer\(s\)\./u);
+});
+
+// Another's commit reaches the branch with no merge commit: alpha comes from main after the session began, then the
+// session changes beta (the file keeps both). Each way must leave alpha out of the session's diff.
+const BRING = {
+  'merge main': (git) => git('merge', '-q', '--ff-only', 'main'),
+  'rebase (finish)': (git) => git('rebase', '-q', 'main'),
+  'cherry-pick': (git) => git('-c', 'user.email=t@t', '-c', 'user.name=t', 'cherry-pick', 'main'),
+  'merge --squash': (git) => { git('merge', '-q', '--squash', 'main'); git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-q', '--no-edit'); },
+};
+for (const [move, bring] of Object.entries(BRING)) {
+  test(`alpha brought from main by ${move} after the session began is not counted against a not-this, and is named`, () => {
+    const s = session();
+    const git = (...a) => execFileSync('git', ['-C', s.root, ...a], { encoding: 'utf8' });
+    git('checkout', '-q', '-b', 'work');
+    s.call('Edit', inBeta(s.root));
+    notThisBeta(s);
+    git('checkout', '-q', 'main');
+    writeFileSync(join(s.root, 'src/a.js'), A.replace('  return x + one;', '  return x + one + 0;'));
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', 'alpha, on main');
+    git('checkout', '-q', 'work');
+    bring(git);
+    leave(s.root, { alpha: true });
+    const out = said(s.stop());
+    assert.doesNotMatch(out, /does not bear out/u, `alpha came from main by ${move}, not from the session`);
+    assert.match(out, new RegExp(`\`src/a\\.js\` was changed since the session began by moves of HEAD it did not commit itself \\([^)]*${move.replace(/[()]/gu, '\\$&')}[^)]*\\)`, 'u'));
+  });
+}
+
+test('HEAD moved and the reflog does not reach back to the start: no not-this compared, and it says so', () => {
+  const s = session();
+  const git = (...a) => execFileSync('git', ['-C', s.root, ...a], { encoding: 'utf8' });
+  git('checkout', '-q', '-b', 'work');
+  s.call('Edit', inBeta(s.root));
+  notThisBeta(s);
+  git('checkout', '-q', 'main');
+  writeFileSync(join(s.root, 'src/a.js'), A.replace('  return x + one;', '  return x + one + 0;'));
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', 'alpha, on main');
+  git('checkout', '-q', 'work');
+  git('merge', '-q', '--ff-only', 'main');
+  git('reflog', 'expire', '--expire=all', '--all');
+  leave(s.root, { alpha: true });
+  const out = said(s.stop());
+  assert.doesNotMatch(out, /does not bear out/u);
+  assert.match(out, /1 not-this answer\(s\) were not compared with the change: HEAD moved since the session began \([0-9a-f]{12} to [0-9a-f]{12}\), and git's HEAD reflog does not reach back to the start, so the session's own commits cannot be told from what came in \(reflog unavailable\)\./u);
 });
 
 test('a SHA-256 repository with no commit yet diffs from its own empty tree', () => {
