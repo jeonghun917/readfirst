@@ -105,6 +105,41 @@ const AGAINST_BASH = [
   'case $(echo x >f5) in x) ;; esac', 'case x in $(echo >f6)) echo;; esac', 'for i in $(echo > f7); do :; done', '[[ $(echo > f8) ]]', 'if $(echo > f9); then :; fi',
   'while $(echo > f10; false); do :; done', 'time $(echo > f11)', '! $(echo > f12)', 'g() { echo $(echo > f13); }; g', 'cat <<E $(echo > f14)\nhi\nE',
 ];
+// lift marks where it took a substitution out with a character and the body's number. The mark was \x01, and a command
+// can hold any character: \x01 and a number in a redirect, a cd or a value was read as a body, and shellWrites threw
+// when there was none (`echo hi > \x010`: "Cannot read properties of undefined", review of #206, 2026-11-14), or read
+// the body that had that number. The mark is now one the command does not hold. Each command runs in an empty folder
+// holding d and \x011.
+test('\\x01 and a number in a command are text, not a body lift took out, and bash agrees', { skip: spawnSync('bash', ['-c', 'true']).status !== 0 && 'bash is not installed here, so the commands cannot be run' }, () => {
+  for (const c of ['echo hi > \x010', 'cd \x011; echo > e', 'S=\x011; echo > $S/h', 'echo > \x0199999', 'echo $(echo a) > \x010', 'cat <(echo > f1) > \x012',
+    'echo hi > 0', 'echo $(echo > 1) > 0']) {
+    const dir = mkdtempSync(join(tmpdir(), 'readfirst-place-'));
+    mkdirSync(join(dir, 'd'));
+    mkdirSync(join(dir, '\x011'));
+    spawnSync('bash', ['-c', c], { cwd: dir, stdio: 'ignore', timeout: 5000, env: {} });
+    const named = shellWrites(c, dir).files.map((f) => f.slice(dir.length + 1)).sort();
+    const list = () => readdirSync(dir).flatMap((x) => (['d', '\x011'].includes(x) ? readdirSync(join(dir, x)).map((y) => `${x}/${y}`) : [x])).sort();
+    let made = list();
+    for (let t = 0; t < 100 && /[<>]\(/u.test(c) && named.some((x) => !made.includes(x)); t++) { pause(10); made = list(); }
+    assert.deepEqual(named, made, JSON.stringify(c));
+  }
+  assert.deepEqual(commandWords('readfirst answer \x010 $(echo a)', '/r').map((x) => x.words.map((w) => w.text)), [['readfirst', 'answer', '\x010', '\0$(echo a)\0']]);
+  assert.deepEqual(bashReads('npx readfirst read \x010', '/r').map((r) => r.files), [['/r/\x010']]);
+});
+
+// A command that holds every private-use character leaves no mark free: nothing is read, and shellWrites says why
+// rather than naming nothing as if nothing were written. The next command is read as before.
+test('a command holding every private-use character is not read, and says so', () => {
+  const all = Array.from({ length: 0xf8ff - 0xe000 + 1 }, (_, i) => String.fromCharCode(0xe000 + i)).join('');
+  const r = shellWrites(`echo ${all}; echo $(cd /a) > f`, '/r');
+  assert.deepEqual(r.files, []);
+  assert.deepEqual(r.unknown.map((u) => [u.part, u.prefix]), [['the command', '']]);
+  assert.match(r.unknown[0].why, /private-use/u);
+  assert.deepEqual(bashReads(`echo ${all}; npx readfirst read a.js`, '/r'), []);
+  assert.deepEqual(commandWords(`echo ${all}`, '/r'), []);
+  assert.deepEqual(writes('echo $(cd /a) > f'), ['/r/f']);
+});
+
 // Not run against bash: `>((1>0))` runs (1>0), which makes 0, after bash returns, so 0 was there in 11 of 40 runs.
 test('a >( ) holding a subshell: its write is named, not `((1`', () => {
   assert.deepEqual(writes('>((1>0))'), ['/r/0']);
@@ -257,9 +292,10 @@ test('a here-document mark is never a character of the command', () => {
     const ch = String.fromCharCode(c);
     assert.deepEqual(named(`echo "${ch}0"; cd s; cat <<E\n$(echo > u1)\nE`), ['/r/s/u1'], `U+${c.toString(16)} in the command`);
   }
-  // Every private-use character in the text: each here-document is read on a walk of its own, as before.
-  const all = Array.from({ length: 0xf8ff - 0xe000 + 1 }, (_, i) => String.fromCharCode(0xe000 + i)).join('');
-  assert.deepEqual(named(`echo "${all}0"; cd s; cat <<E\n$(echo > u1)\nE`), ['/r/s/u1']);
+  // Every private-use character in the text but one: lift's mark takes that one, none is left for here-documents, and
+  // each is read on a walk of its own, as before. (With every one, nothing is read: the test after the bash one.)
+  const allButOne = Array.from({ length: 0xf8ff - 0xe000 }, (_, i) => String.fromCharCode(0xe000 + i)).join('');
+  assert.deepEqual(named(`echo "${allButOne}0"; cd s; cat <<E\n$(echo > u1)\nE`), ['/r/s/u1']);
 });
 
 test('linear time in the length of unclosed chains and of nesting', async () => {
