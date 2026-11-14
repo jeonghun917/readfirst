@@ -265,6 +265,92 @@ test('scopes: a comma inside type arguments splits no parameter, declarator or p
   assert.ok(!t.references.some((r) => r.to.unknown), JSON.stringify(t.references.filter((r) => r.to.unknown)));
 });
 
+// ------------------------------------------------------------------------------------ strings, statements, markup
+
+// Each name of t's references, as name@line->how@line of its binding, or name@line->? when it has none.
+const resolved = (t) => t.references.map((r) => `${r.name}@${r.line}->${r.to.binding !== undefined ? `${t.bindings[r.to.binding].how}@${t.bindings[r.to.binding].line}` : r.to.builtin ? 'builtin' : '?'}`);
+
+test('scopes, Python: a string prefix is no name; an f-string placeholder holds uses, a format spec and !r none', () => {
+  const t = scopes('a.py', 'x = 1\nd = {}\ns = f"{x} {x!r:>{x}} {d[\'k\']} {x=} {x:%H}" + rb"{nope}" + Rf"""{x\n + 1}""" + f\'{x, \', \'.join(d)}\' + r\'\\\'\' + f"{x}"\n');
+  assert.deepEqual(resolved(t).filter((r) => !r.startsWith('x@') && !r.startsWith('d@')), []);
+  assert.equal(t.references.filter((r) => r.name === 'x').length, 8);
+  assert.ok(t.references.every((r) => r.to.binding !== undefined), JSON.stringify(resolved(t)));
+});
+
+test('scopes, Python: a walrus binds in the function around (past a comprehension); its `:` ends no header', () => {
+  const t = scopes('a.py', 'import sys\ndef f(xs):\n    while line := sys.stdin.readline():\n        print(line)\n    ys = [y := q for q in xs]\n    return y\n');
+  assert.equal(bindingOf(t, referenceAt(t, 'line', 4)).how, 'assign');
+  const y = bindingOf(t, referenceAt(t, 'y', 6));
+  assert.deepEqual([y.how, t.scopes[y.scope].kind], ['assign', 'function']);
+});
+
+test('scopes, Python: match and case head statements only before a subject; a capture binds, a dotted name is a use', () => {
+  const t = scopes('a.py', [
+    'import re', 'class Point: pass', 'RED = 1', 'match = re.match("a", "b")', 'case: int = 2', 'print(match, case)',
+    'def f(cmd):', '    match cmd:', '        case ["go", direction] if direction:', '            return direction',
+    '        case Point(x=0, y=yy) as p:', '            return yy, p', '        case {"k": v, **rest}:', '            return v, rest',
+    '        case RED.real | _:', '            return 0',
+  ].join('\n') + '\n');
+  assert.equal(bindingOf(t, referenceAt(t, 'match', 6)).line, 4);
+  assert.equal(bindingOf(t, referenceAt(t, 'case', 6)).line, 5);
+  for (const [name, line] of [['direction', 10], ['yy', 12], ['p', 12], ['v', 14], ['rest', 14]]) assert.equal(bindingOf(t, referenceAt(t, name, line)).how, 'case', name);
+  assert.equal(bindingOf(t, referenceAt(t, 'Point', 11)).how, 'class');
+  assert.equal(bindingOf(t, referenceAt(t, 'RED', 15)).line, 3);
+  assert.ok(!t.references.some((r) => ['x', '_', 'real'].includes(r.name) || r.to.unknown), JSON.stringify(resolved(t)));
+});
+
+test('scopes, Python: a line joined by `\\`, a float ending in `.`, and the line after a string over lines', () => {
+  const t = scopes('a.py', [
+    'from os import path, \\', '    sep', 'T = 20.', 'n = T', 'class C:', '  def f(a, \\', '        b=None):', '    s = """x', '  """ % (a, b)',
+    '    return s. \\', '        strip().replace("a", "b"), path, sep, n',
+  ].join('\n') + '\n');
+  assert.equal(bindingOf(t, referenceAt(t, 'T', 4)).line, 3);
+  assert.equal(bindingOf(t, referenceAt(t, 'n', 11)).line, 4);
+  assert.equal(bindingOf(t, referenceAt(t, 'sep', 11)).how, 'import');
+  // The method's string ends on a line at the method's own indent: that line does not end the method.
+  for (const name of ['a', 'b']) assert.equal(bindingOf(t, referenceAt(t, name, 9)).how, 'parameter', name);
+  assert.ok(!t.references.some((r) => r.to.unknown || ['strip', 'replace'].includes(r.name)), JSON.stringify(resolved(t)));
+});
+
+test('scopes: a template placeholder holds uses; its parentheses are no parameter list', () => {
+  const t = scopes('a.js', 'const x = 1, tty = 0;\nconst s = `a ${x + 1} b ${`${x}`}`;\nconst red = tty ? (msg) => `\\x1B[31m${msg}` : m => m;\nclass K { #p = 1; f() { return `${this.#p}`; } }\n');
+  assert.equal(t.references.filter((r) => r.name === 'x').length, 2);
+  assert.equal(bindingOf(t, referenceAt(t, 'msg', 3)).how, 'parameter');
+  const ms = t.references.filter((r) => r.name === 'm');
+  assert.ok(ms.length === 1 && t.bindings[ms[0].to.binding].name === 'm', JSON.stringify(resolved(t)));
+  assert.ok(!t.references.some((r) => r.to.unknown), JSON.stringify(resolved(t)));
+});
+
+test('scopes: methods with a computed or string name, generator methods, labels, and a class field\'s object', () => {
+  const t = scopes('a.js', [
+    'const K = 1;',
+    'class A { [K](a) { return a; } *g(b) { yield b; } static *[K](c) { return c; } get [K]() { return K; } \'s\'(d) { return d; } conf = { help: K, arch: K }; }',
+    'const o = { *g(e) { return e; }, [K](f) { return f; }, \'=\'({ attr, value }) { return attr === value; } };',
+    'outer: for (const x of [K]) { for (const y of [x]) { if (y) continue outer; break outer; } }',
+  ].join('\n') + '\n');
+  for (const name of ['a', 'b', 'c', 'd', 'e', 'f', 'attr', 'value']) assert.equal(bindingOf(t, t.references.find((r) => r.name === name)).how, 'parameter', name);
+  assert.ok(!t.references.some((r) => r.to.unknown || ['outer', 'help', 'arch'].includes(r.name)), JSON.stringify(resolved(t)));
+});
+
+test('scopes: a function or class first in a block is declared there, not a value', () => {
+  const t = scopes('a.js', 'function wrap(P) {\n  function adopt(v) { return v; }\n  return (function () { function step() { return adopt(1) + inner(); } function inner() { return 2; } return step; })();\n}\nconst make = () => { class Safe {} return new Safe(); };\n');
+  assert.equal(bindingOf(t, referenceAt(t, 'adopt', 3)).line, 2);
+  assert.equal(bindingOf(t, referenceAt(t, 'inner', 3)).how, 'def');
+  assert.equal(bindingOf(t, referenceAt(t, 'Safe', 5)).how, 'class');
+  assert.ok(!t.references.some((r) => r.to.unknown), JSON.stringify(resolved(t)));
+});
+
+test('scopes: JSX tag names, attributes and text are no names; a component and the code in braces are uses', () => {
+  const t = scopes('a.jsx', [
+    'import Button from "./b";', 'const ui = {}, h = () => 1, v = 2, p = {};',
+    'const e = <div className="a" onClick={h} data-x={v} style={{ color: v }} {...p}>text here {v} <Button on={h}/> <ui.Card/> <>frag</></div>;',
+  ].join('\n') + '\n');
+  assert.deepEqual(t.references.map((r) => r.name).sort(), ['Button', 'h', 'h', 'p', 'ui', 'v', 'v', 'v']);
+  assert.ok(!t.references.some((r) => r.to.unknown), JSON.stringify(resolved(t)));
+  // In a .ts file `<T>x` is a type assertion, not JSX.
+  assert.equal(scopes('a.ts', 'type T = 1;\nconst y = 1;\nconst z = <T>y;\n').references.find((r) => r.name === 'y').to.binding !== undefined, true);
+});
+
 test('scopes: every reason given is one of REASONS', () => {
   const t = scopes('a.js', "with (o) { a; }\neval('x');\nimport(name);\nrequire(name);\n");
   for (const r of [...t.references.filter((x) => x.to.unknown).map((x) => x.to.unknown), ...t.unknown.map((x) => x.reason)]) assert.ok(REASONS.includes(r), r);
@@ -337,6 +423,13 @@ const SCOPE_SHAPES = {
   'ts: comparisons that look like type arguments': (n) => `const v = ${'a < b && c > (d) || '.repeat(n / 20)}z;\n`,
   'ts: comparisons left open': (n) => `const v = ${'a < b, '.repeat(n / 8)}z;\n`,
   'ts: nested callback types': (n) => `const f = (a: ${'(b: '.repeat(n / 12)}X${') => X'.repeat(n / 12)}): ${'((c: X) => '.repeat(n / 16)}X${')'.repeat(n / 16)} => a;\n`,
+  // Placeholders, nested and in a row; markup; case clauses: each token read once.
+  'py: many f-string placeholders': (n) => `x = 1\ns = f"${'{x} '.repeat(n / 4)}"\n`,
+  'py: nested f-strings': (n) => `x = 1\ns = ${'f"{'.repeat(n / 8)}x${'}"'.repeat(n / 8)}\n`,
+  'py: a long match': (n) => `def f(c):\n    match c:\n${Array.from({ length: n / 40 }, (_, i) => `        case [a${i}, *r${i}] if a${i}:\n            return r${i}\n`).join('')}`,
+  'js: nested templates': (n) => `const x = 1;\nconst s = ${'`${'.repeat(n / 6)}x${'}`'.repeat(n / 6)};\n`,
+  'js: a long JSX element': (n) => `const h = 1;\nconst e = <div>${'<b className="c" on={h}>text {h}</b>'.repeat(n / 40)}</div>;\n`,
+  'js: deep JSX': (n) => `const h = 1;\nconst e = ${'<i a={h}>'.repeat(n / 18)}{h}${'</i>'.repeat(n / 18)};\n`,
   'ts: many type parameters with defaults': (n) => `function f<${Array.from({ length: n / 24 }, (_, i) => `T${i} extends Map<A, B> = C`).join(', ')}>(a: T0) { return a; }\n`,
 };
 

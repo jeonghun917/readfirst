@@ -40,7 +40,8 @@ const LANGS = {
       ReferenceError RuntimeError StopAsyncIteration StopIteration SyntaxError SystemError SystemExit TabError
       TimeoutError TypeError UnboundLocalError UnicodeDecodeError UnicodeEncodeError UnicodeError UnicodeTranslateError
       ValueError ZeroDivisionError Warning UserWarning DeprecationWarning PendingDeprecationWarning RuntimeWarning
-      SyntaxWarning FutureWarning ImportWarning UnicodeWarning BytesWarning ResourceWarning EncodingWarning`),
+      SyntaxWarning FutureWarning ImportWarning UnicodeWarning BytesWarning ResourceWarning EncodingWarning
+      WindowsError _IncompleteInputError PythonFinalizationError __path__`),
     // Names in an annotation that wrap the type rather than name it: `Optional[Store]`, `Store | None`, `list[Store]`.
     wrappers: wordSet(`Optional Union List Dict Set FrozenSet Tuple Type Iterable Iterator Sequence MutableSequence Mapping
       MutableMapping Collection Callable Awaitable Coroutine Generator AsyncIterator AsyncIterable AsyncGenerator ClassVar
@@ -48,6 +49,10 @@ const LANGS = {
       None int str float bool bytes object complex`),
     // Modules whose members are such wrappers: `typing.Optional`, `t.List`.
     typingModules: wordSet('typing typing_extensions t collections abc'),
+    // A word right before a string that is part of it: `f"…"`, `rb"…"`, `Rf"…"`, `t"…"` (no other word may stand so).
+    stringPrefix: /^(?:[rRbBuUfFtT]|[rR][bBfFtT]|[bBfFtT][rR])$/u,
+    // Keywords only at the head of their statement: `match x:`, `case P:`; elsewhere they are names.
+    softHeads: wordSet('match case'),
   },
   js: {
     keywords: wordSet(`break case catch class const continue debugger default delete do else export extends finally for function
@@ -99,9 +104,13 @@ const AUGMENTED = new Set(['+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**='
 export function scopes(path, body) {
   if (!reads(path)) return null;
   const rows = codeRows(path, body);
-  const toks = tokens(rows);
+  // The code in a template's `${ }` and an f-string's `{ }` comes as tokens between synthetic parentheses.
   const lang = /\.py$/u.test(path) ? 'py' : 'js';
+  const all = tokens(rows, 0, rows.length, { placeholders: true });
+  // Python's `\` at a line's end only joins lines (the statements are found from the rows): no token of its own.
+  const toks = lang === 'py' ? all.filter((t) => !isPunct(t, '\\')) : all;
   const T = newTable(toks, lang);
+  T.path = path;
   // A script's first line `#!/usr/bin/env node` names the program that runs it, not code.
   if (lang === 'js' && String(body).startsWith('#!')) for (let j = 0; j < toks.length && toks[j].line === 1; j++) T.marks[j] = SKIP;
   if (lang === 'py') readPython(T, rows);
@@ -211,10 +220,18 @@ function readPython(T, rows) {
   const indentWidth = (line) => /^[ \t]*/u.exec(rows[line - 1].code)[0].length;
   const backslashCarried = (line) => line >= 2 && /\\\s*$/u.test(rows[line - 2].code);
   const moduleScope = T.scope('module', null, 0, n);
+  // A string's prefix (`f"…"`, `rb"…"`) is part of the string, not a name.
+  for (let j = 0; j + 1 < n; j++) {
+    countStep();
+    if (isWord(toks[j]) && T.data.stringPrefix.test(toks[j].v) && toks[j + 1].k === 'val' && /^['"]/u.test(toks[j + 1].text ?? '') && toks[j + 1].line === toks[j].line) marks[j] = SKIP;
+  }
   const blocks = []; // { scope, indent } for a def or class body, { typeOnly: true, indent } for `if TYPE_CHECKING:`
+  const matches = []; // the indents of the `match` statements around: a `case` deeper than the last is a case clause
   const scopeNow = () => { for (let k = blocks.length - 1; k >= 0; k--) if (blocks[k].scope !== undefined) return blocks[k].scope; return moduleScope; };
   let typeOnlyOpen = 0; // `if TYPE_CHECKING:` blocks open around the statement
   const typeOnly = () => typeOnlyOpen > 0;
+  // Whether a `.` stands before token j as a member's: not the end of a number (`20.` at a line's end).
+  const afterDot = (j) => isPunct(toks[j - 1], '.') && !(toks[j - 1].line < toks[j].line && toks[j - 2]?.k === 'val' && /^\d/u.test(toks[j - 2].v));
   // Where a binding of `name` made in scope s goes: the module for a global, the function around for a nonlocal.
   const movedHome = (s, name) => T.scopes[s].moved?.get(name) ?? s;
   const bindHere = (s, name, at, how, extra = {}) => T.bind(movedHome(s, name), name, at, how, typeOnly() ? { ...extra, type: true } : extra);
@@ -236,7 +253,7 @@ function readPython(T, rows) {
       const t = toks[j];
       if (isOpen(t)) { const c = match.get(j); opened.push([j, c === undefined ? n : c]); continue; }
       if (t.k !== 'word' || marks[j]) continue;
-      if (isPunct(toks[j - 1], '.')) continue;
+      if (afterDot(j)) continue;
       if (t.v === 'lambda') {
         const colon = firstAt(T, j + 1, b, (x) => isPunct(x, ':'));
         const s = T.scope('function', null, j, b);
@@ -258,7 +275,14 @@ function readPython(T, rows) {
         continue;
       }
       if (T.data.keywords.has(t.v)) continue;
-      const inCall = opened.length && isPunct(toks[opened.at(-1)[0]], '(');
+      // `name := value` binds in the function around, past any comprehension (in a lambda, the lambda).
+      if (isPunct(toks[j + 1], ':') && isPunct(toks[j + 2], '=') && toks[j + 2].line === toks[j + 1].line) {
+        marks[j] = BIND;
+        bindHere(lambdas.length ? lambdas.at(-1).scope : scopeNow(), t.v, j, 'assign');
+        continue;
+      }
+      // A keyword argument's name, in a call's parentheses (not an f-string placeholder's, where `{x=}` shows x).
+      const inCall = opened.length && isPunct(toks[opened.at(-1)[0]], '(') && !toks[opened.at(-1)[0]].synthetic;
       if (inCall && isPunct(toks[j + 1], '=') && (isPunct(toks[j - 1], '(') || isPunct(toks[j - 1], ','))) { marks[j] = KEY; continue; }
       if ((t.v === 'eval' || t.v === 'exec') && isPunct(toks[j + 1], '(')) T.unknownAt(j, 'eval', t.v);
       if (['globals', 'locals', 'vars'].includes(t.v) && isPunct(toks[j + 1], '(') && isPunct(toks[j + 2], ')') && (isPunct(toks[j + 3], '[') || (isPunct(toks[j + 3], '.') && isWord(toks[j + 4], 'update')))) T.unknownAt(j, 'locals-globals', t.v);
@@ -281,7 +305,7 @@ function readPython(T, rows) {
         continue;
       }
       if (t.k !== 'word' || marks[j] || T.data.keywords.has(t.v)) continue;
-      if (isPunct(toks[j - 1], '.')) continue;
+      if (afterDot(j)) continue;
       if (isPunct(toks[j + 1], '.') || isPunct(toks[j + 1], '[') || isPunct(toks[j + 1], '(')) { marks[j] = REF; continue; }
       marks[j] = BIND;
       bindHere(s, t.v, j, how, pos === undefined ? {} : { pos });
@@ -415,8 +439,34 @@ function readPython(T, rows) {
       walkExpr(k + 1, e);
       return;
     }
-    if (PY_HEADS.has(t.v) || T.data.keywords.has(t.v)) { walkExpr(k, e); return; }
+    if (t.v === 'match' && colon) { marks[k] = SKIP; matches.push(indent); walkExpr(k + 1, e); return; }
+    if (t.v === 'case' && colon && matches.length && matches.at(-1) < indent) {
+      marks[k] = SKIP;
+      const guard = firstAt(T, k + 1, e, (x) => isWord(x, 'if'));
+      casePattern(k + 1, guard, s, e);
+      if (guard < e) walkExpr(guard + 1, e);
+      return;
+    }
+    // A soft keyword that heads no statement is a name (`match = re.match(…)`): an assignment or an expression.
+    if ((PY_HEADS.has(t.v) && !T.data.softHeads.has(t.v)) || T.data.keywords.has(t.v)) { walkExpr(k, e); return; }
     pyAssignment(i, e, s);
+  };
+
+  // A case pattern from token a to the one before b: a bare name captures (bound in s from pos), `_` matches anything;
+  // a dotted name (`Color.RED`) and a class (`Point(…)`) are uses, a class pattern's `x=` names an attribute, the
+  // name after `as` captures. Literals and the pattern's punctuation are nothing.
+  const casePattern = (a, b, s, pos) => {
+    for (let j = a; j < b; j++) {
+      countStep();
+      const t = toks[j];
+      if (t.k !== 'word' || marks[j]) continue;
+      if (T.data.keywords.has(t.v) || afterDot(j)) continue;
+      if (t.v === '_') { marks[j] = SKIP; continue; }
+      if (isPunct(toks[j + 1], '.') || isPunct(toks[j + 1], '(')) { marks[j] = REF; continue; }
+      if (isPunct(toks[j + 1], '=')) { marks[j] = KEY; continue; }
+      marks[j] = BIND;
+      bindHere(s, t.v, j, 'case', { pos });
+    }
   };
 
   // An expression statement, or an assignment: targets before each `=` at depth 0, an annotation after a first `:`.
@@ -458,7 +508,10 @@ function readPython(T, rows) {
   while (i < n) {
     countStep();
     const head = isWord(toks[i], 'async') ? i + 1 : i;
-    const compound = isWord(toks[head]) && PY_HEADS.has(toks[head].v);
+    // `match` and `case` head a statement only when an expression follows (`match = 1`, `match(x)` are names).
+    const after = toks[head + 1];
+    const soft = isWord(toks[head]) && T.data.softHeads.has(toks[head].v);
+    const compound = isWord(toks[head]) && PY_HEADS.has(toks[head].v) && (!soft || (after && !after.first && (after.k !== 'punct' || ['(', '[', '{', '-', '*'].includes(after.v))));
     let e = i;
     let colon = false;
     for (let j = i; j < n; j++) {
@@ -472,8 +525,9 @@ function readPython(T, rows) {
     if (toks[i].first) {
       const ind = indentWidth(toks[i].line);
       while (blocks.length && blocks.at(-1).indent >= ind) { const b = blocks.pop(); if (b.scope !== undefined) T.scopes[b.scope].b = i; if (b.typeOnly) typeOnlyOpen--; }
+      while (matches.length && matches.at(-1) >= ind) matches.pop();
     }
-    pyStatement(i, head, e, colon);
+    pyStatement(i, head, e, colon && compound);
     i = e < n && (isPunct(toks[e], ';') || colon) ? e + 1 : Math.max(e, i + 1);
   }
   for (const b of blocks) if (b.scope !== undefined) T.scopes[b.scope].b = n;
@@ -514,7 +568,7 @@ function typeAngles(T, arrowTypeParams) {
   }
   for (let j = 0; j < n; j++) {
     countStep();
-    if (!isPunct(toks[j], '<')) continue;
+    if (!isPunct(toks[j], '<') || T.marks[j]) continue; // a JSX tag's `<` is marked already
     const a = afterAngle(toks, j);
     if (a <= 0 || opAt[j + 1] < a - 1) continue;
     const prev = toks[j - 1];
@@ -533,6 +587,60 @@ function typeAngles(T, arrowTypeParams) {
     if (!kind) continue;
     typeAngle(T, j, a);
     j = a - 1;
+  }
+}
+
+// Where a JSX element can begin: after one of these, a `<` cannot be a comparison (it has nothing on its left).
+const JSX_BEFORE = new Set(['(', '[', '{', ',', '=', ':', '?', '&&', '||', '??', '=>', '!', 'return', 'yield', 'default', 'case', 'await', 'else', 'do']);
+
+// JSX (in any script but a .ts file, where `<T>x` is a type assertion): the name of an HTML element (`div`), the names
+// of attributes and the text between tags are no names; a component's name (`Button`, `ui.Button`) is a use, and the
+// code in `{ }` is read as any other, as an expression (role 'brack'; an attribute's `{{ … }}` holds an object). An
+// element is read to the `>` that closes it, its children with it, each token once.
+function jsxElements(T, roles) {
+  const { toks, n, match, marks } = T;
+  if (/\.(?:ts|mts|cts)$/u.test(T.path ?? '')) return;
+  const skipTo = (k) => (match.get(k) ?? n - 1) + 1;
+  for (let j = 0; j < n; j++) {
+    countStep();
+    const prev = toks[j - 1];
+    if (!isPunct(toks[j], '<') || !(isWord(toks[j + 1]) || isPunct(toks[j + 1], '>'))) continue;
+    if (prev && !(JSX_BEFORE.has(prev.v) && prev.k !== 'val')) continue;
+    if (isWord(toks[j + 1]) && (isPunct(toks[j + 2], ',') || isWord(toks[j + 2], 'extends'))) continue; // `<T,>(…) =>`
+    let depth = 0;
+    let k = j;
+    while (k < n) {
+      countStep();
+      if (!isPunct(toks[k], '<')) {
+        // A child: code in `{ }`, or text.
+        if (isPunct(toks[k], '{')) { roles.set(k, 'brack'); k = skipTo(k); } else { marks[k] = SKIP; k++; }
+        continue;
+      }
+      const closing = isPunct(toks[k + 1], '/');
+      marks[k] = SKIP;
+      k += closing ? 2 : 1;
+      if (closing) marks[k - 1] = SKIP;
+      if (isWord(toks[k])) {
+        const html = /^[a-z]/u.test(toks[k].v) && !isPunct(toks[k + 1], '.');
+        if (html || closing) marks[k] = SKIP;
+        k++;
+        while (k + 1 < n && (isPunct(toks[k], '.') || isPunct(toks[k], '-') || isPunct(toks[k], ':')) && isWord(toks[k + 1])) { marks[k] = SKIP; if (html || closing) marks[k + 1] = SKIP; k += 2; }
+      }
+      let selfClosing = false;
+      while (k < n) {
+        countStep();
+        const a = toks[k];
+        if (isPunct(a, '>')) { marks[k] = SKIP; k++; break; }
+        if (isPunct(a, '/') && isPunct(toks[k + 1], '>')) { marks[k] = SKIP; marks[k + 1] = SKIP; k += 2; selfClosing = true; break; }
+        if (isPunct(a, '{')) { roles.set(k, 'brack'); if (isPunct(toks[k + 1], '{')) roles.set(k + 1, 'object'); k = skipTo(k); continue; }
+        if (a.k !== 'val') marks[k] = SKIP; // an attribute's name, `-`, `:`, `=`
+        k++;
+      }
+      if (closing) depth--;
+      else if (!selfClosing) depth++;
+      if (depth <= 0) break;
+    }
+    j = k - 1;
   }
 }
 
@@ -561,6 +669,10 @@ function readScript(T) {
   const varScope = () => stack.at(-1).fn;
   const blockScope = () => stack.at(-1).s;
   const endsStatement = (j) => j > 0 && toks[j].first && !needsMore(toks[j - 1]) && !continues(toks[j]);
+  // Whether token j starts a class member: after the `{` of the body, a `;`, a member's `}`, or a line's end.
+  const memberStart = (j) => isPunct(toks[j - 1], '{') || isPunct(toks[j - 1], ';') || isPunct(toks[j - 1], '}') || endsStatement(j);
+  // Whether token j is the first of a block's statements (`{ function f() {} … }`: a declaration, not a value).
+  const blockStart = (j) => isPunct(toks[j - 1], '{') && ['block', 'body'].includes(ctx.at(-1).role);
   // Where the look for an arrow's `=>` past `): R` stops: the `=>`, or what ends the type (a ternary's `?` or `:` too,
   // so `c ? (a) : c ? (b) : …` is not read to its end for each `)`).
   const arrowLookStop = (x, q) => isPunct(x, '=>') || isPunct(x, ',') || isPunct(x, ';') || isPunct(x, ')') || isPunct(x, ']') || isPunct(x, '}') || isPunct(x, '=') || isPunct(x, '?') || isPunct(x, ':') || endsStatement(q);
@@ -569,6 +681,7 @@ function readScript(T) {
   const arefs = new Set(); // names a `++` or `--` before them updates
   const caseColons = new Set();
   const arrowTypeParams = new Map(); // `(` of a generic arrow's parameters → its `<`
+  jsxElements(T, roles);
   typeAngles(T, arrowTypeParams);
 
   // A destructuring pattern (or a plain name) from token a to the one before b: the names marked BIND and bound, keys
@@ -837,7 +950,8 @@ function readScript(T) {
           // default value (`{ a = { k: v } }`), an expression like any other.
           if (t.v === '(') r = 'paren';
           else if (t.v === '[') r = 'brack';
-          else if (role === 'class' || !prev || isPunct(prev, ')')) r = 'block';
+          // In a class body a `{` is a block (`static {`), except a field's value (`x = { a: 1 }`).
+          else if ((role === 'class' && !isPunct(prev, '=')) || !prev || isPunct(prev, ')')) r = 'block';
           else if (isWord(prev) && BLOCK_AFTER.has(prev.v)) r = 'block';
           else if (endsStatement(j) || isPunct(prev, ';') || isPunct(prev, '}') || (isPunct(prev, '{') && role !== 'object')) r = 'block';
           else if (isPunct(prev, ':') && caseColons.has(j - 1)) r = 'block';
@@ -853,10 +967,15 @@ function readScript(T) {
           enterScope({ s, end: c + 1 });
         }
         if (r === 'skip') { for (let q = j; q <= c && q < n; q++) if (!marks[q]) marks[q] = SKIP; j = c; continue; }
+        // A method with a computed name (`[k](a) {}`, `get [k]()`, `*[Symbol.iterator]()`): the name is an expression.
+        if (t.v === '[' && (role === 'class' || role === 'object') && c < n && (isPunct(toks[c + 1], '(') || isPunct(toks[c + 1], '<'))) {
+          const before = role === 'class' ? memberStart(j) || (isWord(prev) && MEMBER_WORDS.has(prev.v)) : isPunct(prev, '{') || isPunct(prev, ',') || (isWord(prev) && ['get', 'set', 'async'].includes(prev.v));
+          if (before || isPunct(prev, '*')) callableAt(c + 1, null);
+        }
         // An arrow's parameters (`(cb: (e: V) => V) =>`, `(a: T): R =>`): their types are read now, before the walk
         // goes in, so the `=>` of a function type among them is known as a type's, not taken for an arrow. A `(` already
         // marked is inside a type read so (each nested function type read again would grow with the square of the depth).
-        if (r === 'paren' && !marks[j] && c < n && (isPunct(toks[c + 1], '=>') || (isPunct(toks[c + 1], ':') && isPunct(toks[firstAt(T, c + 2, n, arrowLookStop)], '=>')))) {
+        if (r === 'paren' && !marks[j] && !t.synthetic && c < n && (isPunct(toks[c + 1], '=>') || (isPunct(toks[c + 1], ':') && isPunct(toks[firstAt(T, c + 2, n, arrowLookStop)], '=>')))) {
           for (const [pa, pb] of partsBetween(T, j + 1, c)) {
             const colon = firstAt(T, pa, pb, (x) => isPunct(x, ':') || isPunct(x, '='));
             if (isPunct(toks[colon], ':')) annotationOf(T, colon + 1, firstAt(T, colon, pb, (x) => isPunct(x, '=')));
@@ -867,7 +986,8 @@ function readScript(T) {
       }
       if (')]}'.includes(t.v)) {
         if (ctx.length > 1 && ctx.at(-1).close === j) ctx.pop();
-        if (t.v === ')' && isPunct(toks[j + 1], ':') && role !== 'object') {
+        // (A placeholder's synthetic `)` is no parameter list: `\`${a}\` : m => m` is a ternary's branch.)
+        if (t.v === ')' && !t.synthetic && isPunct(toks[j + 1], ':') && role !== 'object') {
           // A `:` after a `)` starts a return type only when a `=>` follows the type at this depth.
           // A `?` or `:` ends the look as well: the next branch of a ternary, so `c ? (a) : c ? (b) : …` is not read to
           // its end for each `)` (a conditional type as an arrow's return type is not seen as one).
@@ -909,10 +1029,12 @@ function readScript(T) {
       if ((t.v === '++' || t.v === '--') && isWord(toks[j + 1]) && !isPunct(toks[j + 2], '.')) arefs.add(j + 1);
       continue;
     }
+    // A method named by a string (`'=' (a) {}` in an object, `'x'() {}` in a class).
+    if (t.k === 'val' && isPunct(toks[j + 1], '(') && (role === 'object' ? isPunct(prev, '{') || isPunct(prev, ',') : role === 'class' && memberStart(j))) { callableAt(j + 1, null); continue; }
     if (t.k !== 'word' || marks[j]) continue;
     if (isPunct(prev, '.') || isPunct(prev, '?.')) continue;
-    // An object literal's member: a key, a method, or a name written for itself (`{ a }`).
-    if (role === 'object' && (isPunct(prev, '{') || isPunct(prev, ','))) {
+    // An object literal's member: a key, a method, or a name written for itself (`{ a }`); `*g() {}` a generator.
+    if (role === 'object' && (isPunct(prev, '{') || isPunct(prev, ',') || (isPunct(prev, '*') && (isPunct(toks[j - 2], '{') || isPunct(toks[j - 2], ','))))) {
       let k = j;
       while (isWord(toks[k]) && ['get', 'set', 'async'].includes(toks[k].v) && (isWord(toks[k + 1]) || isPunct(toks[k + 1], '[') || isPunct(toks[k + 1], '*'))) { marks[k] = SKIP; k++; }
       if (isPunct(toks[k], '*')) k++;
@@ -920,8 +1042,8 @@ function readScript(T) {
       if (isWord(toks[k]) && (isPunct(toks[k + 1], '(') || isPunct(toks[k + 1], '<'))) { marks[k] = KEY; callableAt(k + 1, toks[k].v); continue; }
       if (k !== j) continue;
     }
-    // A class member: modifiers, its name, then a method or a field.
-    if (role === 'class' && (isPunct(prev, '{') || isPunct(prev, ';') || isPunct(prev, '}') || endsStatement(j))) {
+    // A class member: modifiers, its name, then a method or a field; `*g() {}` a generator.
+    if (role === 'class' && (memberStart(j) || (isPunct(prev, '*') && memberStart(j - 1)))) {
       let k = j;
       while (isWord(toks[k]) && MEMBER_WORDS.has(toks[k].v) && (isWord(toks[k + 1]) || isPunct(toks[k + 1], '[') || isPunct(toks[k + 1], '*') || isPunct(toks[k + 1], '{'))) { marks[k] = SKIP; k++; }
       if (isPunct(toks[k], '*')) k++;
@@ -935,6 +1057,8 @@ function readScript(T) {
       continue;
     }
     const v = t.v;
+    // The label a `break` or `continue` names is no name (a label itself, `outer:`, is read as a key already).
+    if ((v === 'break' || v === 'continue') && isWord(toks[j + 1]) && !toks[j + 1].first) { marks[j + 1] = SKIP; continue; }
     // `x as T`, `x satisfies T`: the names in the type are types used (an import's or export's `as` is read there).
     if ((v === 'as' || v === 'satisfies') && j > 0 && !isPunct(toks[j + 1], ',') && !isPunct(toks[j + 1], ')')) {
       marks[j] = SKIP;
@@ -966,7 +1090,7 @@ function readScript(T) {
       let k = j + 1;
       if (isPunct(toks[k], '*')) k++;
       const named = isWord(toks[k]);
-      const expression = Boolean(prev) && (OBJECT_BEFORE.has(prev.v) || isPunct(prev, '=>')) && !isWord(prev, 'export') && !isWord(prev, 'default');
+      const expression = !blockStart(j) && Boolean(prev) && (OBJECT_BEFORE.has(prev.v) || isPunct(prev, '=>')) && !isWord(prev, 'export') && !isWord(prev, 'default');
       const body = callableAt(named ? k + 1 : k, named ? toks[k].v : null);
       if (named) {
         marks[k] = BIND;
@@ -978,7 +1102,7 @@ function readScript(T) {
     if (v === 'class') {
       const k = j + 1;
       const named = isWord(toks[k]) && !['extends', 'implements'].includes(toks[k].v);
-      const expression = Boolean(prev) && OBJECT_BEFORE.has(prev.v) && !isWord(prev, 'export') && !isWord(prev, 'default');
+      const expression = !blockStart(j) && Boolean(prev) && OBJECT_BEFORE.has(prev.v) && !isWord(prev, 'export') && !isWord(prev, 'default');
       if (named) marks[k] = BIND;
       let q = named ? k + 1 : k;
       const typeOpen = isPunct(toks[q], '<') ? q : -1;

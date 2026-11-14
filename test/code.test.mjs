@@ -170,6 +170,30 @@ test('lex: code has the length of its line, with strings, template text, comment
   assert.deepEqual(rows.map((r) => r.comment), [true, false, true]);
 });
 
+test('lex, Python: an f-string placeholder is code marked p (left as spaces in code); a quote of its own inside it is a string', () => {
+  // Python 3.13's tokenize gives these NAME tokens inside the f-strings: a b r c d g h i join j l (r is b's !r
+  // conversion, text here). rb"…" interpolates nothing; {{k}} is braces.
+  const lines = ['s = f"{a} {b!r:>{c}} {d[\'k\']}" + rb"{e}" + F"""{g', ' + h}""" + f\'{i, \', \'.join(j)}\' + f"{{k}} {l=}"', 't = 1'];
+  const rows = lex(lines, 'py');
+  const words = tokens(rows, 0, rows.length, { placeholders: true }).filter((t) => t.k === 'word').map((t) => t.v);
+  assert.deepEqual(words, ['s', 'f', 'a', 'b', 'c', 'd', 'rb', 'F', 'g', 'h', 'f', 'i', 'join', 'j', 'f', 'l', 't']);
+  // What reads `code` sees the strings blank, as before, and the line after them as code.
+  assert.deepEqual(rows.map((r) => r.code.trim().length > 0 && r.code.includes('t = 1')), [false, false, true]);
+  assert.ok(!rows[0].code.includes('a}') && !rows[1].code.includes('join'));
+  // A placeholder over lines ends no declaration (Python's ast: f 1-3, g 4-4).
+  assert.equal(bounds('a.py', L('def f():', '    s = f"""{a', ' + b} x"""', 'def g(): pass')), 'f:1-3 g:4-4');
+  // Without the option, a literal is still one token.
+  assert.deepEqual(tokens(rows).map((t) => t.k === 'val' ? 'V' : t.v), ['s', '=', 'f', 'V', '+', 'rb', 'V', '+', 'F', 'V', '+', 'f', 'V', '+', 'f', 'V', 't', '=', 'V']);
+});
+
+test('lex: a template placeholder\'s code comes as tokens between synthetic parentheses only when asked for', () => {
+  const lines = ['const s = `a ${x + y} b ${`${z}`} ${f("s", q)}`;', 'let m = `', '${w}', '`;'];
+  const rows = lex(lines, 'js');
+  const shown = (ts) => ts.map((t) => (t.k === 'val' ? 'V' : t.v + (t.synthetic ? '*' : ''))).join(' ');
+  assert.equal(shown(tokens(rows)), 'const s = V ; let m = V ;');
+  assert.equal(shown(tokens(rows, 0, rows.length, { placeholders: true })), 'const s = V (* x + y )* (* V (* z )* )* (* f ( V , q ) )* ; let m = V (* w )* ;');
+});
+
 test('lex: a regular expression after return, a JSX closing tag, and a division after a non-null assertion', () => {
   // `/` after `return` opens a regular expression, so the backtick in it opens no template.
   assert.deepEqual(lex(['function f(s) { return /`/.test(s); }', 'const a = 1; /* c', '*/'], 'js').map((r) => r.startsIn || '-'), ['-', '-', 'block']);
