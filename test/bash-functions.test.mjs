@@ -143,7 +143,7 @@ test('a chain of calls puts each body in front of the list without moving the re
 
 // Review of 71dbf3d: mayCd called itself once per function a function calls, so a chain of 8,000 ran out of stack in
 // every reader (main too), and each call past the budget asked it again, so 8,000 functions each calling the next twice
-// took 10.8 s. Each reader reads both shapes at 20,000 functions within 10 s.
+// took 8.7 to 10.0 s (three reads). Each reader reads both shapes at 20,000 functions within 10 s.
 test('long chains of functions are read by every reader without running out of stack or time', () => {
   const chain = (n, twice) => { let t = 'f0() { echo > leaf; }\n'; for (let i = 1; i <= n; i++) t += `f${i}() { f${i - 1};${twice ? ` f${i - 1};` : ''} }\n`; return `${t}f${n}; echo > h`; };
   for (const twice of [false, true]) {
