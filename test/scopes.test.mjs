@@ -260,12 +260,14 @@ test('scopes: every code file of this repository is read, each reference joined 
 const SCOPE_SHAPES = {
   'py: a long import list': (n) => Array.from({ length: n / 18 }, (_, i) => `import mod${i} as m${i}`).join('\n'),
   'py: a long from-import list': (n) => `from m import (${Array.from({ length: n / 6 }, (_, i) => `n${i}`).join(',\n')})\n`,
-  'py: deep functions': (n) => { const d = Math.floor(Math.sqrt(n / 2)); return `${Array.from({ length: d }, (_, i) => `${' '.repeat(i)}def f${i}(a${i}):`).join('\n')}\n${' '.repeat(d)}return a0\n`; },
+  // Nested functions take half the text (their indents grow with the depth), uses of the outermost parameter the other
+  // half: a lookup that walked the scopes around each use would take the depth times the uses.
+  'py: deep functions': (n) => { const d = Math.floor(Math.sqrt(n / 2)); return `${Array.from({ length: d }, (_, i) => `${' '.repeat(i)}def f${i}(a${i}):`).join('\n')}\n${' '.repeat(d)}return ${'a0 + '.repeat(n / 10)}a0\n`; },
   'py: a long if/elif chain': (n) => `if x == 0:\n    y = 0\n${Array.from({ length: n / 26 }, (_, i) => `elif x == ${i}:\n    y = x\n`).join('')}`,
   'py: many uses of an outer name': (n) => `top = 1\ndef f():\n    def g():\n${Array.from({ length: n / 16 }, () => '        print(top)').join('\n')}\n`,
   'py: nested comprehensions': (n) => `v = ${'['.repeat(n / 20)}q${' for q in r]'.repeat(n / 20)}\n`,
   'js: a long import list': (n) => `import { ${Array.from({ length: n / 6 }, (_, i) => `n${i}`).join(', ')} } from 'm';\n`,
-  'js: deep functions': (n) => `${'function f(a) {'.repeat(n / 16)}a;${'}'.repeat(n / 16)}`,
+  'js: deep functions': (n) => `${'function f(a) {'.repeat(n / 32)}${'a + '.repeat(n / 8)}a;${'}'.repeat(n / 32)}`,
   'js: deep blocks with var': (n) => `function f() {${'{ var x = 1;'.repeat(n / 14)}x;${'}'.repeat(n / 14)}}`,
   'js: deep arrows': (n) => `const f = ${'a => '.repeat(n / 5)}a;\n`,
   'js: a long else-if chain': (n) => `let y;\nif (x === 0) { y = 0; }${Array.from({ length: n / 30 }, (_, i) => ` else if (x === ${i}) { y = x; }`).join('')}\n`,
