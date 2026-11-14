@@ -680,14 +680,22 @@ export function findQueries(command, cwd) {
     const start = readfirstAt(w, 'find');
     if (start < 0) continue;
     let runs = [[]];
+    // --root: find searches that folder (from the command's), so its query counts there; a value not written out
+    // leaves the folder not known.
+    let root = c.at;
     for (let i = start; i < w.length; i++) {
       const x = w[i];
-      if (x.known && x.text.startsWith('-')) { if (!x.text.includes('=') && VALUES.has(x.text.replace(/^--?/u, ''))) i++; continue; }
+      if (x.known && x.text.startsWith('-')) {
+        const [name, value] = x.text.replace(/^--?/u, '').split(/=(.*)/su);
+        const given = value !== undefined ? x : VALUES.has(name) ? w[++i] : null;
+        if (name === 'root') root = given?.known ? resolve(c.at, value ?? given.text) : null;
+        continue;
+      }
       if (x.known) { runs.forEach((r) => r.push(x.text)); continue; }
       const values = loops.get(String(x.raw).match(/^"?\$\{?([A-Za-z_]\w*)\}?"?$/u)?.[1]);
       if (values?.length) runs = runs.flatMap((r) => values.map((v) => [...r, v]));
     }
-    out.push(...runs.map((r) => r.join(' ')).filter((q) => q.trim()).map((query) => ({ query, at: c.at })));
+    if (root != null) out.push(...runs.map((r) => r.join(' ')).filter((q) => q.trim()).map((query) => ({ query, at: root })));
   }
   return out;
 }

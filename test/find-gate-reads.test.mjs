@@ -96,6 +96,15 @@ test('a find after a cd counts where it runs, and not at all where that is not k
   assert.ok(!noFind(here.add('retryPayment')), 'a cd into the repository counts there');
 });
 
+test('a find given --root counts in that folder\'s repository, not the one it was run from', () => {
+  const away = session();
+  away.call('Bash', { command: `npx readfirst find --root ${tmpdir()} "retry a payment"` });
+  assert.ok(noFind(away.add('retryPayment')), 'it searched another folder');
+  const here = session();
+  here.call('Bash', { command: 'npx readfirst find --root=src "retry a payment"' });
+  assert.ok(!noFind(here.add('retryPayment')), 'a --root inside this repository, relative to the command\'s folder');
+});
+
 test('a find that asks nothing does not count as a find run after the gate asked', () => {
   const { call, add } = session();
   assert.ok(noFind(add('qux')), 'asked');
