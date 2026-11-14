@@ -33,8 +33,8 @@ import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom, unshownRisks } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
-import { bashReads, shellWrites } from './bash-writes.mjs';
-import { ANSWER_HOW, ANSWER_KINDS, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, itemTally, lastAnswers, openUnsure, parseAnswer, wideItems } from './answers.mjs';
+import { bashReads, commandWords, shellWrites } from './bash-writes.mjs';
+import { ANSWER_HOW, ANSWER_KINDS, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, itemTally, lastAnswers, openUnsure, parseAnswer, readfirstAt, wideItems } from './answers.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { definitions, find, findText, meets, words } from './find.mjs';
@@ -660,14 +660,66 @@ export const ACTED_LOG = 'readfirst-acted.jsonl';
 // (`find "retry a payment"` for retryPayment, by find's own words and meets), so searching first and then writing
 // passes without a refusal; or any find run after the gate asked about these very names, so a name the query does
 // not happen to share a word with costs one refusal and never more.
-const FIND_RUN = /(?:^|[\s;&|(])(?:npx\s+(?:--yes\s+|-y\s+)?)?(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)\s+find\b/u;
-// The words a find command asked: what follows `find` up to the end of that command, options left out.
-const findQuery = (command) => { const m = String(command).match(FIND_RUN); return m ? words(String(command).slice(m.index + m[0].length).split(/[;|&\n]/u)[0].replace(/(?:^|\s)--?[\w-]+(?:=\S+)?/gu, ' ')) : []; };
-// Whether a find of this session asked about `name` in the repository `root`.
-function findAsked(seen, root, name) {
+// What a find asked, read as the shell runs the command (commandWords; until 2026-11-14 a pattern took the first find
+// of the command and the text after it as written, so a second find was not read and a loop's `$q` was the query):
+// each query of every find in the command, in a list or a pipeline, options left out. A word the command does not give
+// as written is left out, but a for loop's variable stands for each of the loop's values written out
+// (`for q in "a" "b"; do readfirst find "$q"; done` asks "a" and "b"). An option that takes a value (`VALUES`, the
+// options parse() reads a value for) takes its value with it: `--lang python` asks nothing of python. Each query comes
+// with the folder its find runs in (`at`, after the command's cd's); a find whose folder readfirst cannot tell, or that
+// asks nothing, gives none, so it opens nothing (review of 1552438: both counted as a find in the starting folder).
+export function findQueries(command, cwd) {
+  const text = String(command ?? '');
+  if (!/readfirst/u.test(text) || !/\bfind\b/u.test(text)) return [];
+  const loops = new Map();
+  const out = [];
+  for (const c of commandWords(text, cwd)) {
+    const w = c.words;
+    if (w[0]?.known && w[0].text === 'for' && w[2]?.text === 'in') { loops.set(w[1]?.text, w.slice(3).filter((x) => x.known).map((x) => x.text)); continue; }
+    if (c.body || c.at == null) continue;
+    const start = readfirstAt(w, 'find');
+    if (start < 0) continue;
+    let runs = [[]];
+    // --root: find searches that folder (from the command's), so its query counts there; a value not written out
+    // leaves the folder not known.
+    let root = c.at;
+    for (let i = start; i < w.length; i++) {
+      const x = w[i];
+      // An option is told by the word as written, before it is known: `--root=$D` is an option whose value is not
+      // known (review of 099df6e: it was read as neither, and the find counted in the command's folder).
+      const flag = x.known ? x.text : String(x.raw ?? '').replace(/^["']/u, '');
+      if (flag.startsWith('-')) {
+        const [name, value] = flag.replace(/^--?/u, '').split(/=(.*)/su);
+        const given = value !== undefined ? x : VALUES.has(name) ? w[++i] : null;
+        if (name === 'root') root = given?.known ? resolve(c.at, value ?? given.text) : null;
+        continue;
+      }
+      if (x.known) { runs.forEach((r) => r.push(x.text)); continue; }
+      const values = loops.get(String(x.raw).match(/^"?\$\{?([A-Za-z_]\w*)\}?"?$/u)?.[1]);
+      if (values?.length) runs = runs.flatMap((r) => values.map((v) => [...r, v]));
+    }
+    if (root != null) out.push(...runs.map((r) => r.join(' ')).filter((q) => q.trim()).map((query) => ({ query, at: root })));
+  }
+  return out;
+}
+// The plain lowercase words of a text, camelCase split, nothing dropped.
+const plainWords = (text) => String(text).replace(/([a-z0-9])([A-Z])/gu, '$1 $2').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+// The words a find query is kept by: find's own (words), and, marked `=`, each word find drops (a stop word such as
+// make or build), so a name made only of such words can still be asked about (findAsked).
+const askedWords = (query) => [...new Set([...words(query), ...plainWords(query).filter((t) => !words(t).length).map((t) => `=${t}`)])];
+// The repository a folder is in, one for all its worktrees: its git common folder, resolved through symlinks. The find
+// marks are kept by it (until 2026-11-14 by the checkout's top level, so a find run in one worktree did not count in
+// another of the same repository).
+const repoIdOf = (dir) => { try { return realpathSync(resolve(dir, git(dir, 'rev-parse', '--git-common-dir').trim())); } catch { return null; } };
+// Whether a find of this session asked about `name` under any of `keys` (the repository's id, and its top level, which
+// older state files used). A name whose words find all drops counts when a find asked one of them as written.
+function findAsked(seen, keys, name) {
   const mine = words(name);
-  const prefix = `findwords:${root}:`;
-  return Object.keys(seen).some((k) => k.startsWith(prefix) && k.slice(prefix.length).split(' ').some((q) => mine.some((w) => meets(q, w))));
+  const plain = mine.length ? [] : plainWords(name);
+  return keys.some((key) => {
+    const prefix = `findwords:${key}:`;
+    return Object.keys(seen).some((k) => k.startsWith(prefix) && k.slice(prefix.length).split(' ').some((q) => (q.startsWith('=') ? plain.includes(q.slice(1)) : mine.some((w) => meets(q, w)))));
+  });
 }
 export function newCode(tool, input, abs) {
   const names = (text) => new Set(definitions(abs, String(text ?? '')).map((d) => d.name));
@@ -733,10 +785,11 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const resentNow = Boolean(prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]);
     const markResent = () => { if (resentNow) seen[`resent:${sig}:${now}`] = now; };
     seen[`call:${sig}`] = now;
-    if (tool === 'Bash' && FIND_RUN.test(String(event.tool_input?.command ?? ''))) {
-      const root = repoOf(cwd);
-      const asked = findQuery(event.tool_input.command);
-      if (root) { seen[`find:${root}`] = now; if (asked.length) seen[`findwords:${root}:${[...new Set(asked)].join(' ')}`] = now; }
+    // Each find is marked in the repository it runs in, and only when it asked something.
+    for (const { query, at } of tool === 'Bash' ? findQueries(event.tool_input?.command, cwd) : []) {
+      const id = repoIdOf(at);
+      const asked = askedWords(query);
+      if (id && asked.length) { seen[`find:${id}`] = now; seen[`findwords:${id}:${asked.join(' ')}`] = now; }
     }
     // `readfirst read` run in Bash shows the same notes the hook would (2026-11-13: the gate did not count it, so a
     // file read that way was refused all the same). It counts for the branch it ran on, and only when its whole
@@ -822,10 +875,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => ({ abs, root: rootOf(abs, known), names: newCode(tool, event.tool_input, abs) }))
       .filter((f) => f.names.length && f.root && existsSync(join(f.root, MAP_PATH))) : [];
     // The names no find asked about; the ask is kept with them, so the same file given other new names later is asked again.
-    const open = added.map((f) => ({ ...f, names: f.names.filter((n) => !findAsked(seen, f.root, n)) })).filter((f) => f.names.length);
+    // A find is looked for by the repository's id (repoIdOf) and by the file's top level, which state files kept until
+    // 2026-11-14.
+    const marks = new Map();
+    const marksOf = (root) => { if (!marks.has(root)) marks.set(root, [repoIdOf(root), root].filter(Boolean)); return marks.get(root); };
+    const open = added.map((f) => ({ ...f, names: f.names.filter((n) => !findAsked(seen, marksOf(f.root), n)) })).filter((f) => f.names.length);
     const askKey = `nofind:${sig}:${open.flatMap((f) => f.names).sort().join(',')}`;
     const askedAt = before[askKey];
-    const fresh = open.filter((f) => !(askedAt && seen[`find:${f.root}`] > askedAt));
+    const fresh = open.filter((f) => !(askedAt && marksOf(f.root).some((k) => seen[`find:${k}`] > askedAt)));
     const askFind = fresh.length > 0 && !askedAt;
     const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
