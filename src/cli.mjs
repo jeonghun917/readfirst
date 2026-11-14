@@ -1391,8 +1391,18 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     let list = null;
     const imports = edgesWith(files, targets, readText(root));
     if (map) try { list = readList({ map, files, imports, targets }); } catch { list = null; }
-    const brokenLine = broken.length ? `readfirst${at}: ${brokenMapLine(broken)}${list ? '' : ' The checks for the files you edited were not run.'} Fix it before you finish.` : null;
-    if (!list) return brokenLine ? { block: brokenLine } : null;
+    // Refused once for the map as it is (`unchecked:<root>:<hash of the map file>`), then said as a note on every later
+    // stop, and refused again when the map changes: until 2026-11-14 it refused every stop, so a session that could not
+    // fix the map could not stop (ledger broken-map-refuses-every-stop).
+    const brokenText = broken.length ? `readfirst${at}: ${brokenMapLine(broken)}${list ? '' : ' The checks for the files you edited were not run.'} Fix it before you finish.` : null;
+    let mapBytes = '';
+    try { mapBytes = readFileSync(join(root, MAP_PATH)); } catch { mapBytes = broken.join('\n'); }
+    const brokenKey = brokenText ? `unchecked:${root}:${createHash('sha1').update('map\0').update(mapBytes).digest('hex').slice(0, 12)}` : null;
+    const brokenLine = brokenText && !said(brokenKey) ? brokenText : null;
+    if (brokenLine) say(brokenKey);
+    const brokenNote = brokenText && !brokenLine ? brokenText : null;
+    const noteWith = (n) => [n, brokenNote].filter(Boolean).join('\n') || null;
+    if (!list) return brokenLine ? { block: brokenLine } : brokenNote ? { note: brokenNote } : null;
     // The rules and risks of files the gate let through with no time to look them up, asked nowhere in the session:
     // named, once for that set (`unasked:<root>:<hash of the ids>`). An answer cannot be given for an item never asked,
     // so the agent is sent to the notes.
@@ -1522,8 +1532,8 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     if (!list.checks.length && !missing.length) {
       const answersSaid = answerLine();
       const found = untrue.map((u) => u.id);
-      if (!brokenLine && !answersSaid && !unaskedSaid) return found.length || noStart ? { found, note: noStart } : null;
-      return { block: [brokenLine, answersSaid, unaskedSaid].filter(Boolean).join('\n'), found, note: noStart };
+      if (!brokenLine && !answersSaid && !unaskedSaid) return found.length || noStart || brokenNote ? { found, note: noteWith(noStart) } : null;
+      return { block: [brokenLine, answersSaid, unaskedSaid].filter(Boolean).join('\n'), found, note: noteWith(noStart) };
     }
     const trusted = trustedRuns(root, since);
     const skipped = list.checks.filter((c) => !trusted.runs.has(c.run)).map((c) => c.run);
@@ -1551,8 +1561,8 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
       acted: result.length - failed.length + list.together.length - missing.length,
       notActed: [...failed.map((c) => `\`${c.run}\` ${c.status}`), ...skipped.map((r) => `\`${r}\` not run`), ...missing.map((t) => `${t.also.join(', ')} not changed with ${t.for.join(', ')}`)],
     };
-    if (!failed.length && !missing.length && !brokenLine && !blockNotRun && !answersSaid && !unaskedSaid) return { tally, found, note: noStart, pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}${fromCommands}` };
-    return { tally, found, note: noStart, block: [
+    if (!failed.length && !missing.length && !brokenLine && !blockNotRun && !answersSaid && !unaskedSaid) return { tally, found, note: noteWith(noStart), pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}${fromCommands}` };
+    return { tally, found, note: noteWith(noStart), block: [
       ...(brokenLine ? [brokenLine] : []),
       ...(answersSaid ? [answersSaid] : []),
       ...(unaskedSaid ? [unaskedSaid] : []),
