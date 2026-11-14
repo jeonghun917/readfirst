@@ -295,7 +295,20 @@ export function verifyChecks(root, checks, { dryRun = false, timeout = 900, prog
     const lines = all.split('\n');
     // The last OUTPUT_LINES lines of a failing check (readfirst watch on readfirst#139: it said only "last lines").
     // cut: a line before them says how many came before and that running the command itself shows them all.
-    const shown = lines.length > OUTPUT_LINES ? [`(${lines.length - OUTPUT_LINES} earlier lines not shown; run \`${c.run}\` to see them all)`, ...lines.slice(-OUTPUT_LINES)] : lines;
+    // A failing test is shown wherever it stands in the output: each TAP `not ok` line before the last lines, with the
+    // block under it up to its `...` (the error, expected and actual). Until 2026-11-14 a test runner's summary filled
+    // the last lines, and verify said a check failed without saying which test.
+    const from = Math.max(0, lines.length - OUTPUT_LINES);
+    const failing = [];
+    for (let i = 0; i < from; i++) {
+      if (!/^\s*not ok \d+/u.test(lines[i]) || /#\s*(?:TODO|SKIP)\b/u.test(lines[i])) continue;
+      let j = i + 1;
+      while (j < lines.length && !/^\s*\.\.\.\s*$/u.test(lines[j]) && !/^\s*(?:not )?ok \d+/u.test(lines[j])) j++;
+      failing.push(...lines.slice(i, Math.min(j + 1, lines.length)));
+      i = j;
+    }
+    const tests = failing.length ? ['(the failing tests, from the earlier lines:)', ...failing] : [];
+    const shown = lines.length > OUTPUT_LINES ? [...tests, `(${failing.length ? `${from - failing.length} of the ${from}` : from} earlier lines not shown; run \`${c.run}\` to see them all)`, ...lines.slice(from)] : lines;
     const tail = status === 'pass' ? undefined : shown.join('\n');
     const hint = status === 'fail' ? dependencyHint(root, all) : null;
     out.push({ ...row, status, code: r.status, seconds, ...(tail !== undefined ? { output: tail } : {}), ...(hint ? { hint } : {}) });

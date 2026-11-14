@@ -80,3 +80,26 @@ test('a failing check with long output says how many lines came before the last 
   assert.match(v.out, /line 45/u);
   assert.doesNotMatch(v.out, /line 15\n/u);
 });
+
+// 2026-11-14: verify said `npm test` failed, and its last 30 lines were the runner's summary, so which test failed was
+// not shown (two runs in a row, then never again: it could not be found). A TAP `not ok` line before the last lines is
+// shown with the block under it; a todo or a skip is not.
+test('a failing check shows each failing test, wherever it stands in the output', () => {
+  const tap = [
+    'TAP version 13', 'ok 1 - first', 'not ok 2 - the one that failed', '  ---', '  error: |-', '    expected 1, got 2', '  ...',
+    'not ok 3 - a todo # TODO not done yet', '  ---', '  ...',
+    ...Array.from({ length: 40 }, (_, k) => `ok ${k + 4} - filler ${k}`), '# tests 43', '# fail 1',
+  ];
+  const map = { format: MAP_FORMAT, groups: [{ id: 'src', title: 'Source', files: ['src/**'], checks: [{ run: 'node src/tap.mjs', why: 'tap output' }] }] };
+  const script = `console.log(${JSON.stringify(tap.join('\n'))});\nprocess.exit(1);\n`;
+  const { root, git } = repo({ 'src/tap.mjs': script, '.readfirst/map.json': JSON.stringify(map) });
+  git('checkout', '-q', '-b', 'work');
+  writeFileSync(join(root, 'src/tap.mjs'), `${script}// changed\n`);
+  const v = run(root, 'verify', '--base', 'main');
+  assert.equal(v.code, 1);
+  assert.match(v.out, /\(the failing tests, from the earlier lines:\)\nnot ok 2 - the one that failed\n {2}---\n {2}error: \|-\n {4}expected 1, got 2\n {2}\.\.\.\n/u);
+  assert.doesNotMatch(v.out, /a todo/u, 'a todo is not a failure');
+  // 52 lines: the last 30 are shown, and of the 22 before them the failing test's 5.
+  assert.match(v.out, /\(17 of the 22 earlier lines not shown; run `node src\/tap\.mjs` to see them all\)\nok 16 - filler 12\n/u);
+  assert.match(v.out, /# fail 1/u);
+});
