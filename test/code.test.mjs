@@ -387,10 +387,12 @@ test('params: linear steps in the length of a parameter list, its nesting and it
 // within the noise of the timer and the compiler, and timed once a read of a long chain of types failed on CI though
 // its steps grow linearly. The sizes are 20,000, 80,000 and 320,000 characters, and the test takes the slope of the
 // time's logarithm against the size's (least squares): the power of the size the time grows with. It must be under
-// 1.5. Quadratic work is 2 (the shapes below measured 1.77 to 1.86 before their fixes), and work whose steps grow
-// linearly measured 0.59 to 1.26. A single ratio of the largest size to the smallest left little room: some linear shapes measured over
-// 32 times at 16 times the text, where the bound was 32. The three sizes are measured up to three times, and one
-// slope under 1.5 passes (quadratic fails all three). It runs in a worker stopped after 60 seconds: a test's timeout does not stop synchronous code (a test busy
+// 1.5. Quadratic work is 2 (the shapes below measured 1.74 to 1.86 before their fixes), and work whose steps grow
+// linearly measured 0.59 to 1.26. At 5,000, 20,000 and 80,000 a quadratic shape measured 1.39, its linear part still
+// as large as the rest, so the smallest size is 20,000. A single ratio of the largest size to the smallest left little
+// room: some linear shapes measured over 32 times at 16 times the text, where the bound was 32. The three sizes are
+// measured up to three times, and one slope under 1.5 passes (quadratic fails all three). It runs in a worker stopped
+// after 60 seconds: a test's timeout does not stop synchronous code (a test busy
 // for 8 seconds passed a 1 second timeout), and a reader that rescans a parameter list for each parameter was still
 // reading after 240 seconds. CPU time is the whole process's: nothing else may run in this process while it is timed.
 const TIMED = (shapes) => `const { parentPort } = require('node:worker_threads');
