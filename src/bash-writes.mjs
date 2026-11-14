@@ -15,6 +15,20 @@ const CODE_WRITES = /\bopen\([^)]*,\s*['"][wax]|\.write_text\(|\.write_bytes\(|w
 const PATHISH = /(?:\.{0,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z0-9]{1,6}\b/gu;
 const RUNNER = /^(?:python3?|node|ruby|perl|bash|sh|zsh|deno|bun)$/u;
 const SHELLS = /^(?:bash|sh|zsh|dash|ksh)$/u;
+// The script file a shell runs, from its arguments (dq'd, without -c): the first word after its options and their
+// values (-o/-O/+o/+O NAME, --rcfile/--init-file FILE), or after `--`. None when it reads its commands from stdin (-s,
+// no file) or runs none (-n, --version, --help).
+function shellScript(args) {
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i];
+    if (w === '--') return args[i + 1];
+    if (/^(?:[-+][oO]|--rcfile|--init-file)$/u.test(w)) { i++; continue; }
+    if (/^--(?:version|help)$/u.test(w) || /^-[a-zA-Z]*[sn]/u.test(w)) return undefined;
+    if (/^[-+]/u.test(w)) continue;
+    return w;
+  }
+  return undefined;
+}
 
 // A word as the shell hands it to the command: quotes taken off, backslash escapes undone (`a\&b.js` is a&b.js; the
 // backslash was kept until 2026-11-13) and $NAME / ${NAME} replaced by the value the command itself gave the variable
@@ -1346,6 +1360,28 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     r.unknown.forEach(missing);
     r.repos.forEach((x) => repos.add(x));
   };
+  // A string run as commands, by eval (this shell, all its variables) or `bash -c` (a new shell). One holding a part
+  // known only when the command runs (`eval "$(cat <<E ...)"`, `bash -c "$X"`) is not read: what it writes is given as
+  // not known, with why. Until 2026-11-14 eval's string was not read at all and such a string read as no commands, so
+  // their writes were missed in silence (review of #211).
+  const runString = (text, by, innerVars) => {
+    if (!text.includes(HOLE)) { inner(text, innerVars); return; }
+    // A loop variable over a literal list (`for c in 'echo > a' 'echo > b'; do bash -c "$c"`): each string is read.
+    const turns = perTurn(text);
+    if (turns) { turns.forEach((t) => inner(t, innerVars)); return; }
+    const h = text.match(/\0([^\0]*)\0/u);
+    missing({ part: holes.get(h[1])?.part ?? h[1], word: `${by} ${text.replaceAll(HOLE, '')}`, why: `${by} runs it as commands, and it is known only when the command runs`, prefix: '' });
+  };
+  // A script file source, `.` or a shell runs (w: its path, as dq gives it): its text is not read, so what it writes
+  // is given as not known. A path with a / that is not there runs nothing (bash fails) and is quiet; a bare name may
+  // be found in PATH.
+  const runFile = (w, by) => {
+    if (!w) return;
+    const p = w === '~' || w.startsWith('~/') ? join(homedir(), w.slice(1)) : w;
+    if (!p.includes(HOLE) && p.includes('/') && (isAbsolute(p) || state.base != null) && !existsSync(isAbsolute(p) ? p : resolve(state.base, p))) return;
+    const shown = w.replaceAll(HOLE, '');
+    missing({ part: `${by} ${shown}`, word: shown, why: `${by} runs it, and readfirst does not read the file's text`, prefix: '' });
+  };
   const exportedOnly = (v) => new Map([...v].filter(([, x]) => x.exported));
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
@@ -1467,6 +1503,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // A redirect writes first, with the folder and variables from before the command: `y="$(sort a > b.txt)"` writes
     // b.txt. cd and assignments then change what the commands after them see, and write nothing more.
     redirects(segment);
+    // eval and source run in this shell, with its folder and variables: read before follow makes them not known.
+    const before = unwrap(opened);
+    const runs = unquote(before[0] ?? '').split('/').pop();
+    if (runs === 'eval') runString(withoutRedirects(before.slice(1)).map(dq).join(' '), 'eval', state.vars);
+    else if (runs === 'source' || runs === '.') runFile(withoutRedirects(before.slice(1)).map(dq)[0], runs);
     if (follow(state, opened, how)) return;
     const ws = unwrap(opened);
     const cmd = unquote(ws[0] ?? '').split('/').pop();
@@ -1508,8 +1549,10 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // exported variables (what "..." held was expanded before it started).
     else if (SHELLS.test(cmd) && args.findIndex((w) => /^-[a-z]*c[a-z]*$/u.test(w)) >= 0) {
       const script = args[args.findIndex((w) => /^-[a-z]*c[a-z]*$/u.test(w)) + 1];
-      if (script !== undefined) inner(script, exportedOnly(state.vars));
+      if (script !== undefined) runString(script, `${cmd} -c`, exportedOnly(state.vars));
     }
+    // `bash x.sh`, `sh -e ./x.sh a`: the first word after the shell's options is a script file it runs.
+    else if (SHELLS.test(cmd)) runFile(shellScript(args), cmd);
     else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e') && CODE_WRITES.test(segment)) {
       const i = args.findIndex((w) => w === '-c' || w === '-e');
       codeTargets(args[i + 1] ?? '', { args: args.slice(i + 2).filter((w) => !w.startsWith('-')), exists: here, glob }).forEach(add);
@@ -1552,8 +1595,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const r = [...madeAt].find((x) => f.startsWith(`${x.replace(/\/$/u, '')}/`));
     if (r) { found.delete(f); missing({ part: r, word: f, why: 'it is in a checkout this command makes, not there yet', prefix: `${r.replace(/\/$/u, '')}/` }); }
   }
-  // What the command said where each $( ) stands, put back for whoever reads the unknown parts (the hook names them).
-  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: unlift(u.part), word: unlift(u.word) })), repos: [...repos] };
+  // What the command said where each $( ) stands, put back for whoever reads the unknown parts (the hook names them),
+  // and each here-document's opener where its mark stands: since #211 the mark itself was shown (`$(cat  0 )` with a
+  // private-use character, where the command said `$(cat <<E ...)`).
+  const opener = (t) => (mark && t.includes(mark) ? t.replace(markWord, (m) => { const d = docs[Number(m.slice(mark.length))]; return d ? `<<${d.quote ? `'${d.tag}'` : d.tag}` : m; }) : t);
+  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: opener(unlift(u.part)), word: opener(unlift(u.word)) })), repos: [...repos] };
 }
 
 // The files each `readfirst read` in a shell command asks for, and whether its whole output reaches whoever ran the
