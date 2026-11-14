@@ -95,19 +95,31 @@ function docOf(lines, i, py, top = null) {
 // The comment that says what each does comes from the reader's `top` (the comment and decorators right above) and a
 // Python docstring right below. The list also carries the file's own header comment (`header`), which says what the
 // module is for: find matches it for the file as a whole, once, not for each definition in it.
-// The names a CommonJS module exports by `module.exports = { a, b: c }` (the words inside its braces), which
-// declarations does not mark as exported: read from the lexed tokens, only when the file says `exports`.
-function commonExports(rows) {
+// The names a module exports by a statement after their declaration, which declarations does not mark as exported
+// (review of 86b02f2: what was exported so, and its members, were no longer asked about): `module.exports = X`,
+// `module.exports = { a, b: c }` (the words inside its braces), `export default X` and `export { a, b as c }` (the
+// local names). Read from the lexed tokens, only when the file says `export`.
+function laterExports(rows) {
   const out = new Set();
-  if (!rows.some((r) => /\bexports\b/u.test(r.code ?? r.text ?? String(r)))) return out;
+  if (!rows.some((r) => /\bexports?\b/u.test(r.code ?? r.text ?? String(r)))) return out;
   const t = tokens(rows);
-  for (let i = 0; i + 4 < t.length; i++) {
-    if (!(t[i].v === 'module' && t[i + 1].v === '.' && t[i + 2].v === 'exports' && t[i + 3].v === '=' && t[i + 4].v === '{')) continue;
-    for (let j = i + 5, depth = 1; j < t.length && depth; j++) {
+  const is = (i, v) => t[i]?.v === v;
+  // The words inside the braces that open at `i`, one level deep; `as` and the name after it are left out.
+  const braced = (i) => {
+    for (let j = i + 1, depth = 1; j < t.length && depth; j++) {
       if (t[j].k === 'punct' && /^[{([]$/u.test(t[j].v)) depth++;
       else if (t[j].k === 'punct' && /^[})\]]$/u.test(t[j].v)) depth--;
-      else if (depth === 1 && t[j].k === 'word') out.add(t[j].v);
+      else if (depth === 1 && t[j].k === 'word' && t[j].v !== 'as' && !is(j - 1, 'as')) out.add(t[j].v);
     }
+  };
+  // A single name and nothing after it in the statement: `= X;` or `default X`.
+  const alone = (i) => t[i]?.k === 'word' && (i + 1 >= t.length || is(i + 1, ';') || t[i + 1].line > t[i].line);
+  for (let i = 0; i < t.length; i++) {
+    if (is(i, 'module') && is(i + 1, '.') && is(i + 2, 'exports') && is(i + 3, '=')) {
+      if (is(i + 4, '{')) braced(i + 4);
+      else if (alone(i + 4)) out.add(t[i + 4].v);
+    } else if (t[i].k === 'word' && t[i].v === 'export' && is(i + 1, '{')) braced(i + 1);
+    else if (t[i].k === 'word' && t[i].v === 'export' && is(i + 1, 'default') && alone(i + 2)) out.add(t[i + 2].v);
   }
   return out;
 }
@@ -123,10 +135,12 @@ function readDefinitions(path, body, { lists = false } = {}) {
   // member of what is exported. The find gate asks only about reusable names, and in a test file only exported ones.
   const at = new Map(decls.map((d) => [`${d.name}\0${d.line}`, d]));
   const parentOf = (d) => (d.parent == null ? null : at.get(`${d.parent}\0${d.parentLine}`) ?? null);
-  const holds = (p) => Boolean(p) && (p.what === 'class' || (p.what === 'var' && (p.exported || p.ofModule)));
-  const cjs = py ? new Set() : commonExports(rows);
-  const reusable = (d) => !d.depth || d.exported || d.ofModule || (holds(parentOf(d)) && reusable(parentOf(d)));
-  const exported = (d) => Boolean(d.exported || d.ofModule || (!d.depth && (py || cjs.has(d.name))) || (holds(parentOf(d)) && exported(parentOf(d))));
+  const later = py ? new Set() : laterExports(rows);
+  // shipped: exported where it is declared or by a later statement of the file.
+  const shipped = (d) => Boolean(d.exported || d.ofModule || (!d.depth && later.has(d.name)));
+  const holds = (p) => Boolean(p) && (p.what === 'class' || (p.what === 'var' && shipped(p)));
+  const reusable = (d) => !d.depth || shipped(d) || (holds(parentOf(d)) && reusable(parentOf(d)));
+  const exported = (d) => shipped(d) || (py && !d.depth) || (holds(parentOf(d)) && exported(parentOf(d)));
   const out = decls
     .filter((d) => (d.what !== 'var' || d.fn || d.ofModule) && (!d.member || d.ofModule) && !d.name.startsWith('#') && !KEYWORDS.has(d.name) && d.name.length >= 3)
     .map((d) => ({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), kind: ['class', 'type', 'alias', 'enum'].includes(d.what) ? 'type' : 'function', reusable: reusable(d), exported: exported(d) }));

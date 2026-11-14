@@ -69,6 +69,17 @@ test('a method of an exported object is asked about; a method of a class local t
   assert.deepEqual(added('src/outer.js', 'export function outer() {\n  class Local { localMethod() {} }\n}\n'), ['outer'], 'Local and its method are outer\'s');
 });
 
+// Review of 86b02f2: what a later statement exports, and its members, were no longer asked about (main asked them all).
+test('a name exported by a later statement is exported, and so are its members', () => {
+  assert.deepEqual(added('test/h.js', 'function makeUser() {}\nmodule.exports = makeUser;\n'), ['makeUser']);
+  assert.deepEqual(added('test/c.js', 'function makeUser() {}\nexport { makeUser };\n'), ['makeUser']);
+  assert.deepEqual(added('test/d.js', 'function makeUser() {}\nexport default makeUser;\n'), ['makeUser']);
+  assert.deepEqual(added('test/f.js', 'function makeUser() {}\nfunction keep() {}\nexport { makeUser as user };\n'), ['makeUser'], 'keep is this test\'s own');
+  assert.deepEqual(added('test/e.js', 'const api = {\n  fetchUser() {},\n};\nmodule.exports = api;\n'), ['fetchUser']);
+  assert.deepEqual(added('src/a.js', 'const api = {\n  fetchUser() {},\n};\nexport default api;\n'), ['fetchUser']);
+  assert.deepEqual(added('src/b.js', 'const api = {\n  fetchUser() {},\n};\nexport { api };\n'), ['fetchUser']);
+});
+
 test('a local of an unnamed default function is not asked about', { todo: 'declarations reads the body of `export default function () {}` as the top level' }, () => {
   assert.deepEqual(added('src/d.js', 'export default function () {\n  const computeTotal = () => 1;\n}\n'), []);
 });
