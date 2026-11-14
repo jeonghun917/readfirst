@@ -22,6 +22,9 @@ test('a ; | or && inside a $( ) does not split the command around it', () => {
   assert.deepEqual(writes('echo "x -> $(ls | tr a b)"'), [], 'the -> is inside quotes: no redirect');
   assert.deepEqual(unknown('echo "x -> $(ls | tr a b)"'), [], 'and nothing not known');
   assert.deepEqual(unknown('S=$(echo b | tr b c); echo x > $S/f'), ['$(echo b | tr b c)'], 'shown whole');
+  // A $( ) in "..." that holds a ( ): it closed at the first ) and its write was lost (closeOf-subst-first-paren).
+  assert.deepEqual(writes('echo "$((echo 1) > b)"'), ['/r/b']);
+  assert.deepEqual(writes('echo "$( (echo 1) > b)"'), ['/r/b']);
 });
 
 test('the commands inside a substitution are read, as a subshell where it stands', () => {
@@ -66,6 +69,7 @@ const AGAINST_BASH = [
   '(echo $(cd d; pwd) > f)', 'echo $(cd d; echo x > g)', 'x=$(cd d); echo > f3', 'cd d; y=$(echo > f4)', 'echo `cd d; echo > q`',
   'x=$(( $(cd d; echo 1 > h) ))', 'echo $(echo $(cd d; echo > deep))', 'y="$(echo a > b.txt)"', 'echo "x -> $(ls | tr a b)"',
   '>(echo 1)', 'tee >(cat) > o', 'cat <(cd d; echo > f2) > /dev/null', 'echo $(( (1+2)*3 )) > n', 'x=$(echo > f',
+  'echo "$((echo 1) > b)"', 'echo "$( (echo 1) > b)"',
 ];
 // Not run against bash: `>((1>0))` runs (1>0), which makes 0, after bash returns, so 0 was there in 11 of 40 runs.
 test('a >( ) holding a subshell: its write is named, not `((1`', () => {
