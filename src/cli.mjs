@@ -280,6 +280,9 @@ export function dependencyHint(root, output = '') {
 // Runs each check with the shell in the repository root, one after another, and keeps the end of the output of the ones
 // that fail. readfirst writes nothing itself; the commands are the map's own and may write, as they would by hand.
 const OUTPUT_LINES = 30;
+// The failing tests found above the last lines whose block (error, expected, actual, stack) is shown; the rest are
+// shown by their line alone, and counted. A broken shared helper fails hundreds at once, about 50 lines each.
+const FAILING_BLOCKS = 10;
 export function verifyChecks(root, checks, { dryRun = false, timeout = 900, progress = () => {} } = {}) {
   const out = [];
   for (const c of checks) {
@@ -295,7 +298,36 @@ export function verifyChecks(root, checks, { dryRun = false, timeout = 900, prog
     const lines = all.split('\n');
     // The last OUTPUT_LINES lines of a failing check (readfirst watch on readfirst#139: it said only "last lines").
     // cut: a line before them says how many came before and that running the command itself shows them all.
-    const shown = lines.length > OUTPUT_LINES ? [`(${lines.length - OUTPUT_LINES} earlier lines not shown; run \`${c.run}\` to see them all)`, ...lines.slice(-OUTPUT_LINES)] : lines;
+    // A failing test is shown wherever it stands in the output: each TAP `not ok` line before the last lines, with the
+    // block under it up to its `...` (the error, expected and actual). Until 2026-11-14 a test runner's summary filled
+    // the last lines, and verify said a check failed without saying which test.
+    // A block ends at the `...` as deep as its `---` (a `...` line in an error's text is deeper: review of #201, it cut
+    // the message and the stack), or at the next test line no deeper than the `not ok`. What stands from the last lines
+    // on is shown there, not twice. A todo or a skip is no failure: `# TODO` as TAP's directive, not `\# TODO` in a
+    // test's name (node writes a # in a name as \#), which hid a failing test. Each failing test's line is shown; the
+    // blocks of the first FAILING_BLOCKS of them.
+    const from = Math.max(0, lines.length - OUTPUT_LINES);
+    const failing = [];
+    let failed = 0;
+    for (let i = 0; i < from; i++) {
+      const head = lines[i].match(/^(\s*)not ok \d+/u);
+      if (!head || /(?<!\\)#\s*(?:TODO|SKIP)\b/u.test(lines[i])) continue;
+      const deep = head[1].length;
+      const open = (lines[i + 1] ?? '').match(/^(\s*)---\s*$/u);
+      // end: the index past the block (past its `...`, or at the next test line).
+      let end = i + 1;
+      if (open) {
+        let j = i + 2;
+        while (j < lines.length && lines[j] !== `${open[1]}...` && !((lines[j].match(/^(\s*)(?:not )?ok \d+/u)?.[1].length ?? Infinity) <= deep)) j++;
+        end = lines[j] === `${open[1]}...` ? j + 1 : j;
+      }
+      failed++;
+      // cut: past FAILING_BLOCKS only the test's line; the line below says how many blocks are left out and where they are.
+      failing.push(...lines.slice(i, failed > FAILING_BLOCKS ? i + 1 : Math.min(end, from)));
+      i = Math.min(end, from) - 1;
+    }
+    const tests = failing.length ? ['(the failing tests, from the earlier lines:)', ...failing, ...(failed > FAILING_BLOCKS ? [`(the blocks under ${failed - FAILING_BLOCKS} of these ${failed} failing tests not shown; run \`${c.run}\` to see them)`] : [])] : [];
+    const shown = lines.length > OUTPUT_LINES ? [...tests, `(${failing.length ? `${from - failing.length} of the ${from}` : from} earlier lines not shown; run \`${c.run}\` to see them all)`, ...lines.slice(from)] : lines;
     const tail = status === 'pass' ? undefined : shown.join('\n');
     const hint = status === 'fail' ? dependencyHint(root, all) : null;
     out.push({ ...row, status, code: r.status, seconds, ...(tail !== undefined ? { output: tail } : {}), ...(hint ? { hint } : {}) });
