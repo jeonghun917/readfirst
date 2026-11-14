@@ -59,7 +59,23 @@ const LANGS = {
       if import in instanceof new return super switch this throw try typeof var void while with yield let static async
       await of get set as from implements interface package private protected public enum type declare abstract readonly
       namespace module keyof infer is satisfies true false null override accessor asserts unique global`),
-    builtins: wordSet(`globalThis window self document console process require module exports __dirname __filename Buffer
+    // Of those, the words that are keywords only where their construct goes on: the token after them, on the same line,
+    // is a word, a string or number, or a bracket or operator listed here for the word (`of [a]`, `async (x) =>`,
+    // `yield* g`). Elsewhere they are names: `override.startTime`, `type = 1`, `(acc, of) =>`, `return module;`.
+    contextual: Object.fromEntries(Object.entries({
+      '( [ {': 'of as satisfies',
+      '( *': 'async',
+      '[ {': 'let',
+      '[ * {': 'get set static accessor readonly override public private protected abstract',
+      '{': 'global namespace module',
+      '': 'from type declare keyof infer is asserts unique enum implements interface package',
+    }).flatMap(([after, words]) => words.split(' ').map((w) => [w, new Set(after.split(' ').filter(Boolean))]))),
+    // Words that are keywords inside a function of a kind (`yield` in a generator, `await` in an async function or
+    // anywhere in a module), what its head holds (`*`, `async`); elsewhere they are names, even alone (`f(await)`).
+    inFunction: { yield: '*', await: 'async' },
+    // Words strict mode reserves: keywords anywhere in a module (a file with import or export) or a class body.
+    strict: wordSet('implements interface let package private protected public static yield'),
+    builtins: wordSet(`globalThis global window self document console process require module exports __dirname __filename Buffer
       setTimeout clearTimeout setInterval clearInterval setImmediate clearImmediate queueMicrotask structuredClone fetch
       URL URLSearchParams TextEncoder TextDecoder AbortController AbortSignal Headers Request Response FormData Blob File
       Event EventTarget CustomEvent crypto performance navigator location history localStorage sessionStorage alert
@@ -681,7 +697,12 @@ function readScript(T) {
   const ctx = [{ open: -1, close: n, role: 'block' }]; // the brackets around: block, object, class, paren, brack, pattern, body
   // The scopes around: end, or null for an arrow's expression body; fn, the function (or module) a `var` in it binds in.
   const stack = [{ s: moduleScope, end: n, fn: moduleScope }];
-  const enterScope = (entry) => { entry.fn = T.scopes[entry.s].kind === 'function' ? entry.s : stack.at(-1).fn; stack.push(entry); };
+  // inClass: whether a class is around the scope (strict-mode words are keywords there), kept per entry, not walked.
+  const enterScope = (entry) => {
+    entry.fn = T.scopes[entry.s].kind === 'function' ? entry.s : stack.at(-1).fn;
+    entry.inClass = Boolean(T.scopes[entry.s].isClass || stack.at(-1).inClass);
+    stack.push(entry);
+  };
   const starts = new Map(); // token → scopes that open there
   const scopeStartAt = (pos, s) => { const l = starts.get(pos); if (l) l.push(s); else starts.set(pos, [s]); };
   const varScope = () => stack.at(-1).fn;
@@ -691,6 +712,33 @@ function readScript(T) {
   // decorator on the same line (`@d m() {}`, `@d() x = 1`: `decoratorEnds` holds where each decorator ends).
   const decoratorEnds = new Set();
   const memberStart = (j) => isPunct(toks[j - 1], '{') || isPunct(toks[j - 1], ';') || isPunct(toks[j - 1], '}') || endsStatement(j) || decoratorEnds.has(j);
+  // Whether the word at token j is a keyword there (LANGS: `contextual`, `namesBefore`, `strict`): a reserved word
+  // always; a contextual word where its construct goes on; a strict-mode word anywhere in a module or class body.
+  const isModule = toks.some((t, q) => isWord(t, 'export') || (isWord(t, 'import') && !isPunct(toks[q + 1], '(') && !isPunct(toks[q + 1], '.')));
+  // Whether function scope s has `what` (`async`, `*`) in its head: the token it starts at (an arrow's `async`) or the
+  // words and `*` right before it (`async *m(`, `function* g(`, `static async m(`), at most the four a head holds,
+  // past a computed or string name (`async [k]()`, `async 'm'()`).
+  const headHas = (s, what) => {
+    const a = T.scopes[s].a;
+    if (toks[a]?.v === what) return true;
+    let k = a - 1;
+    if (isPunct(toks[k], ']')) k = (back.get(k) ?? k) - 1;
+    else if (toks[k]?.k === 'val') k--;
+    for (const stop = k - 4; k >= 0 && k > stop && (isWord(toks[k]) || isPunct(toks[k], '*')); k--) if (toks[k].v === what) return true;
+    return false;
+  };
+  const keywordAt = (j) => {
+    const v = toks[j].v;
+    if (!T.data.keywords.has(v)) return false;
+    const next = toks[j + 1];
+    const sameLine = Boolean(next) && !next.first;
+    if (T.data.strict.has(v) && (isModule || stack.at(-1).inClass)) return true;
+    const head = T.data.inFunction[v];
+    if (head) return (v === 'await' && isModule) || (T.scopes[varScope()].kind === 'function' && headHas(varScope(), head));
+    const after = T.data.contextual[v];
+    if (!after) return true;
+    return sameLine && (isWord(next) || next.k === 'val' || (next.k === 'punct' && after.has(next.v)));
+  };
   // Whether token j is the first of a block's statements (`{ function f() {} … }`: a declaration, not a value).
   const blockStart = (j) => isPunct(toks[j - 1], '{') && ['block', 'body'].includes(ctx.at(-1).role);
   // Where the look for an arrow's `=>` past `): R` stops: the `=>`, or what ends the type (a ternary's `?` or `:` too,
@@ -816,6 +864,7 @@ function readScript(T) {
     // A generic function's scope opens at its type parameters, so their constraints and defaults see them.
     const from = typeOpen >= 0 ? typeOpen : p;
     const s = T.scope('function', name, from, end);
+    if (ctx.at(-1).role === 'class') T.scopes[s].method = true; // a class's member (unless a `function` sets plain)
     scopeStartAt(from, s);
     roles.set(q, 'body');
     if (typeOpen >= 0) bindTypeParams(typeOpen, p - 1, s);
@@ -1048,7 +1097,7 @@ function readScript(T) {
         let close = -1;
         // `(a: T): R => …`: the parameters a `:` and a return type follow, before a name that would be one parameter.
         if (typed && typed.arrow === j) { open = typed.open; close = typed.close; a = open; }
-        else if (isWord(prev) && !T.data.keywords.has(prev.v)) a = j - 1;
+        else if (isWord(prev) && !keywordAt(j - 1)) a = j - 1;
         else if (isPunct(prev, ')')) { open = back.get(j - 1) ?? -1; close = j - 1; a = open; }
         typed = null;
         if (a < 0) continue;
@@ -1074,7 +1123,8 @@ function readScript(T) {
       continue;
     }
     // A method named by a string (`'=' (a) {}` in an object, `'x'() {}` in a class).
-    if (t.k === 'val' && isPunct(toks[j + 1], '(') && (role === 'object' ? isPunct(prev, '{') || isPunct(prev, ',') : role === 'class' && memberStart(j))) { callableAt(j + 1, null); continue; }
+    // A method with a string name (`'m'() {}`, `async 'm'() {}`, `static get 'k'() {}`): after its modifiers, as `[k]` is.
+    if (t.k === 'val' && isPunct(toks[j + 1], '(') && (role === 'object' ? isPunct(prev, '{') || isPunct(prev, ',') || isPunct(prev, '*') || (isWord(prev) && ['get', 'set', 'async'].includes(prev.v)) : role === 'class' && (memberStart(j) || isPunct(prev, '*') || (isWord(prev) && MEMBER_WORDS.has(prev.v))))) { callableAt(j + 1, null); continue; }
     if (t.k !== 'word' || marks[j]) continue;
     if (isPunct(prev, '.') || isPunct(prev, '?.')) continue;
     // An object literal's member: a key, a method, or a name written for itself (`{ a }`); `*g() {}` a generator.
@@ -1104,7 +1154,7 @@ function readScript(T) {
     // The label a `break` or `continue` names is no name (a label itself, `outer:`, is read as a key already).
     if ((v === 'break' || v === 'continue') && isWord(toks[j + 1]) && !toks[j + 1].first) { marks[j + 1] = SKIP; continue; }
     // `x as T`, `x satisfies T`: the names in the type are types used (an import's or export's `as` is read there).
-    if ((v === 'as' || v === 'satisfies') && j > 0 && !isPunct(toks[j + 1], ',') && !isPunct(toks[j + 1], ')')) {
+    if ((v === 'as' || v === 'satisfies') && j > 0 && keywordAt(j)) {
       marks[j] = SKIP;
       const end = skipType(j + 1);
       annotationOf(T, j + 1, end);
@@ -1117,7 +1167,7 @@ function readScript(T) {
       continue;
     }
     if (v === 'export') { j = exportDecl(j) - 1; continue; }
-    if (v === 'declare') {
+    if (v === 'declare' && keywordAt(j)) {
       marks[j] = SKIP;
       declared = j;
       if (isWord(toks[j + 1], 'module') || isWord(toks[j + 1], 'namespace') || isWord(toks[j + 1], 'global')) {
@@ -1127,7 +1177,7 @@ function readScript(T) {
       continue;
     }
     if ((v === 'var' || v === 'let' || v === 'const') && (isWord(toks[j + 1]) || isPunct(toks[j + 1], '{') || isPunct(toks[j + 1], '['))) {
-      if (!isWord(toks[j + 1], 'enum')) declaration(j);
+      if (!(isWord(toks[j + 1], 'enum') && isWord(toks[j + 2]))) declaration(j); // `const enum E {`: the enum reads it
       continue;
     }
     if (v === 'function') {
@@ -1136,6 +1186,7 @@ function readScript(T) {
       const named = isWord(toks[k]);
       const expression = !blockStart(j) && Boolean(prev) && (OBJECT_BEFORE.has(prev.v) || isPunct(prev, '=>')) && !isWord(prev, 'export') && !isWord(prev, 'default');
       const body = callableAt(named ? k + 1 : k, named ? toks[k].v : null);
+      if (body >= 0) T.scopes[T.scopes.length - 1].plain = true; // a `function`, never a method: its own `this`
       if (named) {
         marks[k] = BIND;
         if (expression && body >= 0) T.bind(T.scopes.length - 1, toks[k].v, k, 'def');
@@ -1214,11 +1265,11 @@ function readScript(T) {
       j = c;
       continue;
     }
-    if ((v === 'as' || v === 'satisfies') && prev && !isPunct(prev, '{') && !isPunct(prev, ',')) { marks[j] = SKIP; j = skipType(j + 1) - 1; continue; }
+    if ((v === 'as' || v === 'satisfies') && prev && !isPunct(prev, '{') && !isPunct(prev, ',') && keywordAt(j)) { marks[j] = SKIP; j = skipType(j + 1) - 1; continue; }
     // The `:` that ends a `case` or `default` label: a `{` after it opens a block, not an object.
     if (v === 'case' || (v === 'default' && isPunct(toks[j + 1], ':'))) caseColons.add(firstAt(T, j + 1, n, (x) => isPunct(x, ':')));
     if (v === 'this' || v === 'super') { marks[j] = THIS; continue; }
-    if (T.data.keywords.has(v)) { marks[j] = SKIP; continue; }
+    if (keywordAt(j)) { marks[j] = SKIP; continue; }
     // A label: a name and a `:` that start a statement.
     if (isPunct(toks[j + 1], ':') && (role === 'block' || role === 'body') && (endsStatement(j) || isPunct(prev, ';') || isPunct(prev, '{') || isPunct(prev, '}'))) { marks[j] = SKIP; continue; }
     if (v === 'eval' && isPunct(toks[j + 1], '(')) T.unknownAt(j, 'eval', 'eval');
@@ -1355,7 +1406,8 @@ function finishTable(T, lineCount) {
       path.push(q);
       const sc = scopes[q];
       if (sc.isClass) { c = q; break; }
-      if (sc.kind === 'function' && !sc.arrow) { c = parent[q] !== null && scopes[parent[q]].isClass ? parent[q] : -1; break; }
+      // A method sees its class; any other function (`function`, an object's method, a field's function) its own `this`.
+      if (sc.kind === 'function' && !sc.arrow) { c = sc.method && !sc.plain && parent[q] !== null && scopes[parent[q]].isClass ? parent[q] : -1; break; }
       q = parent[q];
     }
     for (const r of path) thisClass[r] = c;
