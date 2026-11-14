@@ -131,7 +131,18 @@ function firstWord(argv) {
 // `git status` neither refreshes nor locks their index, as git asks of background tools.
 // Read at each call, as git inherited process.env before: a variable set after this module loaded still reaches git.
 const gitEnv = (more = {}) => ({ ...process.env, GIT_OPTIONAL_LOCKS: '0', ...more });
-const git = (root, ...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env: gitEnv() });
+// A git that exits 0 but says error: or fatal: on stderr gave no answer to trust: a cut index makes `git status` list
+// files as deleted and untracked with rc 0 and only "error: cache entry has null sha1" (review of readfirst#207).
+// Both throw, and the error keeps git's own error:/fatal: lines whole (`gitErrors`), for the reasons said at the stop.
+const git = (root, ...a) => {
+  const r = spawnSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env: gitEnv() });
+  if (r.error) throw r.error;
+  const said = String(r.stderr ?? '').split('\n').map((l) => l.trim()).filter((l) => /^(?:error|fatal): /u.test(l));
+  if (r.status === 0 && !said.length) return r.stdout;
+  const e = new Error(`Command failed: git ${a.join(' ')}${said.length ? `: ${said.join('; ')}` : r.stderr?.trim() ? `: ${r.stderr.trim()}` : ''}`);
+  Object.assign(e, { status: r.status, stdout: r.stdout, stderr: r.stderr, gitErrors: said });
+  throw e;
+};
 
 export function repoFiles(root) {
   // Tracked files plus new files not ignored by .gitignore, so a file being added can be looked up before its commit.
@@ -791,7 +802,14 @@ const clip = (text) => {
   return s.length <= CLIP ? s : `${s.slice(0, CLIP)}… (${s.length} characters, ${s.length - CLIP} left out)`; // cut: says how many it left out
 };
 // An error in one line, short enough for a state key and a report line.
-const errorText = (e) => `${e?.name ?? 'Error'}: ${String(e?.message ?? e)}`.replace(/\s+/gu, ' ').slice(0, 160); // cut: the error's first 160 characters; the rest is in no state
+// git's error: and fatal: lines are kept whole, with the command (the reason a stop gives: cut mid-word, "fatal: index
+// file corru" said nothing; review of readfirst#207). Another error is cut at a word, with "…".
+const errorText = (e) => {
+  const text = `${e?.name ?? 'Error'}: ${String(e?.message ?? e)}`.replace(/\s+/gu, ' ');
+  if (e?.gitErrors?.length || text.length <= 160) return text;
+  // cut: the first 160 characters of an error that is not git's, to the last whole word, marked with "…"; the rest is in no state.
+  return `${text.slice(0, 160).replace(/\s+\S*$/u, '')}…`;
+};
 
 // The branch a repository is on, or the commit when none is checked out; '' when git cannot say. `known` keeps the
 // answers of one call.
@@ -1194,7 +1212,29 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
 // tree held then (baseOf), null when the state does not say.
 function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [], head = null, start = null } = {}) {
   try {
-    if (!existsSync(join(root, MAP_PATH))) return null;
+    if (!existsSync(join(root, MAP_PATH))) {
+      // No map here means nothing to check, unless the commit has one that is not in the working tree (a sparse
+      // checkout that leaves .readfirst/ out, or a map deleted in the session): then the checks could not run, said
+      // like any stop that could not check (review of readfirst#207).
+      let committed = false;
+      try { git(root, 'cat-file', '-e', `HEAD:${MAP_PATH}`); committed = true; } catch { committed = false; }
+      if (!committed) return null;
+      throw new Error(`${MAP_PATH} is in the commit checked out but not in the working tree (a sparse checkout that leaves it out, or a map deleted in the session)`);
+    }
+    // git 2.43 reads a cut or damaged index without a word: `git status` exits 0 with files listed as deleted and
+    // untracked (review of readfirst#207), so every answer below would rest on it. The index ends with the hash of all
+    // before it (SHA-1 or SHA-256, as the repository's objects); one that does not match is a stop that could not
+    // check. An all-zero end is an index written with index.skipHash, which keeps no hash to compare.
+    {
+      const at = resolve(root, git(root, 'rev-parse', '--git-path', 'index').trim());
+      if (existsSync(at)) {
+        const algo = git(root, 'rev-parse', '--show-object-format').trim() === 'sha256' ? 'sha256' : 'sha1';
+        const size = algo === 'sha256' ? 32 : 20;
+        const bytes = readFileSync(at);
+        const end = bytes.subarray(Math.max(0, bytes.length - size));
+        if (bytes.length <= size || (end.some((b) => b !== 0) && !createHash(algo).update(bytes.subarray(0, bytes.length - size)).digest().equals(end))) throw new Error(`the index file (${relative(root, at) || at}) does not match the hash at its end: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`);
+      }
+    }
     const at = named ? ` in ${basename(root)}` : '';
     const dirty = new Set(git(root, 'status', '--porcelain', '-z', '--no-renames', '--untracked-files=all').split('\0').filter(Boolean).map((l) => l.slice(3)));
     // Files changed since the session first wrote here that no tool call named (a script, a generator, a build): a check

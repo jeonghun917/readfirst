@@ -4,8 +4,8 @@
 // git's error, refuses the stop once for that kind of error, and the session's line and `hook --report` count it.
 // The same for a marked file whose repository git no longer finds, and a base branch whose ref cannot be read.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -58,6 +58,70 @@ test('a marked file whose repository git no longer finds (its .git points at a g
   assert.notEqual(again?.decision, 'block', 'refused once');
   assert.match(String(again?.systemMessage ?? ''), /the stop could not check `[^`]*src\/a\.js`/u);
   assert.ok(s.line().unchecked >= 1);
+});
+
+// A cut or damaged index: git 2.43 reads it without a word, and the stop's `git status` exits 0 with a wrong list
+// (files deleted, a folder untracked). The index's own hash at its end tells it.
+const STATUS = ['status', '--porcelain', '-z', '--no-renames', '--untracked-files=all'];
+for (const [what, damage] of [['cut to 38%', (b) => b.subarray(0, Math.floor(b.length * 0.38))], ['cut to 63%', (b) => b.subarray(0, Math.floor(b.length * 0.63))], ['one byte flipped', (b) => { const c = Buffer.from(b); c[40] ^= 0xff; return c; }]]) {
+  test(`an index ${what} is a stop that could not check, though git status exits 0`, () => {
+    const s = edited();
+    writeFileSync(join(s.root, 'src/b.js'), 'export const b = 1;\n');
+    s.git('add', 'src/b.js');
+    s.git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'b');
+    const index = join(s.root, '.git/index');
+    writeFileSync(index, damage(readFileSync(index)));
+    // Without GIT_OPTIONAL_LOCKS=0 this git status writes the index back, refreshed, and the damage is gone.
+    const r = spawnSync('git', ['-C', s.root, ...STATUS], { encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
+    assert.equal(r.status, 0, 'git itself says nothing is wrong (else this tests the other path)');
+    const out = s.stop();
+    const said = String(out?.reason ?? out?.systemMessage ?? '');
+    assert.doesNotMatch(said, /check\(s\) passed/u);
+    assert.equal(out?.decision, 'block');
+    assert.match(said, /the stop could not check this repository \(Error: the index file \(\.git\/index\) does not match the hash at its end: it is cut or damaged/u);
+  });
+}
+
+test('a git that exits 0 but says error: on stderr is a stop that could not check, with that line', () => {
+  const s = edited();
+  // The real git, run by a git found first on PATH that adds the line a cut index gave (review of readfirst#207)
+  // to `git status`, its exit code kept.
+  const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+  const bin = mkdtempSync(join(tmpdir(), 'readfirst-unchecked-bin-'));
+  writeFileSync(join(bin, 'git'), `#!/bin/sh\n"${real}" "$@"\nrc=$?\ncase " $* " in *" status "*) echo "error: cache entry has null sha1: src/b.js" >&2 ;; esac\nexit $rc\n`, { mode: 0o755 });
+  const path = process.env.PATH;
+  process.env.PATH = `${bin}:${path}`;
+  let out;
+  try { out = s.stop(); } finally { process.env.PATH = path; }
+  const said = String(out?.reason ?? out?.systemMessage ?? '');
+  assert.doesNotMatch(said, /check\(s\) passed/u);
+  assert.equal(out?.decision, 'block');
+  assert.ok(said.includes('error: cache entry has null sha1: src/b.js'), said);
+});
+
+test('git\'s error: and fatal: lines are said whole, never cut mid-word', () => {
+  const s = edited();
+  // A split index whose shared part is gone: git fails with a fatal line naming the 40-hex file.
+  s.git('update-index', '--split-index');
+  const shared = readdirSync(join(s.root, '.git')).filter((f) => f.startsWith('sharedindex.'));
+  assert.ok(shared.length, 'git made a shared index');
+  for (const f of shared) rmSync(join(s.root, '.git', f));
+  const r = spawnSync('git', ['-C', s.root, ...STATUS], { encoding: 'utf8' });
+  const lines = String(r.stderr).split('\n').map((l) => l.trim()).filter((l) => /^(?:error|fatal): /u.test(l));
+  assert.ok(lines.length, `git said no error: or fatal: line (rc ${r.status})`);
+  const out = s.stop();
+  const said = String(out?.reason ?? out?.systemMessage ?? '');
+  assert.equal(out?.decision, 'block');
+  for (const l of lines) assert.ok(said.includes(l), `git's line is said whole: ${l}\nin: ${said}`);
+});
+
+test('a sparse checkout that leaves the map out is a stop that could not check, not a quiet one', () => {
+  const s = edited();
+  s.git('sparse-checkout', 'set', 'src');
+  assert.ok(!existsSync(join(s.root, '.readfirst/map.json')), 'the sparse checkout left the map out');
+  const out = s.stop();
+  assert.equal(out?.decision, 'block', `the stop said nothing: ${JSON.stringify(out)}`);
+  assert.match(out.reason, /\.readfirst\/map\.json is in the commit checked out but not in the working tree \(a sparse checkout that leaves it out, or a map deleted in the session\)/u);
 });
 
 test('a base branch whose ref cannot be read is named as such, not as no base branch', () => {
