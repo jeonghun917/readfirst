@@ -444,6 +444,17 @@ function physical(abs) {
 // (the notes were likely not read: nothing was done between the refusal and the retry). The Stop hook counts them with
 // what the map asked and what was done (actedLine), and keeps one line per session in ACTED_LOG for `hook --report`.
 const callSig = (tool, targets) => createHash('sha1').update(`${tool}\0${targets.join('\0')}`).digest('hex').slice(0, 12);
+// The key of a Bash command the gate asks about once (`unknown:`, `misread:`): the command with where it runs, the
+// folder (through symlinks) and the repository holding it. Until 2026-11-14 it was the command's text alone, so a
+// command refused once in one folder went through with no word in any other folder or repository, where the same
+// text writes somewhere else. `old`: the key an older readfirst wrote, which a state file may still hold and which
+// still counts as asked.
+function commandKey(tag, command, cwd) {
+  let folder = cwd;
+  try { folder = realpathSync(cwd); } catch { /* a folder that is gone: as given */ }
+  const hash = (text) => createHash('sha1').update(text).digest('hex').slice(0, 12);
+  return { key: `${tag}:${hash(`${folder}\0${repoOf(folder) ?? ''}\0${command}`)}`, old: `${tag}:${hash(command)}` };
+}
 function lastCall(seen) {
   let best = null;
   for (const [k, at] of Object.entries(seen)) if (k.startsWith('call:') && (!best || at > best[1])) best = [k, at];
@@ -562,11 +573,13 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     if (misread) {
       const whole = { part: 'the whole command', word: command, why: `readfirst hit an error reading it (${misread})`, prefix: '' };
       written = { files: written?.files ?? [], unknown: [...(written?.unknown ?? []), whole], repos: written?.repos ?? [] };
-      seen[`misread:${createHash('sha1').update(command).digest('hex').slice(0, 12)}`] = now;
+      seen[commandKey('misread', command, cwd).key] = now;
     }
     const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos, Date.now() + budget / 5) : [];
-    const unknownKey = unplaced.length ? `unknown:${createHash('sha1').update(String(event.tool_input.command)).digest('hex').slice(0, 12)}` : null;
-    const askUnknown = Boolean(unknownKey) && !before[unknownKey];
+    // Asked once per command and folder (commandKey): the same text run in another folder or repository is asked again.
+    const keys = unplaced.length ? commandKey('unknown', command, cwd) : null;
+    const unknownKey = keys?.key ?? null;
+    const askUnknown = Boolean(keys) && !before[keys.key] && !before[keys.old];
     if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) if (!seen[`start:${r}`]) seen[`start:${r}`] = now; }
     // Said once per command: made again, it goes through without the line.
     // Five repositories are named for a write and the rest counted with where they are (below its folder, or the ones
