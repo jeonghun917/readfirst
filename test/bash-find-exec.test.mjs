@@ -41,6 +41,9 @@ test('a write to the files find finds is not known, under the folder it starts f
     ["find d -name '*.md' -execdir sed -i s/a/b/ {} \\;", ['?{}@d']],
     ['cd d && find . -name x.txt -exec cp {} {}.n \\;', ['?{}@d']],
     ['find d e -name x.txt -exec cp {} {}.m \\;', ['?{}@d', '?{}@e']],
+    // Options before the starts (review of #223: the start was taken to be `.`).
+    ['find -L d -name x.txt -exec cp {} {}.l \\;', ['?{}@d']],
+    ['find -O3 -D tree d -name x.txt -exec cp {} {}.o \\;', ['?{}@d']],
   ]) {
     const dir = setUp();
     const made = bashMade(script, dir);
@@ -57,6 +60,9 @@ test('a file find writes, or a path its command names, is named, and bash agrees
     'find d -fprint list.txt',
     'find d -type f -fprintf out.txt "%p\\n"',
     'find d -exec cat {} \\; > out',
+    // A start that is a file: {} is that file (review of #223 named it as a folder, d/x.txt/).
+    'find d/x.txt -exec cp {} {}.f \\;',
+    'find d/x.txt -execdir cp {} {}.g \\;',
   ]) {
     const dir = setUp();
     assert.deepEqual(named(script, dir), bashMade(script, dir), script);

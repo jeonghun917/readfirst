@@ -1429,9 +1429,16 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // under the start. -fprint, -fprint0, -fprintf and -fls write the file after them. Until 2026-11-14 find's
   // commands were not read: `find . -name '*.md' -exec sed -i s/a/b/ {} \;` wrote and nothing was said.
   const findRun = (raw, args) => {
-    let first = args.findIndex((w) => /^[-(!),]/u.test(w) && w !== '-');
+    // -H, -L, -P, -O<n> and -D <list> come before the starts (`find -L /x -exec …`: the start was taken to be `.`,
+    // review of #223).
+    let lead = 0;
+    while (lead < args.length && /^-(?:[HLP]|O\d*|D)$/u.test(args[lead])) lead += args[lead] === '-D' ? 2 : 1;
+    let first = args.findIndex((w, k) => k >= lead && /^[-(!),]/u.test(w) && w !== '-');
     if (first < 0) first = args.length;
-    const roots = first > 0 ? raw.slice(0, first) : ['.'];
+    const roots = first > lead ? raw.slice(lead, first) : ['.'];
+    // A start that is a file is the one file find finds there: `{}` is that path (`find z.md -exec cp {} {}.f \;`
+    // writes z.md.f, review of #223).
+    const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };
     const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
     for (let i = first; i < args.length; i++) {
       if (/^-(?:fprint0?|fls|fprintf)$/u.test(args[i])) { if (args[i + 1] !== undefined) add(args[i + 1]); i += args[i] === '-fprintf' ? 2 : 1; continue; }
@@ -1442,14 +1449,18 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       for (const root of roots) {
         const rootText = dq(root);
         // A start known only when the command runs is written as it was (`$D`): what it holds stays not known.
+        const startAt = rootText.includes(HOLE) || state.base == null ? null : resolve(state.base, rootText);
+        const one = startAt != null && isFile(startAt);
         const at = rootText.includes(HOLE) ? `${root}/` : quote(`${rootText.replace(/\/+$/u, '')}/`);
-        const text = args.slice(i + 1, j).map((w, k) => (w.includes(HOLE) ? raw[i + 1 + k] : w.split('{}').map(quote).join(inDir ? `'./'"$${FOUND}"` : `${at}"$${FOUND}"`))).join(' ');
+        const each = one ? quote(inDir ? `./${rootText.split('/').pop()}` : rootText) : inDir ? `'./'"$${FOUND}"` : `${at}"$${FOUND}"`;
+        const text = args.slice(i + 1, j).map((w, k) => (w.includes(HOLE) ? raw[i + 1 + k] : w.split('{}').map(quote).join(each))).join(' ');
         const vars = exportedOnly(state.vars);
         vars.set(FOUND, { value: null, why: `${args[i]} runs it for each file find finds, known only when it runs`, part: '{}', exported: true });
-        const startAt = rootText.includes(HOLE) || state.base == null ? null : resolve(state.base, rootText);
-        const r = inDir
-          ? shellWrites(text, null, { vars, why: { part: `find ${args[i]}`, why: `${args[i]} runs it in the folder of each file find finds, known only when it runs`, prefix: startAt ? `${startAt.replace(/\/$/u, '')}/` : '' } })
-          : shellWrites(text, state.base, { vars, why: state.why });
+        const r = inDir && one
+          ? shellWrites(text, dirname(startAt), { vars, why: state.why })
+          : inDir
+            ? shellWrites(text, null, { vars, why: { part: `find ${args[i]}`, why: `${args[i]} runs it in the folder of each file find finds, known only when it runs`, prefix: startAt ? `${startAt.replace(/\/$/u, '')}/` : '' } })
+            : shellWrites(text, state.base, { vars, why: state.why });
         r.files.forEach((f) => found.add(f));
         r.unknown.forEach(missing);
         r.repos.forEach((x) => repos.add(x));
