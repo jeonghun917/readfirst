@@ -364,11 +364,15 @@ const LONG_SHAPES = {
   'type arguments left open': (n) => `function f(m: ${'Map<'.repeat(n / 4)}) {\n}`,
   'new with type arguments left open': (n) => `function f({ a = ${'new A<'.repeat(n / 6)} }) {\n}`,
   'type arguments left open in nested patterns': (n) => `function f(${'{ a = new A<1, b: '.repeat(n / 18)}x${' }'.repeat(n / 18)}) {\n}`,
+  'values with type arguments left open': (n) => 'const x = f<a\n'.repeat(n / 14),
+  'members with type parameters left open': (n) => `o = {\n${'a: <b,\n'.repeat(n / 7)}}\n`,
+  'functions with type parameters left open': (n) => 'function f<a\n'.repeat(n / 13),
+  'methods with type parameters left open': (n) => `class A {\n${'m<a\n'.repeat(n / 4)}}\n`,
 };
 
 test('params: linear steps in the length of a parameter list, its nesting and its file', () => {
   // The steps the reader takes (countSteps), not the time: the count is the same on every machine and every run, so
-  // small texts do. 16 times the text took 15.7 to 17.1 times the steps (a long list: its names grow a digit); a
+  // small texts do. 16 times the text took 15.6 to 17.1 times the steps (a long list: its names grow a digit); a
   // reader that rescans a parameter list for each parameter took 248 times, as quadratic work would (256).
   for (const [name, make] of Object.entries(LONG_SHAPES)) {
     const count = (n) => { const text = make(n); countSteps(true); declarations('a.ts', text, { params: true }); return countSteps(false); };
