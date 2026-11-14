@@ -60,6 +60,23 @@ test('a call the gate refused and that was never made again is named at the stop
   assert.doesNotMatch(stop()?.reason ?? '', /never made again/u, 'said once');
 });
 
+// The change made again with another tool is made again: any call let through that writes a file of the refused call
+// (a Bash command by the files its write reader names) counts (review of readfirst#212: each of these was named).
+for (const [how, tool, input] of [
+  ['MultiEdit', 'MultiEdit', (root) => ({ file_path: join(root, 'src/a.js'), edits: [{ old_string: '  return 1;', new_string: '  return 2;' }] })],
+  ['Write', 'Write', (root) => ({ file_path: join(root, 'src/a.js'), content: 'export function alpha() {\n  return 2;\n}\n' })],
+  ['Bash sed -i', 'Bash', () => ({ command: "sed -i 's/return 1/return 2/' src/a.js" })],
+]) {
+  test(`a refused Edit whose change is then made by ${how} is not named`, () => {
+    const { root, call, stop } = session();
+    assert.equal(call('Edit', ALPHA(root)).permissionDecision, 'deny');
+    assert.equal(call('Bash', { command: `npx readfirst answer '${JSON.stringify([{ item: itemId('risk', 'src', RISK), answer: 'done', because: 'alpha now returns 2, as asked' }])}'` }), null);
+    assert.notEqual(call(tool, input(root))?.permissionDecision, 'deny');
+    writeFileSync(join(root, 'src/a.js'), 'export function alpha() {\n  return 2;\n}\n');
+    assert.doesNotMatch(String(stop()?.reason ?? ''), /never made again/u);
+  });
+}
+
 test('a refused call made again, as the refusal says, is not named', () => {
   const { root, call, stop } = session();
   assert.equal(call('Edit', ALPHA(root)).permissionDecision, 'deny');

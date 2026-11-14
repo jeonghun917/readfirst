@@ -838,8 +838,18 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     if (!(gate && (asks.length || askLate || askFind || askUnknown))) Object.assign(seen, reads);
     // A refusal is kept with what was refused (`refused:<sig>:<call>`), so the stop can name a refused call never made
     // again: the others of its response went in without it.
+    // A call let through that writes a file of a refused one, by any tool, makes that change again (`redone:<sig>`):
+    // the same edit is often made again as a MultiEdit, a Write or a `sed -i` (review of readfirst#212).
     const what = callWhat(tool, event.tool_input, targets);
-    if (gate && (asks.length || askLate || askFind || askUnknown)) seen[`refused:${sig}:${what}`] = now;
+    if (gate && (asks.length || askLate || askFind || askUnknown)) seen[`refused:${sig}:${JSON.stringify([what, targets])}`] = now;
+    else {
+      for (const k of Object.keys(before)) {
+        const m = k.match(/^refused:([0-9a-f]{12}):(.+)$/su);
+        let files = [];
+        try { files = JSON.parse(m?.[2] ?? 'null')?.[1] ?? []; } catch { files = []; }
+        if (m && files.some((f) => targets.includes(f))) seen[`redone:${m[1]}`] = now;
+      }
+    }
     const saved = save();
     const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate && askLate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
     if (!notes.length && !waiting.length && !lateLine && !findLine && !unknownLine && !askLine) return null;
@@ -1145,8 +1155,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -1209,7 +1219,11 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   // Calls the gate refused and that were never made again (no later `call:` with their sig): if one was among several
   // calls of a response, the others went in without it (ledger gate-refuses-one-edit-of-a-batch). Named once for that
   // set (`refused:said:<hash>`), when the session changed files at all.
-  const dropped = byRoot.size ? Object.keys(seen).flatMap((k) => { const m = k.match(/^refused:([0-9a-f]{12}):(.+)$/su); return m && (seen[`call:${m[1]}`] ?? 0) <= seen[k] ? [m[2]] : []; }).sort() : [];
+  const dropped = byRoot.size ? Object.keys(seen).flatMap((k) => {
+    const m = k.match(/^refused:([0-9a-f]{12}):(.+)$/su);
+    if (!m || (seen[`redone:${m[1]}`] ?? 0) > seen[k]) return [];
+    try { return [String(JSON.parse(m[2])[0])]; } catch { return [m[2]]; }
+  }).sort() : [];
   const droppedKey = dropped.length ? `refused:said:${createHash('sha1').update(dropped.join('\0')).digest('hex').slice(0, 12)}` : null;
   if (droppedKey && !said(droppedKey)) {
     say(droppedKey);
