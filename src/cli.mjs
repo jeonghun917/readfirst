@@ -444,6 +444,19 @@ function physical(abs) {
 // (the notes were likely not read: nothing was done between the refusal and the retry). The Stop hook counts them with
 // what the map asked and what was done (actedLine), and keeps one line per session in ACTED_LOG for `hook --report`.
 const callSig = (tool, targets) => createHash('sha1').update(`${tool}\0${targets.join('\0')}`).digest('hex').slice(0, 12);
+// The key of a Bash command the gate asks about once (`unknown:`, `misread:`): the command with where it runs, the
+// folder (through symlinks) and the repository holding it. Until 2026-11-14 it was the command's text alone, so a
+// command refused once in one folder went through with no word in any other folder or repository, where the same
+// text writes somewhere else. Returns the hash for the tag (`unknown:<here>`), worked out once per call (repoOf runs
+// git), and `old`: the hash an older readfirst wrote, which a state file may still hold and which still counts as
+// asked. So a session that spans the upgrade keeps the old gap for a command asked about before it: it goes through in
+// other folders too.
+function commandKey(command, cwd) {
+  let folder = cwd;
+  try { folder = realpathSync(cwd); } catch { /* a folder that is gone: as given */ }
+  const hash = (text) => createHash('sha1').update(text).digest('hex').slice(0, 12);
+  return { here: hash(`${folder}\0${repoOf(folder) ?? ''}\0${command}`), old: hash(command) };
+}
 function lastCall(seen) {
   let best = null;
   for (const [k, at] of Object.entries(seen)) if (k.startsWith('call:') && (!best || at > best[1])) best = [k, at];
@@ -557,16 +570,19 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // Writes whose place the command cannot tell before it runs (a variable from outside it, a $( ), a loop variable;
     // shellWrites): named, never dropped (until 2026-11-13 they were left out without a word), unless they are known to
     // be outside every repository (couldLandIn). With --gate the call is refused once with them
-    // (`unknown:<the command's hash>`) and goes through when made again. Each repository they could land in gets the
-    // session's start mark, so the Stop hook checks the files that change there.
+    // (`unknown:<hash of the command and its folder>`, commandKey) and goes through when made again there. Each
+    // repository they could land in gets the session's start mark, so the Stop hook checks the files that change there.
+    let keys = null;
+    const keysOnce = () => (keys ??= commandKey(command, cwd));
     if (misread) {
       const whole = { part: 'the whole command', word: command, why: `readfirst hit an error reading it (${misread})`, prefix: '' };
       written = { files: written?.files ?? [], unknown: [...(written?.unknown ?? []), whole], repos: written?.repos ?? [] };
-      seen[`misread:${createHash('sha1').update(command).digest('hex').slice(0, 12)}`] = now;
+      seen[`misread:${keysOnce().here}`] = now;
     }
     const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos, Date.now() + budget / 5) : [];
-    const unknownKey = unplaced.length ? `unknown:${createHash('sha1').update(String(event.tool_input.command)).digest('hex').slice(0, 12)}` : null;
-    const askUnknown = Boolean(unknownKey) && !before[unknownKey];
+    // Asked once per command and folder (commandKey): the same text run in another folder or repository is asked again.
+    const unknownKey = unplaced.length ? `unknown:${keysOnce().here}` : null;
+    const askUnknown = Boolean(unknownKey) && !before[unknownKey] && !before[`unknown:${keys.old}`];
     if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) if (!seen[`start:${r}`]) seen[`start:${r}`] = now; }
     // Said once per command: made again, it goes through without the line.
     // Five repositories are named for a write and the rest counted with where they are (below its folder, or the ones
@@ -925,7 +941,7 @@ export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], rese
   const not = notActed.length ? `, not done: ${notActed.join('; ')}` : '';
   const again = resent ? `; ${resent} refused edit(s) made again at once with nothing in between, so their notes were likely not read` : '';
   const nofind = noFind ? `; ${noFind} edit(s) added new functions without \`readfirst find\` first` : '';
-  const misreadLine = misread ? `; readfirst hit an error reading ${misread} command(s), refused once as writes it could not place` : '';
+  const misreadLine = misread ? `; readfirst hit an error reading ${misread} command(s), each counted once per folder it ran in, refused once as writes it could not place` : '';
   // One failed: key per tool and error, so the same error on many calls is one.
   const failedLine = failed.length ? `; the hook failed and let calls through unchecked, with ${failed.length} different error(s) (${failed.join('; ')})` : '';
   return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}${misreadLine}${failedLine}.`;
@@ -951,7 +967,7 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
     `- asked ${asked}, done ${sum('acted')}, not done ${asked - sum('acted')}`,
     `- refused edits made again at once with nothing in between: ${sum('resent')}, in ${rows.filter((r) => r.resent > 0).length} session(s)`,
     `- edits that added new functions without \`readfirst find\` first: ${sum('noFind')}, in ${rows.filter((r) => r.noFind > 0).length} session(s)`,
-    `- commands readfirst hit an error reading (refused once as writes it could not place): ${sum('misread')}, in ${rows.filter((r) => r.misread > 0).length} session(s)`,
+    `- commands readfirst hit an error reading, each counted once per folder it ran in (refused once as writes it could not place): ${sum('misread')}, in ${rows.filter((r) => r.misread > 0).length} session(s)`,
     `- errors the hook let calls through unchecked on: ${failures.size} different, in ${rows.filter((r) => Array.isArray(r.failed) && r.failed.length).length} session(s)`,
     ...(failures.size ? ['Hook errors, in most sessions first:', ...[...failures].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
     ...(counts.size ? ['Not done, most often first:', ...[...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
