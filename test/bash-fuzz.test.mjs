@@ -19,6 +19,7 @@ import { shellWrites } from '../src/bash-writes.mjs';
 const SCRIPTS = 3000; // about 13 s on the machine that set it; the scripts are the first 3,000 of seed 187
 const BASELINE = new URL('./bash-fuzz-baseline.json', import.meta.url);
 const hasBash = spawnSync('bash', ['-c', 'true'], { env: {} }).status === 0;
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 test('fuzz against bash: missed and fake writes are only those in the baseline', { skip: !hasBash && 'bash is not installed here, so the scripts cannot be run' }, () => {
 let seed=+process.argv[3]||187; const rnd=()=>{seed=(seed+0x6D2B79F5)>>>0;let t=seed;t=Math.imul(t^(t>>>15),t|1);t^=t+Math.imul(t^(t>>>7),t|61);return((t^(t>>>14))>>>0)/4294967296};
@@ -29,8 +30,8 @@ const T=['(( n ))','[[ x ]]','$((echo 1)','$((cd d)','(echo 1)',' > f2','; ','$(
   const missed = [];
   const fake = [];
   const base = JSON.parse(readFileSync(BASELINE, 'utf8'));
-  // "racy": scripts whose own result in bash changes from run to run (a >( ) runs after bash returns, and what it writes
-  // may not be there yet when the folder is read: `>((1>0))` made 0 in 11 of 40 runs), each with why. Not compared.
+  // "racy": scripts whose own result in bash changes from run to run, each with why. Not compared. (`>((1>0))` was
+  // here, its 0 there in 11 of 40 runs when the folder was read at once: a <( ) or >( )'s files are now waited for.)
   const racy = new Set(base.racy.map((r) => r.command));
   // A >( ) may still be writing when its folder is removed: removing it is tried again, and never fails the test
   // (it once stopped a run with ENOTEMPTY, 2026-11-14).
@@ -45,9 +46,14 @@ const T=['(( n ))','[[ x ]]','$((echo 1)','$((cd d)','(echo 1)',' > f2','; ','$(
       mkdirSync(join(dir, 'd'), { recursive: true });
       const run = spawnSync('bash', ['-c', c], { cwd: dir, stdio: 'ignore', timeout: 5000, env: {} });
       if (run.error || run.signal) { clean(dir); continue; } // timed out: not compared
-      const made = [...readdirSync(dir).filter((x) => x !== 'd'), ...readdirSync(join(dir, 'd')).map((x) => `d/${x}`)];
       const w = shellWrites(c, dir);
       const named = w.files.map((f) => f.slice(dir.length + 1));
+      const list = () => [...readdirSync(dir).filter((x) => x !== 'd'), ...readdirSync(join(dir, 'd')).map((x) => `d/${x}`)];
+      let made = list();
+      // A <( ) or >( ) runs beside bash and may write after bash returns: a file named that is not there yet is waited
+      // for, up to a second (`>((1>0))> f2` made its 0 within 10 ms alone, and once not before the folder was read
+      // under npm test's load, so the test failed with no change to the reader, 2026-11-14).
+      for (let t = 0; t < 100 && /[<>]\(/u.test(c) && named.some((x) => x !== 'd' && !made.includes(x)); t++) { pause(10); made = list(); }
       if (!w.unknown.length && made.some((x) => !named.includes(x))) missed.push(c);
       if (named.some((x) => x !== 'd' && !made.includes(x)) && spawnSync('bash', ['-n', '-c', c], { stdio: 'ignore', env: {} }).status === 0) fake.push(c);
       clean(dir);

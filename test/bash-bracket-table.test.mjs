@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { Worker } from 'node:worker_threads';
-import { bashReads, shellWrites } from '../src/bash-writes.mjs';
+import { bashReads, commandWords, shellWrites } from '../src/bash-writes.mjs';
 
 const writes = (c) => shellWrites(c, '/r').files;
 const unknown = (c) => shellWrites(c, '/r').unknown.map((u) => u.part);
@@ -46,6 +46,35 @@ test('<( ) and >( ) are process substitutions, not redirects', () => {
   assert.deepEqual(writes('cat <(cd /a; echo > f)'), ['/a/f'], 'its commands are read as a subshell');
 });
 
+// Review of #199 (2026-11-14): a <( ) or >( ) was put back as `/dev/fd/` and its body, so a word the hook names, and a
+// command's words, were not what the command said.
+test('a <( ) or >( ) is put back as it was written', () => {
+  assert.deepEqual(commandWords('diff <(sort a) <(sort b); tee >(cat > f) < in', '/r').map((c) => c.words.map((w) => w.text)), [['diff', '<(sort a)', '<(sort b)'], ['tee', '>(cat > f)']]);
+});
+
+// A (( or $(( that is a ( holding a subshell (bash: its inner ) is not followed at once by another )) is decided where
+// it opens: what stands in its first ( ) was read as arithmetic until then, so a <( ), >( ) or (( )) there had no place
+// in the table. And a (( at the start of a command, split at the ; inside it, was taken for an arithmetic command
+// (`((echo`), so its write and cd were lost; `( (cd d; ...) )` and `{ (cd d; ...); }` lost the cd too.
+test('the first ( ) of a (( that holds a subshell is read as commands', () => {
+  assert.deepEqual(writes('((<(echo b > g); cd d) )'), ['/r/g'], 'it named nothing');
+  assert.deepEqual(writes('((cd d; >(cat > h)) )'), ['/r/d/h'], 'it named a file `(cat`, and h where the cd was not');
+  assert.deepEqual(writes('((echo > e; echo hi) )'), ['/r/e']);
+  assert.deepEqual(writes('((cd d; echo > h) )'), ['/r/d/h']);
+  assert.deepEqual(writes('( (cd d; echo > h) )'), ['/r/d/h']);
+  assert.deepEqual(writes('{ (cd d; echo > h); }'), ['/r/d/h']);
+  assert.deepEqual(writes('echo $((cat <(cd d; echo b >f)) | cat)'), ['/r/d/f']);
+});
+
+// Where the reader reads a substitution's body (review of #199: each place a $( ) can stand), all passed already.
+test('a substitution is read wherever it stands in a command', () => {
+  for (const c of ['case $(echo x >f) in x) ;; esac', 'case x in $(echo >f)) echo;; esac', 'for i in $(echo > f); do :; done', 'select i in $(echo > f); do break; done',
+    '[[ $(echo > f) ]]', 'if $(echo > f); then :; fi', 'while $(echo > f; false); do :; done', 'until $(echo > f); do :; done', 'time $(echo > f)', '! $(echo > f)',
+    'g() { echo $(echo > f); }; g', 'cat <<E $(echo > f)\nhi\nE']) {
+    assert.deepEqual(writes(c), ['/r/f'], c);
+  }
+});
+
 test('arithmetic nests, and a $( ) that never closes is not run', () => {
   assert.deepEqual(writes('echo $(( (1+2)*3 )) > n'), ['/r/n']);
   assert.deepEqual(writes('x=$(echo > f'), [], 'bash: unexpected EOF while looking for matching `)`, nothing runs');
@@ -70,6 +99,9 @@ const AGAINST_BASH = [
   'x=$(( $(cd d; echo 1 > h) ))', 'echo $(echo $(cd d; echo > deep))', 'y="$(echo a > b.txt)"', 'echo "x -> $(ls | tr a b)"',
   '>(echo 1)', 'tee >(cat) > o', 'cat <(cd d; echo > f2) > /dev/null', 'echo $(( (1+2)*3 )) > n', 'x=$(echo > f',
   'echo "$((echo 1) > b)"', 'echo "$( (echo 1) > b)"',
+  '((<(echo b > g); cd d) )', '((echo > e; echo hi) )', '((cd d; echo > h) )', '( (cd d; echo > i) )', '{ (cd d; echo > j); }', 'echo $((cat <(cd d; echo b >k)) | cat)',
+  'case $(echo x >f5) in x) ;; esac', 'case x in $(echo >f6)) echo;; esac', 'for i in $(echo > f7); do :; done', '[[ $(echo > f8) ]]', 'if $(echo > f9); then :; fi',
+  'while $(echo > f10; false); do :; done', 'time $(echo > f11)', '! $(echo > f12)', 'g() { echo $(echo > f13); }; g', 'cat <<E $(echo > f14)\nhi\nE',
 ];
 // Not run against bash: `>((1>0))` runs (1>0), which makes 0, after bash returns, so 0 was there in 11 of 40 runs.
 test('a >( ) holding a subshell: its write is named, not `((1`', () => {
@@ -97,6 +129,11 @@ const SHAPES = {
   'unclosed "$(': "(n) => 'echo \"' + '$( '.repeat(n) + ' > f'",
   'nested $(echo': "(n) => 'x=' + '$(echo '.repeat(n) + 'a' + ')'.repeat(n) + ' > f'",
   'nested "$(': "(n) => 'x=' + '\"$('.repeat(n) + 'echo a' + ')\"'.repeat(n) + '; echo > g'",
+  // A ' that never closes, then openers (review of #199): the table held none of them, and each reader's ask past it
+  // scanned the rest again (13 s at 4,000 before).
+  "unclosed ' then $((": "(n) => \"echo 'x \" + '$((1)) '.repeat(n)",
+  "unclosed ' then quotes": "(n) => \"echo 'x \" + '\"a\" '.repeat(n)",
+  'unclosed (( then ((': "(n) => 'echo ' + '(( '.repeat(n)",
 };
 const SIZES = [2000, 8000, 32000];
 const TIMED = `const { parentPort } = require('node:worker_threads');

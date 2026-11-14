@@ -14,7 +14,5 @@
     { "list": "fake", "command": ">f1|| > f2$((1>0))> f2", "why": ">f1 succeeds, so the command after || never runs: known only when it runs" },
     { "list": "fake", "command": "((1>0))||((1>0)) > f2>f1echo", "why": "((1>0)) is true, so the command after || never runs: known only when it runs" }
   ],
-  "racy": [
-    { "command": ">((1>0))", "why": "the >( ) runs (1>0), which makes 0, after bash returns: 0 was there in 11 of 40 runs when the folder was read" }
-  ]
+  "racy": []
 }
