@@ -962,7 +962,8 @@ function readScript(T) {
           else if (isWord(prev) && BLOCK_AFTER.has(prev.v)) r = 'block';
           else if (endsStatement(j) || isPunct(prev, ';') || isPunct(prev, '}') || (isPunct(prev, '{') && role !== 'object')) r = 'block';
           else if (isPunct(prev, ':') && caseColons.has(j - 1)) r = 'block';
-          else if (OBJECT_BEFORE.has(prev.v)) r = 'object';
+          // After `=` and the other assignment operators (`??=`, `||=`, `+=`, which OBJECT_BEFORE does not hold) a `{` is an object.
+          else if (OBJECT_BEFORE.has(prev.v) || (prev.k === 'punct' && AUGMENTED.has(prev.v))) r = 'object';
           else r = 'block';
           if (r === 'block') { const s = T.scope('block', null, j, c + 1); enterScope({ s, end: c + 1 }); }
         }

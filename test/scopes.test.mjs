@@ -334,6 +334,9 @@ test('scopes: methods with a computed or string name, generator methods, labels,
   ].join('\n') + '\n');
   for (const name of ['a', 'b', 'c', 'd', 'e', 'f', 'attr', 'value']) assert.equal(bindingOf(t, t.references.find((r) => r.name === name)).how, 'parameter', name);
   assert.ok(!t.references.some((r) => r.to.unknown || ['outer', 'help', 'arch'].includes(r.name)), JSON.stringify(resolved(t)));
+  // A `{` after an assignment operator (`??=`, `||=`, `+=`) opens an object.
+  const u = scopes('a.js', 'const out = {}, v = 1;\nconst at = (id) => (out[id] ??= { asked: 0, keeps: v, done: 0 });\nlet w = null;\nw ||= { k: v };\n');
+  assert.ok(!u.references.some((r) => r.to.unknown || ['asked', 'keeps', 'done', 'k'].includes(r.name)), JSON.stringify(resolved(u)));
 });
 
 test('scopes: a function or class first in a block is declared there, not a value', () => {
