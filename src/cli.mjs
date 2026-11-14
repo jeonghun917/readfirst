@@ -508,6 +508,23 @@ function commandKey(command, cwd) {
   const hash = (text) => createHash('sha1').update(text).digest('hex').slice(0, 12);
   return { here: hash(`${folder}\0${repoOf(folder) ?? ''}\0${command}`), old: hash(command) };
 }
+// Where the session started in a repository (plan 2.7, "the session's diff"): `head:<sha>:<root>`, the commit HEAD was
+// at on the first call that wrote or could write there, before that call ran (the hook runs first). The Stop hook judges
+// not-this answers on the diff from it, so a commit made on the branch before the session never counts against an
+// answer. '' when the repository had no commit yet.
+const HEAD_KEY = /^head:([0-9a-f]*):(.+)$/su;
+// The empty tree, the start of a session in a repository that had no commit yet (SHA-1; git hash-object -t tree).
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+function headOf(seen, root) {
+  for (const k of Object.keys(seen)) { const m = k.match(HEAD_KEY); if (m && m[2] === root) return m[1]; }
+  return null;
+}
+function markHead(seen, root, now) {
+  if (!root || headOf(seen, root) !== null) return;
+  let sha = '';
+  try { sha = git(root, 'rev-parse', '--verify', '-q', 'HEAD').trim(); } catch { sha = ''; }
+  seen[`head:${sha}:${root}`] = now;
+}
 function lastCall(seen) {
   let best = null;
   for (const [k, at] of Object.entries(seen)) if (k.startsWith('call:') && (!best || at > best[1])) best = [k, at];
@@ -644,7 +661,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // Asked once per command and folder (commandKey): the same text run in another folder or repository is asked again.
     const unknownKey = unplaced.length ? `unknown:${keysOnce().here}` : null;
     const askUnknown = Boolean(unknownKey) && !before[unknownKey] && !before[`unknown:${keys.old}`];
-    if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) if (!seen[`start:${r}`]) seen[`start:${r}`] = now; }
+    if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) { if (!seen[`start:${r}`]) seen[`start:${r}`] = now; markHead(seen, r, now); } }
     // Said once per command: made again, it goes through without the line.
     // Five repositories are named for a write and the rest counted with where they are (below its folder, or the ones
     // this session used): hundreds made a line no one reads (2026-11-13). All of them get the start mark above.
@@ -659,12 +676,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
+      markHead(seen, root, now);
       if (!(gate && askUnknown)) Object.assign(seen, reads);
       const saved = save();
       if (!unknownLine) return null;
       if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: unknownLine } });
       return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: unknownLine } });
     }
+    { const roots = new Map(); for (const abs of targets) markHead(seen, rootOf(abs, roots), now); }
     const deadline = Date.now() + budget;
     const edited = new Map(targets.flatMap((abs) => { const e = editTexts(tool, event.tool_input, abs); return e ? [[abs, e]] : []; }));
     const { notes, late, items } = notesFor(targets, seen, now, { deadline, stateDir, edited, gate });
@@ -984,8 +1003,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -1009,8 +1028,10 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   const say = (key) => { try { addSeen(stateDir, event.session_id, {}, { [key]: Date.now() }); } catch { /* blocks again next time */ } };
   const tally = { asked: 0, acted: 0, notActed: [] };
   const found = [];
+  const notes = [];
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
-    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen) });
+    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root) });
+    if (r?.note) notes.push(r.note);
     if (r?.found) found.push(...r.found);
     if (r?.pass) passed.push(r.pass);
     if (r?.block) blocks.push(r.block);
@@ -1027,8 +1048,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length, misread: Object.keys(seen).filter((k) => k.startsWith('misread:')).length, failed: Object.keys(seen).filter((k) => k.startsWith('failed:')).map((k) => k.slice('failed:'.length)), unsure: unsure.length, untrue: found.length, items: itemTally(seen, found) };
   const line = actedLine(record);
   if (line) { try { appendFileSync(join(stateDir, ACTED_LOG), `${JSON.stringify(record)}\n`); } catch { /* the line is still said */ } }
-  if (blocks.length) return JSON.stringify({ decision: 'block', reason: [...blocks, ...(line ? [line] : [])].join('\n\n') });
-  if (passed.length || line) return JSON.stringify({ systemMessage: [...passed, ...(line ? [line] : [])].join('\n') });
+  if (blocks.length) return JSON.stringify({ decision: 'block', reason: [...blocks, ...notes, ...(line ? [line] : [])].join('\n\n') });
+  if (passed.length || notes.length || line) return JSON.stringify({ systemMessage: [...passed, ...notes, ...(line ? [line] : [])].join('\n') });
   return null;
 }
 
@@ -1096,7 +1117,8 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
 // The Stop hook for one repository: its map's checks for the files edited there that are still changed.
 // answers: the session's answers to the gate (givenAnswers), compared with the change at the end; `found` in the result
 // names the items whose last answer the change does not bear out.
-function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [] } = {}) {
+// head: the commit the session started from there (headOf), null when the state does not say.
+function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [], head = null } = {}) {
   try {
     if (!existsSync(join(root, MAP_PATH))) return null;
     const at = named ? ` in ${basename(root)}` : '';
@@ -1112,8 +1134,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     // marked a file in this repository count too.
     let changed = [];
     let known = true;
-    let base = null;
-    try { base = changedFiles(root); changed = base.files; known = !base.here; } catch { known = false; }
+    try { const c = changedFiles(root); changed = c.files; known = !c.here; } catch { known = false; }
     // git keeps whole seconds: `committed` (files that count as edited) takes the mark's own second too, so nothing the
     // session committed is missed; `committedAfter` (files that satisfy a "change together") takes only commits from a
     // later second, so a commit made before the session never stands in for a partner it left behind.
@@ -1146,10 +1167,14 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     const items = new Map([...list.rules.map((r) => [itemId('rule', r.id, r.rule), r]), ...list.risks.map((r) => [itemId('risk', r.group, r.text), r])]);
     const untrue = [];
     const notThis = [...items.keys()].filter((id) => last.get(id)?.answer === 'not-this');
-    if (notThis.length && base) {
+    // Judged on the session's own diff: from the commit the repository was at before its first call (`head:`), to the
+    // working tree, with files git does not track yet counted whole. A state from an older readfirst has no such commit:
+    // nothing is compared, and the stop says so.
+    const noStart = notThis.length && head === null ? `readfirst${at}: ${notThis.length} not-this answer(s) were not compared with the change: this session's starting commit was not recorded (a state from an older readfirst).` : null;
+    if (notThis.length && head !== null) {
       try {
-        const changes = parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', base.since));
-        for (const f of base.files) if (!changes.has(f)) changes.set(f, { lines: new Set(), text: [], whole: true });
+        const changes = parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', head || EMPTY_TREE));
+        for (const f of git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean)) if (!changes.has(f)) changes.set(f, { lines: new Set(), text: [], whole: true });
         judge(list, { changes, read: readText(root), files, imports });
         for (const it of noteItems(list)) {
           if (!notThis.includes(it.id)) continue;
@@ -1174,8 +1199,8 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     if (!list.checks.length && !missing.length) {
       const answersSaid = answerLine();
       const found = untrue.map((u) => u.id);
-      if (!brokenLine && !answersSaid) return found.length ? { found } : null;
-      return { block: [brokenLine, answersSaid].filter(Boolean).join('\n'), found };
+      if (!brokenLine && !answersSaid) return found.length || noStart ? { found, note: noStart } : null;
+      return { block: [brokenLine, answersSaid].filter(Boolean).join('\n'), found, note: noStart };
     }
     const trusted = trustedRuns(root, since);
     const skipped = list.checks.filter((c) => !trusted.runs.has(c.run)).map((c) => c.run);
@@ -1203,8 +1228,8 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
       acted: result.length - failed.length + list.together.length - missing.length,
       notActed: [...failed.map((c) => `\`${c.run}\` ${c.status}`), ...skipped.map((r) => `\`${r}\` not run`), ...missing.map((t) => `${t.also.join(', ')} not changed with ${t.for.join(', ')}`)],
     };
-    if (!failed.length && !missing.length && !brokenLine && !blockNotRun && !answersSaid) return { tally, found, pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}${fromCommands}` };
-    return { tally, found, block: [
+    if (!failed.length && !missing.length && !brokenLine && !blockNotRun && !answersSaid) return { tally, found, note: noStart, pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}${fromCommands}` };
+    return { tally, found, note: noStart, block: [
       ...(brokenLine ? [brokenLine] : []),
       ...(answersSaid ? [answersSaid] : []),
       ...(failed.length ? [`readfirst verify${at}: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}${fromCommands}`] : []),

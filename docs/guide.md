@@ -209,8 +209,9 @@ call made again without an answer is refused again, with the items still open. A
 the Stop hook stops once to name every item still unsure. Once the session has been asked 4 items or more, an answer
 is refused when it would leave more than half of them with `unsure` as their last answer. The `readfirst answer` command itself only prints what it was
 given; it writes nothing.
-At the stop, each item's last answer is checked against what the session changed: a `not-this` whose item the final
-diff touches by a name outside its `symbols`, and a `done` whose item's checks did not pass, are named, and the stop is
+At the stop, each item's last answer is checked against what the session changed: a `not-this` whose item the
+session's diff (from the commit the repository was at when the session first wrote there) touches by a name outside
+its `symbols`, and a `done` whose item's checks did not pass, are named, and the stop is
 refused once for them.
 Notes count as seen on the branch they were seen on, and a `readfirst read` that Claude Code ran in Bash counts too,
 when its whole output came back: one sent to `/dev/null`, a file or a pipe (`| head`), or cut by `--limit`, does not.

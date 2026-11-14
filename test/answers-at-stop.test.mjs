@@ -5,7 +5,7 @@
 // found not borne out; `audit` names the rules and risks most sessions answered not-this, as too wide.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -58,6 +58,35 @@ test('a not-this the final diff does not bear out refuses the stop once, naming 
   assert.match(out.reason, new RegExp(`1 answer\\(s\\) of this session the change does not bear out:\\n- \`${ID.both}\` was answered not-this \\(\`beta\`\\), but the change touches it by \`alpha\``, 'u'));
   assert.match(out.reason, /readfirst, this session: .*; 1 answer\(s\) the change does not bear out\./u);
   assert.notEqual(s.stop()?.decision, 'block', 'once for the same items, so a stop cannot loop');
+});
+
+test('a not-this is judged on the session\'s own diff: a commit on the branch before the session does not count against it', () => {
+  const s = session();
+  // The branch already changed alpha before the session began, in a commit main does not have.
+  const git = (...a) => execFileSync('git', ['-C', s.root, ...a], { encoding: 'utf8' });
+  git('checkout', '-q', '-b', 'work');
+  writeFileSync(join(s.root, 'src/a.js'), A.replace('  return x + one;', '  return x + one + 0;'));
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', 'alpha, before the session');
+  s.call('Edit', inBeta(s.root));
+  s.answer([{ item: ID.both, answer: 'not-this', because: 'this session changes beta only', symbols: ['beta'] }, ...keeps(ID.prose, ID.rule)]);
+  writeFileSync(join(s.root, 'src/a.js'), A.replace('  return x + one;', '  return x + one + 0;').replace('  return y * two;', '  return y * two * 1;'));
+  const out = s.stop();
+  assert.doesNotMatch(String(out?.reason ?? out?.systemMessage ?? ''), /does not bear out/u, 'alpha changed before the session: against main the branch touches it by alpha, against the session start it does not');
+});
+
+test('a state with no starting commit (an older readfirst) compares no not-this, and says so', () => {
+  const s = session();
+  s.call('Edit', inBeta(s.root));
+  s.answer([{ item: ID.both, answer: 'not-this', because: 'only beta', symbols: ['beta'] }, ...keeps(ID.prose, ID.rule)]);
+  leave(s.root, { alpha: true });
+  // Take the head: mark out, as a state file an older readfirst wrote has none.
+  const file = readdirSync(s.stateDir).find((f) => f.endsWith('.lines'));
+  const at = join(s.stateDir, file);
+  writeFileSync(at, readFileSync(at, 'utf8').split('\n').filter((l) => !l.startsWith('["head:')).join('\n'));
+  const out = s.stop();
+  const said = String(out?.reason ?? out?.systemMessage ?? '');
+  assert.doesNotMatch(said, /does not bear out/u);
+  assert.match(said, /1 not-this answer\(s\) were not compared with the change: this session's starting commit was not recorded \(a state from an older readfirst\)\./u);
 });
 
 test('a done whose item\'s check did not pass refuses the stop once; once it passes, nothing is said', () => {
