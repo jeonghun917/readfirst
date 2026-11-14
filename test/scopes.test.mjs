@@ -427,6 +427,12 @@ test('scopes: a word that is a keyword only in its own construct is a name elsew
   // says which), names in any other function, even alone.
   const y = scopes('a.js', 'async function a() { await p; const f = async (x) => { await x; }; }\nfunction* g() { yield; yield 1; yield* g(); }\nclass C { async m() { await q; } *n() { yield 1; } static async *o() { await r; yield 2; } async [k]() { await t; } async \'m2\'() { await u; } *[Symbol.iterator]() { yield 3; } }\nconst o = { async k() { await s; }, *l() { yield; } };\nfunction plain(await, yield) { return h(await, yield); }\nconst ar = async x => await x;\n');
   assert.deepEqual(resolved(y).filter((r) => /^(await|yield)@/u.test(r)), ['await@5->parameter@5', 'yield@5->parameter@5']);
+  // A top-level `await` makes a module, with no import or export (and a .mjs or .mts file is one); `of` is a keyword
+  // only in a `for`'s parentheses, so rxjs's `of(1)` is a call.
+  for (const [path, text] of [['a.mjs', 'const { x } = await import("./y.mjs");\nx();\n'], ['a.ts', 'await main();\nasync function main() {}\n'], ['a.js', 'const rl = [];\nfor await (const l of rl) l;\n'], ['a.mjs', 'function f() { return await; }\n']]) {
+    assert.deepEqual(scopes(path, text).references.filter((r) => r.name === 'await' || r.to.unknown), [], `${path}: ${text}`);
+  }
+  assert.deepEqual(resolved(scopes('a.js', 'import { of, from } from "rxjs";\nof(1); from([2]);\nfor (const a of (xs)) a;\n')).filter((r) => /^(of|from)@/u.test(r)), ['of@2->import@1', 'from@2->import@1']);
   // A line's end ends the construct: `type` and `module` at the end of a line are names, whatever starts the next.
   assert.deepEqual(resolved(scopes('a.ts', 'function f(type, module) {\n  const a = type\n  const b = module\n  g()\n}\n')).filter((r) => /^(type|module)@/u.test(r)), ['type@2->parameter@1', 'module@3->parameter@1']);
   // Strict-mode words are keywords anywhere in a module or a class body; Node's `global` is a builtin.

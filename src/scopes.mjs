@@ -73,7 +73,13 @@ const LANGS = {
     // Words that are keywords inside a function of a kind (`yield` in a generator, `await` in an async function or
     // anywhere in a module), what its head holds (`*`, `async`); elsewhere they are names, even alone (`f(await)`).
     inFunction: { yield: '*', await: 'async' },
-    // Words strict mode reserves: keywords anywhere in a module (a file with import or export) or a class body.
+    // Words that are keywords only in the parentheses of a `for` (`for (x of xs)`); elsewhere `of(1)` is a call.
+    forHead: wordSet('of'),
+    // `await` at the top of a file, where its construct goes on (`await main()`, `for await (`): a module's top-level
+    // await, a keyword even in a file with no import or export.
+    topLevel: { await: new Set(['(', '[', '{']) },
+    // Words strict mode reserves: keywords anywhere in a module (a file with import or export, a .mjs or .mts file)
+    // or a class body.
     strict: wordSet('implements interface let package private protected public static yield'),
     builtins: wordSet(`globalThis global window self document console process require module exports __dirname __filename Buffer
       setTimeout clearTimeout setInterval clearInterval setImmediate clearImmediate queueMicrotask structuredClone fetch
@@ -714,7 +720,12 @@ function readScript(T) {
   const memberStart = (j) => isPunct(toks[j - 1], '{') || isPunct(toks[j - 1], ';') || isPunct(toks[j - 1], '}') || endsStatement(j) || decoratorEnds.has(j);
   // Whether the word at token j is a keyword there (LANGS: `contextual`, `namesBefore`, `strict`): a reserved word
   // always; a contextual word where its construct goes on; a strict-mode word anywhere in a module or class body.
-  const isModule = toks.some((t, q) => isWord(t, 'export') || (isWord(t, 'import') && !isPunct(toks[q + 1], '(') && !isPunct(toks[q + 1], '.')));
+  const isModule = /\.m[jt]s$/u.test(T.path ?? '') || toks.some((t, q) => isWord(t, 'export') || (isWord(t, 'import') && !isPunct(toks[q + 1], '(') && !isPunct(toks[q + 1], '.')));
+  // Whether the innermost bracket around is the parentheses of a `for` (`for (`, `for await (`).
+  const inForHead = () => {
+    const c = ctx.at(-1);
+    return c.role === 'paren' && (isWord(toks[c.open - 1], 'for') || (isWord(toks[c.open - 1], 'await') && isWord(toks[c.open - 2], 'for')));
+  };
   // Whether function scope s has `what` (`async`, `*`) in its head: the token it starts at (an arrow's `async`) or the
   // words and `*` right before it (`async *m(`, `function* g(`, `static async m(`), at most the four a head holds,
   // past a computed or string name (`async [k]()`, `async 'm'()`).
@@ -734,7 +745,13 @@ function readScript(T) {
     const sameLine = Boolean(next) && !next.first;
     if (T.data.strict.has(v) && (isModule || stack.at(-1).inClass)) return true;
     const head = T.data.inFunction[v];
-    if (head) return (v === 'await' && isModule) || (T.scopes[varScope()].kind === 'function' && headHas(varScope(), head));
+    const top = T.data.topLevel[v];
+    if (head) {
+      if (v === 'await' && isModule) return true;
+      if (T.scopes[varScope()].kind === 'function') return headHas(varScope(), head);
+      return Boolean(top && sameLine && (isWord(next) || next.k === 'val' || (next.k === 'punct' && top.has(next.v))));
+    }
+    if (T.data.forHead.has(v) && !inForHead()) return false;
     const after = T.data.contextual[v];
     if (!after) return true;
     return sameLine && (isWord(next) || next.k === 'val' || (next.k === 'punct' && after.has(next.v)));
