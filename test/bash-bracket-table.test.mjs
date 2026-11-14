@@ -145,6 +145,13 @@ const SHAPES = {
   // comment lines took 0.5 to 0.9 s a reader, 2026-11-14).
   'comment lines ending in a backslash': "(n) => '# c \\\\\\n'.repeat(n) + 'echo > f'",
   'command lines': "(n) => 'echo a\\n'.repeat(n)",
+  // The text before each here-document was walked again for it (13 s at 4,000), and then the words before each one in
+  // its command or its line were read again for it (review of #206).
+  'here-documents': "(n) => 'cat <<E\\nhello\\nE\\n'.repeat(n)",
+  'here-documents in one $( )': "(n) => 'x=$(' + 'cat <<E\\nhello\\nE\\n'.repeat(n) + ')'",
+  'here-documents on one line': "(n) => 'cat ' + Array.from({ length: n }, (_, i) => '<<E' + i).join(' ') + '\\n' + Array.from({ length: n }, (_, i) => 'b\\nE' + i + '\\n').join('')",
+  // Each one inside the $( ) of the one before: the bodies are read from one stack, 32,000 deep, no call per level.
+  'here-documents nested in $( )': "(n) => 'x=' + '$(cat <<E\\n'.repeat(n) + 'a\\n' + 'E\\n)'.repeat(n)",
 };
 const SIZES = [2000, 8000, 32000];
 const TIMED = `const { parentPort } = require('node:worker_threads');
@@ -196,6 +203,63 @@ test('the commands of a long text are taken one after another, not moved along t
     Array.prototype.shift = shift;
   }
   assert.ok(moved < 10 * n, `shift() moved ${moved} elements for ${n} lines (about ${n * n * 1.5} when each command is taken off the front)`);
+});
+
+// The state at each here-document (2026-11-14, readfirst review): shellWrites walked all the text before each one again
+// (stateAt), so n here-documents cost about n*n/2 commands walked: 4,000 `cat <<E` took 13 s, near the hook's 15.
+// eachCommand lists the commands of a text once per walk (segmentsAndOps, then flatMap): the lengths of those lists are
+// counted while shellWrites reads 2,000 here-documents. One walk reads each command a few times, not once per document.
+test('the state at each here-document comes from one walk, not one per document', () => {
+  const n = 2000;
+  const text = 'cat <<E\nhello\nE\n'.repeat(n);
+  const flatMap = Array.prototype.flatMap;
+  let listed = 0;
+  Array.prototype.flatMap = function counted(...a) { listed += this.length; return flatMap.apply(this, a); };
+  try {
+    shellWrites(text, '/r');
+  } finally {
+    Array.prototype.flatMap = flatMap;
+  }
+  assert.ok(listed < 10 * n, `${listed} commands listed for ${n} here-documents (about ${n * n} when the text before each is walked again)`);
+});
+
+// Then each here-document read the words before it again from the start of its command, or of its line inside a $( )
+// (review of #206): n of them on one line or in one $( ) still took time by the square (2,000 on one line: 642 ms, main
+// 95). The characters every slice() gives are counted while shellWrites reads each shape: one read takes a few per
+// character of the text. Each here-document reading its command again gives hundreds (main gives 360 to 4,100 at 1,000
+// and 2,000, as each document's text before it was cut out and walked).
+test('the words before each here-document are read once for its command, on one line or in one $( )', () => {
+  const n = 2000;
+  const docs = 'cat <<E\nhello\nE\n'.repeat(n);
+  const shapes = {
+    'one per line': docs,
+    'in one $( )': `x=$(${docs})`,
+    'on one line': `cat ${Array.from({ length: n }, (_, i) => `<<E${i}`).join(' ')}\n${Array.from({ length: n }, (_, i) => `b\nE${i}\n`).join('')}`,
+  };
+  const slice = String.prototype.slice;
+  for (const [name, text] of Object.entries(shapes)) {
+    let chars = 0;
+    String.prototype.slice = function counted(...a) { const r = slice.apply(this, a); chars += r.length; return r; };
+    try {
+      shellWrites(text, '/r');
+    } finally {
+      String.prototype.slice = slice;
+    }
+    assert.ok(chars < 20 * text.length, `${name}: slice() gave ${chars} characters for a text of ${text.length}`);
+  }
+});
+
+// The mark where each here-document opens is a character the text does not hold (review of #206): a fixed one read a
+// number the user wrote after it as a here-document, and the state of the command it stood in went to the real one.
+test('a here-document mark is never a character of the command', () => {
+  const named = (c) => shellWrites(c, '/r').files;
+  for (let c = 0xe000; c < 0xe004; c++) {
+    const ch = String.fromCharCode(c);
+    assert.deepEqual(named(`echo "${ch}0"; cd s; cat <<E\n$(echo > u1)\nE`), ['/r/s/u1'], `U+${c.toString(16)} in the command`);
+  }
+  // Every private-use character in the text: each here-document is read on a walk of its own, as before.
+  const all = Array.from({ length: 0xf8ff - 0xe000 + 1 }, (_, i) => String.fromCharCode(0xe000 + i)).join('');
+  assert.deepEqual(named(`echo "${all}0"; cd s; cat <<E\n$(echo > u1)\nE`), ['/r/s/u1']);
 });
 
 test('linear time in the length of unclosed chains and of nesting', async () => {
