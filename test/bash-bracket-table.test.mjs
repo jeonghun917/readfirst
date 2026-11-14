@@ -14,6 +14,8 @@ import { Worker } from 'node:worker_threads';
 import { bashReads, commandWords, shellWrites } from '../src/bash-writes.mjs';
 
 const writes = (c) => shellWrites(c, '/r').files;
+// A wait in place, as in test/bash-fuzz.test.mjs (one line, not imported: importing a test file runs its tests).
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const unknown = (c) => shellWrites(c, '/r').unknown.map((u) => u.part);
 
 test('a ; | or && inside a $( ) does not split the command around it', () => {
@@ -112,8 +114,13 @@ test('against bash: the files each command makes are the files readfirst names',
     const dir = mkdtempSync(join(tmpdir(), 'readfirst-brackets-'));
     mkdirSync(join(dir, 'd'));
     spawnSync('bash', ['-c', c], { cwd: dir, stdio: 'ignore', timeout: 5000, env: {} });
-    const made = [...readdirSync(dir).filter((x) => x !== 'd'), ...readdirSync(join(dir, 'd')).map((x) => `d/${x}`)].sort();
-    assert.deepEqual(shellWrites(c, dir).files.map((f) => f.slice(dir.length + 1)).sort(), made, c);
+    const named = shellWrites(c, dir).files.map((f) => f.slice(dir.length + 1)).sort();
+    const list = () => [...readdirSync(dir).filter((x) => x !== 'd'), ...readdirSync(join(dir, 'd')).map((x) => `d/${x}`)].sort();
+    // A <( ) or >( ) runs beside bash and may write after it returns (`((cd d; >(cat > h)) )` did in 30 of 300 runs
+    // under load, review of #199): a file named that is not there yet is waited for, up to a second, as in the fuzz test.
+    let made = list();
+    for (let t = 0; t < 100 && /[<>]\(/u.test(c) && named.some((x) => !made.includes(x)); t++) { pause(10); made = list(); }
+    assert.deepEqual(named, made, c);
   }
 });
 
