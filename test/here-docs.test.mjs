@@ -110,6 +110,10 @@ test('a backslash and a newline join lines where bash joins them, and nowhere el
     'cat <<E\na\\\nE\necho > f5\nE', 'cat <<E\na\\\nE\nE\necho > f6', 'cat <<E\n$(echo \\\n> f7)\nE',
     // In quotes, backticks and code, as before.
     "echo 'a\\\nb' > f8", 'echo "a\\\nb" > f9', 'echo `echo \\\n> f10`', 'echo a \\\n  > f12', 'echo a\\\n#b > f13', 'echo a\\\n\\\n#b > f14',
+    // A word goes on after the ) of a $( ), so a # there is no comment (review of #203): read as one, its ' opened no
+    // quote and the \ in it joined, and the here-document after `$(true)#<<E` was not found. After a ( )'s ) it is one.
+    "printf \"$(echo z)\"#'a\\\nb' > f15", 'cat "$(true)"#<<E\nbody > n3\nE', 'cat $(true)#<<E\nbody > n4\nE', '(echo a)#<<E\nbody > f16\nE',
+    'echo $(echo a)# c \\\n> f17',
   ]) {
     assert.deepEqual(named(script), bashMade(script), script);
   }

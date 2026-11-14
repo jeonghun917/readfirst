@@ -276,7 +276,7 @@ function hereDocs(s) {
   const put = (chunk) => { parts.push(chunk); const k = chunk.lastIndexOf('\n'); if (k >= 0) lineAt = len + k + 1; len += chunk.length; };
   const docs = [];
   let pending = [];
-  const stack = []; // 'dq' inside "...", 'sub' in $( ) or ( ), 'bt' in backticks
+  const stack = []; // 'dq' inside "...", 'dsub' in $( ), 'sub' in ( ), 'bt' in backticks
   let wordStart = true;
   for (let i = 0; i < s.length;) {
     const c = s[i];
@@ -293,11 +293,16 @@ function hereDocs(s) {
     if (mode === 'dq') {
       if (c === '"') stack.pop();
       else if (c === '`') stack.push('bt');
-      else if (c === '$' && s[i + 1] === '(') { stack.push('sub'); put('$('); i += 2; wordStart = true; continue; }
+      else if (c === '$' && s[i + 1] === '(') { stack.push('dsub'); put('$('); i += 2; wordStart = true; continue; }
       put(c);
       i++;
       continue;
     }
+    // A $( ) is part of the word it stands in ('dsub'): after its ) the word goes on, so a # there starts no comment
+    // (`"$(echo z)"#'a` is one word; read as a comment, the ' in it opened no quote, and a here-document after
+    // `$(true)#<<E` was not found, review of #203). After the ) of a ( ) subshell a word starts.
+    if (c === '$' && s[i + 1] === '(') { stack.push('dsub'); put('$('); i += 2; wordStart = true; continue; }
+    if (c === ')' && mode === 'dsub') { stack.pop(); put(c); i++; wordStart = false; continue; }
     if (c === "'") {
       const k = s.indexOf("'", i + 1);
       if (k >= 0) { put(s.slice(i, k + 1)); i = k + 1; wordStart = false; continue; }
