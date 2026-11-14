@@ -727,6 +727,14 @@ function readScript(T) {
   const params = (open, close, s) => {
     for (const [pa, pb] of partsBetween(T, open + 1, close)) {
       let q = pa;
+      // A parameter's decorators (`@Res()`, `@a.b(x)`): the walk reads them as uses; the parameter comes after.
+      while (q < pb && isPunct(toks[q], '@')) {
+        marks[q] = SKIP;
+        q++;
+        while (q + 2 < pb && isWord(toks[q]) && isPunct(toks[q + 1], '.') && isWord(toks[q + 2])) q += 2;
+        if (isWord(toks[q])) q++;
+        if (isPunct(toks[q], '(')) q = (match.get(q) ?? pb - 1) + 1;
+      }
       while (q < pb && isWord(toks[q]) && PARAM_WORDS.has(toks[q].v) && (isWord(toks[q + 1]) || isPunct(toks[q + 1], '{') || isPunct(toks[q + 1], '['))) { marks[q] = SKIP; q++; }
       if (isWord(toks[q], 'this')) { const end = firstAt(T, q, pb, (t) => isPunct(t, '=')); for (let r = q; r < end; r++) marks[r] = SKIP; continue; }
       const eq = firstAt(T, q, pb, (t) => isPunct(t, '='));

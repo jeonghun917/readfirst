@@ -253,6 +253,11 @@ test('scopes: a comma inside type arguments splits no parameter, declarator or p
   const g = scopes('a.ts', 'type X<A> = A;\nfunction g<T, U extends T = T>(a: U): T { return a; }\nconst h = <V, W extends X<V> = V>(b: W): V => b;\nclass C { m<P, Q extends P = P>(q: Q): P { return q; } }\n');
   assert.ok(g.references.every((r) => r.to.binding !== undefined && (r.name.length > 1 || g.bindings[r.to.binding].how !== 'const')), JSON.stringify(g.references.map((r) => `${r.name}@${r.line}`)));
   assert.deepEqual(g.bindings.filter((b) => b.how === 'type-parameter').map((b) => b.name).sort(), ['P', 'Q', 'T', 'U', 'V', 'W']);
+  // A parameter's decorators (`@Res() res: Response`) are uses; the parameter after them is bound and typed.
+  const d = scopes('a.ts', 'import { Res, Headers, Inject, ui } from "x";\nconst TOKEN = 1;\ntype Dep = 1;\nclass K {\n  async go(@Res() res: Response, @Headers("authorization") authorization: string) { return res + authorization; }\n  constructor(@Inject(TOKEN) private readonly dep: Dep, @ui.Body() body) {}\n}\nfunction f(@Inject() dep2) { return dep2; }\n');
+  assert.ok(d.references.every((r) => r.to.binding !== undefined || r.to.builtin), JSON.stringify(d.references.filter((r) => !(r.to.binding !== undefined || r.to.builtin)).map((r) => `${r.name}@${r.line}`)));
+  assert.deepEqual(d.bindings.filter((b) => b.how === 'parameter').map((b) => b.name), ['res', 'authorization', 'dep', 'body', 'dep2']);
+  assert.ok(['Res', 'Headers', 'Inject', 'ui', 'TOKEN'].every((n) => d.references.some((r) => r.name === n && !r.type)));
   // A `<` whose `>` lies past a closing bracket is a comparison: `[a < b], c > (d)`.
   const u = scopes('a.ts', 'const a = 1, b = 2, c = 3, d = 4, k = (x, y) => x + y;\nconst w = k([a < b], c > (d));\n');
   assert.ok(u.references.every((r) => !r.type), JSON.stringify(u.references.filter((r) => r.type)));
