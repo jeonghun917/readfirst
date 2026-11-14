@@ -30,8 +30,9 @@ function session() {
   const id = `batch-${process.pid}-${++n}`;
   // After the repository's first commit, so the stop does not count that commit as the session's.
   let now = Date.now() + 2000;
+  let k = 0;
   const call = (tool, input) => {
-    const out = runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input }), { stateDir, gate: true, now: (now += 1000) });
+    const out = runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input, tool_use_id: `toolu_test${++k}` }), { stateDir, gate: true, now: (now += 1000) });
     return out ? JSON.parse(out).hookSpecificOutput : null;
   };
   const stop = () => { const out = runStopHook(JSON.stringify({ session_id: id, cwd: root }), { stateDir, timeout: 30 }); return out ? JSON.parse(out) : null; };
@@ -44,7 +45,7 @@ test('a refusal names the call it refuses and says the other calls of the respon
   const { root, call } = session();
   const out = call('Edit', ALPHA(root));
   assert.equal(out.permissionDecision, 'deny');
-  assert.match(out.permissionDecisionReason, /^readfirst refused this Edit of src\/a\.js \(the edit of `  return 1;`\)\. If it was one of several calls in one response, the others were not refused by this: those before it ran, those after it are judged on their own\./u);
+  assert.match(out.permissionDecisionReason, /^readfirst refused this Edit of src\/a\.js \(the edit of `  return 1;`\) \(call toolu_test1\)\. If it was one of several calls in one response, the others were not refused by this: those before it ran, those after it are judged on their own\./u);
 });
 
 test('a call the gate refused and that was never made again is named at the stop, once', () => {

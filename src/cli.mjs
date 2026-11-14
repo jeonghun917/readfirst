@@ -803,7 +803,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       if (!(gate && askUnknown)) Object.assign(seen, reads);
       const saved = save();
       if (!unknownLine) return null;
-      if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst refused this ${callWhat(tool, event.tool_input, targets)}. ${BATCH_LINE}\n\n${unknownLine}` } });
+      if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst refused this ${callWhat(tool, event.tool_input, targets)}${event.tool_use_id ? ` (call ${event.tool_use_id})` : ''}. ${BATCH_LINE}\n\n${unknownLine}` } });
       return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: unknownLine } });
     }
     { const roots = new Map(); for (const abs of targets) markHead(seen, rootOf(abs, roots), now); }
@@ -849,7 +849,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const text = [...notes, ...(askLine ? [askLine] : []), ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...(unknownLine ? [unknownLine] : []), ...waiting].join('\n\n');
     // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
     // the notes as context instead.
-    if (gate && (asks.length || askLate || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst refused this ${what}. ${BATCH_LINE}\nRead this before changing these files, then make the same call again.\n\n${text}` } });
+    if (gate && (asks.length || askLate || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst refused this ${what}${event.tool_use_id ? ` (call ${event.tool_use_id})` : ''}. ${BATCH_LINE}\nRead this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch (e) {
     // Never fails closed (the call goes through), but what failed is kept (failed:<tool>:<error>) for the Stop hook and
