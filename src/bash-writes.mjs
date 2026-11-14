@@ -7,7 +7,7 @@
 //   python, node, ruby, perl or a shell from -c / -e or a here-document: there the targets of its write calls count
 //   (codeTargets), not every path-like word in it.
 // A here-document fed to cat or tee is data; only where it goes counts. `cd dir &&` moves where relative paths start.
-import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -197,6 +197,27 @@ function patchFiles(args) {
   }
   // cut: not a list: patch writes its first positional argument; a second one is the patch it reads
   return out.slice(0, 1);
+}
+// The files a unified diff changes, made, or removes, from its `--- ` and `+++ ` lines (the new name; the old one when
+// the new is /dev/null, as for a removal), each with its first `strip` folders taken off as patch -pN and git apply
+// -pN take them (git's default is 1: `b/src/x.js` is src/x.js). A name with fewer folders than that stays out, as
+// patch skips it. Its own reader: trigger.mjs's parsePatch reads one file's hunks, not the names.
+function diffPaths(text, strip) {
+  const out = new Set();
+  let old = null;
+  for (const line of String(text).split('\n')) {
+    const m = line.match(/^(---|\+\+\+) ("[^"]*"|[^\t\n]+?)(?:\t.*)?\s*$/u);
+    if (!m) continue;
+    const name = m[2].replace(/^"|"$/gu, '');
+    if (m[1] === '---') { old = name; continue; }
+    const path = name === '/dev/null' ? old : name;
+    old = null;
+    if (!path || path === '/dev/null') continue;
+    const parts = path.split('/').filter((p, k) => p !== '' || k === 0);
+    if (parts.length <= strip) continue;
+    out.add(parts.slice(strip).join('/'));
+  }
+  return [...out];
 }
 function unwrap(ws) {
   let i = 0;
@@ -438,6 +459,10 @@ const OPTIONS = {
   mv: { next: 'tS', long: { 'target-directory': 't', suffix: 'S' } },
   install: { next: 'tSmog', long: { 'target-directory': 't', suffix: 'S', mode: 'm', owner: 'o', group: 'g' } },
   rsync: { next: 'eTf', long: { rsh: 'e', 'temp-dir': 'T', filter: 'f', exclude: 'x', include: 'x' } },
+  touch: { next: 'rdt', long: { reference: 'r', date: 'd' } },
+  rm: { next: '', long: {} },
+  unlink: { next: '', long: {} },
+  sort: { next: 'oSTkt', long: { output: 'o', 'buffer-size': 'S', 'temporary-directory': 'T', key: 'k', 'field-separator': 't', parallel: 'p', 'files0-from': 'F' } },
 };
 // { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given }
 function options(args, spec) {
@@ -1413,6 +1438,70 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     missing({ part: part ?? `${by} ${shown}`, word: shown, why: `${by} runs it, and readfirst does not read the file's text`, prefix: '' });
   };
   const exportedOnly = (v) => new Map([...v].filter(([, x]) => x.exported));
+  // The text of a file a command reads (a patch), as dq gives its path: null when it is not there, cannot be read, or
+  // is known only when the command runs.
+  const readText = (w) => {
+    if (!w || w.includes(HOLE) || (!isAbsolute(w) && state.base == null)) return null;
+    try { return readFileSync(isAbsolute(w) ? w : resolve(state.base, w), 'utf8'); } catch { return null; }
+  };
+  // A patch applied to the files it names (by: what applies it; text: the patch, null when it is not read; strip: the
+  // -p count, undefined when the command gives none; dir: the folder the paths are under). Without -p, patch reads a
+  // name in ways that depend on which files are there, and a patch not read names nothing: either is not known, with
+  // why, under where the command runs.
+  const applyPatch = (by, text, strip, dir) => {
+    const under = state.base == null ? state.why?.prefix ?? '' : `${resolve(state.base, dir)}/`;
+    if (text == null) { missing({ part: by, word: by, why: `${by} changes the files the patch names, and readfirst does not read the patch`, prefix: under }); return; }
+    if (strip === undefined) { missing({ part: by, word: by, why: `${by} without -p takes the names in the patch in ways that depend on the files there`, prefix: under }); return; }
+    diffPaths(text, strip).forEach((p) => add(join(dir, p)));
+  };
+  // A git command that changes tracked files the command does not name (sub: the subcommand; rest: its words; dir:
+  // where it runs, as `-C` gives it): merge, rebase, pull, cherry-pick, revert, am, a stash put back (pop, apply,
+  // branch) or made (push, save, or no subcommand: it puts the files back as they were), reset --hard / --merge /
+  // --keep, clean -f, and a checkout or switch to another commit. Which files is known only when it runs: not known,
+  // under the repository. A checkout that only makes a branch where HEAD is (`checkout -b x`, `switch -c x`), and
+  // `stash list`, `show`, `drop` or `clear`, change no file. Until 2026-11-14 none of these was read.
+  const gitMoves = (sub, rest, dir) => {
+    const words = rest.filter((w) => !w.startsWith('-'));
+    const flag = (re) => rest.some((w) => re.test(w));
+    let moves = false;
+    if (/^(?:merge|rebase|pull|cherry-pick|revert|am)$/u.test(sub)) moves = !flag(/^--(?:abort|quit|show-current-patch)$/u);
+    else if (sub === 'stash') moves = !/^(?:list|show|drop|clear|create|store)$/u.test(words[0] ?? '');
+    else if (sub === 'reset') moves = flag(/^--(?:hard|merge|keep)$/u);
+    else if (sub === 'clean') moves = flag(/^(?:-[a-zA-Z]*f[a-zA-Z]*|--force)$/u) && !flag(/^(?:-[a-zA-Z]*n[a-zA-Z]*|--dry-run)$/u);
+    else if (sub === 'checkout' || sub === 'switch') {
+      if (rest.includes('--')) return;
+      const make = rest.findIndex((w) => /^(?:-[bBc]|-C|--orphan|--create|--force-create)$/u.test(w));
+      const others = rest.filter((w, k) => !w.startsWith('-') && !(make >= 0 && k === make + 1));
+      // A checkout of words that are files names those files (gitPaths, above); a word that is no file is a commit.
+      const commits = sub === 'checkout' ? others.filter((w) => !here(join(dir, w))) : others;
+      moves = commits.length > 0 || (rest.includes('-') && make < 0);
+    }
+    if (!moves) return;
+    const part = `git ${sub}`;
+    const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+    missing({ part, word: part, why: `${part} changes the tracked files it brings, known only when it runs`, prefix: under });
+  };
+  // npm, pnpm and yarn write their lock file when they install, add, remove or update packages (package-lock.json,
+  // pnpm-lock.yaml, yarn.lock), and package.json when the command names packages; `npm ci` writes neither. The folder:
+  // --prefix (npm), -C / --dir (pnpm), --cwd (yarn), or where the command runs. What they write into node_modules is
+  // not named.
+  const LOCKS = { npm: 'package-lock.json', pnpm: 'pnpm-lock.yaml', yarn: 'yarn.lock' };
+  const packages = (cmd, args) => {
+    let dir = '.';
+    const words = [];
+    for (let i = 0; i < args.length; i++) {
+      const w = args[i];
+      const m = w.match(/^--(prefix|dir|cwd)=(.*)$/u);
+      if (m) { dir = m[2]; continue; }
+      if (/^(?:--prefix|--dir|--cwd|-C)$/u.test(w)) { dir = args[++i] ?? '.'; continue; }
+      if (!w.startsWith('-')) words.push(w);
+    }
+    const [sub, ...named] = words;
+    if (sub === undefined && cmd === 'yarn') { add(join(dir, LOCKS.yarn)); return; }
+    if (!/^(?:install|i|add|uninstall|un|remove|rm|update|up|upgrade)$/u.test(sub ?? '')) return;
+    add(join(dir, LOCKS[cmd]));
+    if (named.length || /^(?:uninstall|un|remove|rm)$/u.test(sub)) add(join(dir, 'package.json'));
+  };
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
   // the hook showed another repository's notes for a relative path after a cd).
@@ -1547,7 +1636,21 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // sed and perl write only in place; the script is the first file argument unless -e/-f gave it.
     if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
     else if (cmd === 'tee' || cmd === 'truncate') o.files.forEach(add);
-    else if (cmd === 'patch') patchFiles(args).forEach(add);
+    // patch: the file named first, or, with none (`patch -p1 < fix.diff`, missed until 2026-11-14), the files the
+    // patch it reads names.
+    else if (cmd === 'patch') {
+      const named = patchFiles(args);
+      if (named.length) named.forEach(add);
+      else if (!args.some((w) => /^(?:--dry-run|-o|--output)$/u.test(w))) {
+        const p = args.find((w) => /^-p\d+$/u.test(w)) ?? (args.includes('-p') ? `-p${args[args.indexOf('-p') + 1]}` : undefined);
+        const input = args.find((w) => /^--input=/u.test(w))?.slice(8) ?? (args.includes('-i') ? args[args.indexOf('-i') + 1] : stdinFile(ws) && dq(stdinFile(ws)));
+        applyPatch('patch', input === undefined ? null : readText(input), p === undefined ? undefined : Number(p.slice(2)), '.');
+      }
+    }
+    // touch and rm write (or take away) the files they are given; sort -o writes its output file.
+    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.forEach(add);
+    else if (cmd === 'sort' && o.values.o) add(o.values.o.at(-1));
+    else if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') packages(cmd, args);
     else if (['cp', 'mv', 'install'].includes(cmd) && o.values.t) add(o.values.t.at(-1));
     else if (cmd === 'rsync' && (args.some((w) => w === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/u.test(w)) || /^(?:[\w.@-]+:|rsync:\/\/)/u.test(o.files.at(-1) ?? ''))) { /* a dry run or a remote destination */ }
     else if (['cp', 'mv', 'install', 'rsync'].includes(cmd) && o.files.length >= 2) add(o.files.at(-1));
@@ -1569,6 +1672,19 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       const sub = args[i];
       const rest = args.slice(i + 1).filter((w, k, all) => !w.startsWith('-') && !/^-(?:b|B|-reason|-template|-separate-git-dir|-origin|o|-branch|-depth|c|-config)$/u.test(all[k - 1] ?? ''));
       const made = sub === 'worktree' && rest[0] === 'add' ? rest[1] : sub === 'clone' ? rest[1] ?? (rest[0] ?? '').replace(/\/$/u, '').split(/[/:]/u).pop().replace(/\.git$/u, '') : sub === 'init' ? rest[0] ?? '.' : undefined;
+      // git apply writes the files its patches name (-p1 unless -p gives another; --directory puts them under a
+      // folder); --check, --stat, --numstat, --summary and --cached write no file. A patch it reads from stdin is read
+      // from the file there; from a pipe, it is not known.
+      if (sub === 'apply') {
+        const ap = args.slice(i + 1);
+        if (!ap.some((w) => /^--(?:check|stat|numstat|summary|cached)$/u.test(w))) {
+          const p = ap.find((w) => /^-p\d+$/u.test(w));
+          const into = ap.find((w) => w.startsWith('--directory='))?.slice(12) ?? '';
+          const patches = ap.filter((w, k) => !w.startsWith('-') && !/^-[pCx]$/u.test(ap[k - 1] ?? ''));
+          const input = patches.length ? patches : stdinFile(ws) ? [dq(stdinFile(ws))] : [null];
+          for (const f of input) applyPatch('git apply', f == null ? null : readText(f), p === undefined ? 1 : Number(p.slice(2)), join(dir, into));
+        }
+      } else if (sub !== undefined) gitMoves(sub, args.slice(i + 1), dir);
       for (const m of made ? perTurn(made) ?? [made] : []) {
         const at = !m.includes(HOLE) && (state.base != null || isAbsolute(m)) ? resolve(state.base ?? '/', ...cs, m) : null;
         repos.add(at ?? (m.includes(HOLE) ? knownPrefix(m.slice(0, m.indexOf(HOLE))) : ''));
