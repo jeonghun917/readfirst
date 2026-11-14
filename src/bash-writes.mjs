@@ -1167,3 +1167,28 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
   });
   return out;
 }
+
+// Each command of some shell text with its words as the shell hands them to it (after NAME=value words and wrappers,
+// `unwrap`, and without redirects and their targets, `withoutRedirects`), for a caller that takes an argument's text
+// from the command line, as `readfirst answer '<json>'` will: [{ words: [{ text, known }], op, pipe }]. `text` is the
+// word with quotes and backslash escapes undone (shellWord: `'it'\''s'` is it's, `"a\"b"` is a"b); `known` is false
+// when any part of it is set only when the command runs (a variable from outside it, a $( ), backticks), and then
+// `text` holds that part between \0s and must not be taken as the argument. `op` is the operator after the command and
+// `pipe` whether its output goes to the next one. The commands are walked with eachCommand and follow, as bashWrites
+// and bashReads walk them, so a variable the command set earlier is known (`J='[]'; readfirst answer "$J"`). A
+// here-document or a pipe into the command is no word of it.
+export function commandWords(command, cwd = process.cwd(), { vars = new Map() } = {}) {
+  const out = [];
+  const state = { base: cwd, why: null, vars: copyVars(vars) };
+  const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' '));
+  eachCommand(shell, state, (p, raw, how, op) => {
+    const opened = opening(raw);
+    const words = withoutRedirects(unwrap(opened)).map((w) => {
+      const { unknown, text } = shellWord(w, state.vars);
+      return { text, known: !unknown.length };
+    });
+    follow(state, opened, how);
+    if (words.length) out.push({ words, op, pipe: how.pipe });
+  });
+  return out;
+}
