@@ -100,9 +100,13 @@ function readDefinitions(path, body, { lists = false } = {}) {
   const py = /\.py$/u.test(path);
   const decls = declarations(path, body, { members: true });
   const rows = codeRows(path, body);
+  // reusable: another file could use the name (the file's top level, a class's member, what the module exports), read
+  // from where it is declared; a name local to a function is not (the find gate asks only about reusable ones).
+  const at = new Map(decls.map((d) => [`${d.name}\0${d.line}`, d]));
+  const reusable = (d) => !d.depth || d.exported || d.ofModule || at.get(`${d.parent}\0${d.parentLine}`)?.what === 'class';
   const out = decls
     .filter((d) => (d.what !== 'var' || d.fn || d.ofModule) && (!d.member || d.ofModule) && !d.name.startsWith('#') && !KEYWORDS.has(d.name) && d.name.length >= 3)
-    .map((d) => ({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), kind: ['class', 'type', 'alias', 'enum'].includes(d.what) ? 'type' : 'function' }));
+    .map((d) => ({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), kind: ['class', 'type', 'alias', 'enum'].includes(d.what) ? 'type' : 'function', reusable: reusable(d), exported: Boolean(d.exported || d.ofModule) }));
   out.header = headerOf(path, body, lines, decls, rows);
   // find asks for the lists too, read from the same declarations and lines: a second pass over every file doubled
   // the time of find.
