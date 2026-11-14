@@ -674,6 +674,9 @@ function blank(s) {
 // at, past: where the whole substitution, its brackets too, stands }. Kept while a shellWrites, bashReads or
 // commandWords runs (`liftDepth`), and dropped with the tables when the outermost one returns (`liftDone`).
 const PLACE = '\x01';
+// Where a here-document opens, in the text writesOf walks once for their states: a private-use character, followed by
+// the document's number, never written in a command (and not a blank: segmentsAndOps trims blanks).
+const DOC_MARK = '';
 const BODIES = new Map();
 let nextBody = 0;
 let liftDepth = 0;
@@ -986,8 +989,9 @@ const CHAINED = /^(?:&&|\|\||\|&?)$/u;
 function eachCommand(text, state, visit, tail = () => {}) {
   // Here-documents first, then comments, in one place for every walk (hereDocs): a body's lines are no commands, and a
   // ' in a body (`it's`) would otherwise open a quote for the comment reader. Both are no change on text without them.
-  // Each is skipped where it has nothing to find (no << or no #): stateAt walks the text before each here-document
-  // again, and reading it twice more made a command of 2,000 here-documents half as slow again (2026-11-14).
+  // Each is skipped where it has nothing to find (no << or no #). (stateAt walked the text before each here-document
+  // again, and reading it twice more made a command of 2,000 here-documents half as slow again, 2026-11-14; writesOf
+  // now finds their states in one walk.)
   // hereDocs also joins the lines a backslash continues (the one place that does): it runs when there is either.
   const docless = text.includes('<<') || text.includes('\\\n') ? hereDocs(text).text : text;
   // Then the substitutions are taken out (lift): a ; or | in a $( ) splits nothing here, and the caller reads the bodies.
@@ -1326,10 +1330,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // #202, 2026-11-14), and then taken out everywhere first, so `# note \\` took the next line into the comment.
   // hereDocs gives each here-document with where it opens in the text without bodies (`at`) and where its line starts.
   const { text: bare, docs } = hereDocs(String(command ?? ''));
-  for (const { at: opens, line, quote, body } of docs) {
-    Object.assign(state, stateAt(bare.slice(0, opens)));
+  // The state where each here-document stands comes from one walk of the text (below), each document read when the
+  // walk reaches it. Until 2026-11-14 the text before each one was walked again (stateAt), so n of them took time by
+  // the square: 4,000 `cat <<E` took 13 s, near the hook's 15 (readfirst review).
+  const readDoc = ({ quote, body }, hw) => {
     // Only the command the here-document feeds: in `node x.mjs; cat > f <<E` it goes to cat (2026-11-08).
-    const hw = words(segments(lift(withoutComments(bare.slice(line, opens)))).at(-1) ?? '').map(dq);
     const at = hw.findIndex((w) => RUNNER.test(w.split('/').pop()));
     // The script's arguments: words after the runner that are not options, the script itself ('-') or a redirect.
     const args = at < 0 ? [] : hw.slice(at + 1).filter((w) => w !== '-' && !w.startsWith('-') && !/^[<>|&]/u.test(w));
@@ -1342,6 +1347,49 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // as a subshell where the command stands (`cat <<E` with `$(echo > f)` in its body makes f; nothing was named
     // until 2026-11-14). A shell fed the body reads them with its commands (above).
     if (!quote && !fed) { const subs = docSubstitutions(body); if (subs.length) inner(subs.join('\n'), state.vars); }
+  };
+  if (docs.length) {
+    // The text with a mark where each here-document opens (` N `, N its number: hereDocs left a space there),
+    // walked once as stateAt walks it. In a command's own words the words before the mark are the command the document
+    // feeds, and the state is the one before that command with those words followed; a mark inside a $( ) the command
+    // holds (lifted) gets the state before the command, as the text cut there gave (its $( ) not closed). A mark the
+    // walk does not reach is read as before.
+    const marked = [];
+    let from = 0;
+    docs.forEach((d, k) => { marked.push(bare.slice(from, d.at), ` ${DOC_MARK}${k} `); from = d.at + 1; });
+    marked.push(bare.slice(from));
+    const st = start();
+    const done = new Set();
+    const notMark = (w) => !w.startsWith(DOC_MARK);
+    const take = (text, how) => {
+      if (!text.includes(DOC_MARK)) return;
+      const open = [{ text, pos: 0, own: true }];
+      while (open.length) {
+        const top = open.at(-1);
+        const re = new RegExp(`${DOC_MARK}(\\d+)|\\x01(\\d+)`, 'gu');
+        re.lastIndex = top.pos;
+        const m = re.exec(top.text);
+        if (!m) { open.pop(); continue; }
+        top.pos = re.lastIndex;
+        if (m[2] !== undefined) { const b = BODIES.get(Number(m[2])); if (b?.text.includes(DOC_MARK)) open.push({ text: b.text, pos: 0, own: false }); continue; }
+        const k = Number(m[1]);
+        if (done.has(k) || !docs[k]) continue;
+        done.add(k);
+        const before = top.text.slice(0, m.index);
+        const raw = (top.own ? words(before) : words(segments(before.slice(before.lastIndexOf('\n') + 1)).at(-1) ?? '')).filter(notMark);
+        const here = snapshot(st);
+        if (top.own) follow(here, opening(raw), { maybe: how?.maybe, body: how?.body });
+        Object.assign(state, here);
+        readDoc(docs[k], raw.map(dq));
+      }
+    };
+    eachCommand(marked.join(''), st, (p, raw, how) => { take(p.body, how); follow(st, opening(raw.filter(notMark)), how); }, (t) => take(t));
+    // Not reached (a mark the walk dropped): the text before it is walked, as before 2026-11-14.
+    docs.forEach((d, k) => {
+      if (done.has(k)) return;
+      Object.assign(state, stateAt(bare.slice(0, d.at)));
+      readDoc(d, words(segments(lift(withoutComments(bare.slice(d.line, d.at)))).at(-1) ?? '').map(dq));
+    });
   }
   const shell = withoutComments(bare);
   Object.assign(state, start()); // the segments below follow the cds and assignments again themselves

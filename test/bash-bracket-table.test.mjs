@@ -145,6 +145,8 @@ const SHAPES = {
   // comment lines took 0.5 to 0.9 s a reader, 2026-11-14).
   'comment lines ending in a backslash': "(n) => '# c \\\\\\n'.repeat(n) + 'echo > f'",
   'command lines': "(n) => 'echo a\\n'.repeat(n)",
+  // The text before each here-document was walked again for it (13 s at 4,000).
+  'here-documents': "(n) => 'cat <<E\\nhello\\nE\\n'.repeat(n)",
 };
 const SIZES = [2000, 8000, 32000];
 const TIMED = `const { parentPort } = require('node:worker_threads');
@@ -196,6 +198,24 @@ test('the commands of a long text are taken one after another, not moved along t
     Array.prototype.shift = shift;
   }
   assert.ok(moved < 10 * n, `shift() moved ${moved} elements for ${n} lines (about ${n * n * 1.5} when each command is taken off the front)`);
+});
+
+// The state at each here-document (2026-11-14, readfirst review): shellWrites walked all the text before each one again
+// (stateAt), so n here-documents cost about n*n/2 commands walked: 4,000 `cat <<E` took 13 s, near the hook's 15.
+// eachCommand lists the commands of a text once per walk (segmentsAndOps, then flatMap): the lengths of those lists are
+// counted while shellWrites reads 2,000 here-documents. One walk reads each command a few times, not once per document.
+test('the state at each here-document comes from one walk, not one per document', () => {
+  const n = 2000;
+  const text = 'cat <<E\nhello\nE\n'.repeat(n);
+  const flatMap = Array.prototype.flatMap;
+  let listed = 0;
+  Array.prototype.flatMap = function counted(...a) { listed += this.length; return flatMap.apply(this, a); };
+  try {
+    shellWrites(text, '/r');
+  } finally {
+    Array.prototype.flatMap = flatMap;
+  }
+  assert.ok(listed < 10 * n, `${listed} commands listed for ${n} here-documents (about ${n * n} when the text before each is walked again)`);
 });
 
 test('linear time in the length of unclosed chains and of nesting', async () => {
