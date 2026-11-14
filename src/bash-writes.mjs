@@ -720,10 +720,15 @@ function withoutComments(text) {
   const b = blank(text);
   let out = '';
   let at = 0;
-  // The character before the # is read in the text itself: in the blanked text a quote just closed is a space, so
-  // `'[1]'#x` and `echo 'a'#b > f` lost the rest of the word and the redirect (2026-11-14; bash reads `[1]#x`).
-  for (const m of b.matchAll(/(?<=^|[ \t;])#[^\n]*/gmu)) {
-    if (m.index > 0 && !/[\s;]/u.test(text[m.index - 1])) continue;
+  // A # starts a comment where a word starts: after a blank, the line start, or ; & | < > (`|# c`, `&# c`); not after
+  // a ), which may close a $( ) the word goes on after (`$(x)#y`). The character before it is read in the text itself:
+  // in the blanked text a quote just closed is a space, so `'[1]'#x` and `echo 'a'#b > f` lost the rest of the word and
+  // the redirect (2026-11-14; bash reads `[1]#x`). A blank escaped by a backslash is part of the word (`echo a\ #b > f`
+  // writes f), as is one after an odd count of backslashes.
+  for (const m of b.matchAll(/(?<=^|[ \t;&|<>])#[^\n]*/gmu)) {
+    const before = text[m.index - 1];
+    if (m.index > 0 && !/[\s;&|<>]/u.test(before)) continue;
+    if (m.index > 0 && /\s/u.test(before)) { let k = m.index - 2; while (k >= 0 && text[k] === '\\') k--; if ((m.index - 2 - k) % 2) continue; }
     out += text.slice(at, m.index);
     at = m.index + m[0].length;
   }

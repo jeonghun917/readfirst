@@ -63,6 +63,9 @@ test('a $( ) or backtick in a here-document whose tag is not quoted runs, and ba
     ['cat <<E\n"$(echo > f)"\nE', true],
     ['python3 - <<E\n$(echo > f)\nE', true],
     ['cd a; cat <<E\n$(echo > f)\nE', true],
+    // Read where the command stands, with its variables and beside its redirect (review of #202).
+    ['x=a; cat <<E\n$(cd $x; echo > f)\nE', true],
+    ['cd a && cat > g <<E\n$(echo > f)\nE', true],
     // The look-alikes: a quoted tag, an escaped $, a <( ) in a body, and a shell fed the body (read as before).
     ["cat <<'E'\n$(echo > f)\nE", false],
     ['cat <<"E"\n$(echo > f)\nE', false],
@@ -80,7 +83,10 @@ test('a $( ) or backtick in a here-document whose tag is not quoted runs, and ba
 // 2026-11-14 (review of #200): withoutComments took a # right after a closing quote for a comment, as the quote is
 // blanked to spaces where it looks: bash reads `'[1]'#x` as the word [1]#x, and `echo 'a'#b > f` writes f.
 test('a # glued to the end of a quoted word is part of the word, and bash agrees', { skip: !hasBash && 'bash is not installed' }, () => {
-  for (const script of ["echo 'a'#b > f", 'cat "x"#y > g', "cat 'a'#<<E > f\n$(echo > g)\nE", "echo a #'b' > c", "echo 'a' #c > z", 'echo a;#c > z']) {
+  // Review of #202: a blank escaped by a backslash is part of the word (`a\ #b` is one word), and a # right after | or
+  // & starts a comment (it did not, so `|# c > n` named n).
+  for (const script of ["echo 'a'#b > f", 'cat "x"#y > g', "cat 'a'#<<E > f\n$(echo > g)\nE", "echo a #'b' > c", "echo 'a' #c > z", 'echo a;#c > z',
+    'echo a\\ #b > f5', "echo 'a'\\ #b > f6", 'echo a\\\\ #b > f7', 'echo a;true|# c > n1', 'echo a&# c > n2', 'echo $(x)#y > h', 'cat <(echo a)#x > n3']) {
     assert.deepEqual(named(script), bashMade(script), script);
   }
   assert.deepEqual(commandWords("readfirst answer '[1]'#x", '/r').map((x) => x.words.map((w) => w.text)), [['readfirst', 'answer', '[1]#x']]);
