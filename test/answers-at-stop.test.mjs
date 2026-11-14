@@ -5,7 +5,7 @@
 // found not borne out; `audit` names the rules and risks most sessions answered not-this, as too wide.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -162,4 +162,83 @@ test('a starting commit no longer under HEAD (a branch switch) compares no not-t
   const said = String(out?.reason ?? out?.systemMessage ?? '');
   assert.doesNotMatch(said, /does not bear out/u);
   assert.match(said, /1 not-this answer\(s\) were not compared with the change: this session started at [0-9a-f]{12}, which is not under the commit checked out now \(a branch switch or a rebase\)\./u);
+});
+
+const said = (out) => String(out?.reason ?? out?.systemMessage ?? '');
+const notThisBeta = (s) => s.answer([{ item: ID.both, answer: 'not-this', because: 'this session changes beta only', symbols: ['beta'] }, ...keeps(ID.prose, ID.rule)]);
+// A file git does not track, in the risk's files, that touches the shared-cache risk by `alpha`.
+const ALPHA_TOO = 'export function alpha(z) {\n  return z;\n}\n';
+
+test('a change already uncommitted when the session began is not the session\'s', () => {
+  const s = session();
+  // Before the session's first call: alpha changed, not committed.
+  writeFileSync(join(s.root, 'src/a.js'), A.replace('  return x + one;', '  return x + one + 0;'));
+  s.call('Edit', inBeta(s.root));
+  notThisBeta(s);
+  writeFileSync(join(s.root, 'src/a.js'), A.replace('  return x + one;', '  return x + one + 0;').replace('  return y * two;', '  return y * two * 1;'));
+  assert.doesNotMatch(said(s.stop()), /does not bear out|were not compared/u, 'from the working tree at the start, the session touched beta only');
+});
+
+test('a file git did not track before the session is not counted whole, and the stop says it was not compared; one made in it counts whole', () => {
+  const before = session();
+  writeFileSync(join(before.root, 'src/b.js'), `${ALPHA_TOO}\nexport const note = 1;\n`);
+  before.call('Edit', inBeta(before.root));
+  notThisBeta(before);
+  leave(before.root);
+  // The session changes the untracked file too, away from alpha.
+  before.call('Edit', { file_path: join(before.root, 'src/b.js'), old_string: 'note = 1', new_string: 'note = 2' });
+  writeFileSync(join(before.root, 'src/b.js'), `${ALPHA_TOO}\nexport const note = 2;\n`);
+  const out = said(before.stop());
+  assert.doesNotMatch(out, /does not bear out/u, 'src/b.js was there before the session: its alpha is not the session\'s');
+  assert.match(out, /`src\/b\.js` was not tracked by git when the session began, so what the session changed there was not compared with its 1 not-this answer\(s\)\./u);
+  const during = session();
+  during.call('Edit', inBeta(during.root));
+  notThisBeta(during);
+  leave(during.root);
+  // Made by a script after the session began: its time is after the session's first call.
+  writeFileSync(join(during.root, 'src/b.js'), ALPHA_TOO);
+  const later = new Date(Date.now() + 60_000);
+  utimesSync(join(during.root, 'src/b.js'), later, later);
+  assert.match(said(during.stop()), new RegExp(`\`${ID.both}\` was answered not-this \\(\`beta\`\\), but the change touches it by \`alpha\``, 'u'), 'src/b.js made in the session counts whole');
+});
+
+test('more untracked files at the start than readfirst records compares no not-this, and says how many', () => {
+  const s = session();
+  mkdirSync(join(s.root, 'scratch'));
+  for (let i = 0; i <= 2000; i++) writeFileSync(join(s.root, 'scratch', `f${i}.txt`), '');
+  s.call('Edit', inBeta(s.root));
+  notThisBeta(s);
+  leave(s.root, { alpha: true });
+  const out = said(s.stop());
+  assert.doesNotMatch(out, /does not bear out/u);
+  assert.match(out, /1 not-this answer\(s\) were not compared with the change: the session started with 2001 untracked files, more than the 2000 readfirst records, so its starting point is only partly known\./u);
+});
+
+test('a diff git cannot give compares no not-this, and names git\'s error', () => {
+  const s = session();
+  s.call('Edit', inBeta(s.root));
+  notThisBeta(s);
+  leave(s.root, { alpha: true });
+  // The snapshot of the start is gone (pruned by gc): `merge-base --is-ancestor` on the starting commit still works,
+  // `diff` from the snapshot does not. (A broken .git/index fails the stop's `git status` before this, so it says nothing.)
+  const file = readdirSync(s.stateDir).find((f) => f.endsWith('.lines'));
+  const at = join(s.stateDir, file);
+  writeFileSync(at, readFileSync(at, 'utf8').split('\n').map((l) => (l.startsWith('["base:') ? l.replace(/\\"[0-9a-f]{40}\\"/u, `\\"${'f'.repeat(40)}\\"`) : l)).join('\n'));
+  const out = said(s.stop());
+  assert.doesNotMatch(out, /does not bear out/u);
+  assert.match(out, /1 not-this answer\(s\) were not compared with the change: the session's diff could not be read \(Error: /u);
+});
+
+test('a not-this not compared and a done not borne out are both said', () => {
+  const s = session({ checks: [{ run: 'test -f ok.flag', why: 'the flag' }] });
+  s.call('Edit', inBeta(s.root));
+  s.answer([{ item: ID.both, answer: 'not-this', because: 'only beta', symbols: ['beta'] }, { item: ID.prose, answer: 'done', because: 'ran the check' }, ...keeps(ID.rule)]);
+  leave(s.root, { alpha: true });
+  const file = readdirSync(s.stateDir).find((f) => f.endsWith('.lines'));
+  const at = join(s.stateDir, file);
+  writeFileSync(at, readFileSync(at, 'utf8').split('\n').filter((l) => !l.startsWith('["head:')).join('\n'));
+  const out = s.stop();
+  assert.equal(out?.decision, 'block');
+  assert.match(out.reason, new RegExp(`\`${ID.prose}\` was answered done, but \`test -f ok\\.flag\` fail`, 'u'));
+  assert.match(out.reason, /1 not-this answer\(s\) were not compared with the change: this session's starting commit was not recorded/u);
 });

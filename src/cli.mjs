@@ -519,11 +519,33 @@ function headOf(seen, root) {
   for (const k of Object.keys(seen)) { const m = k.match(HEAD_KEY); if (m && m[2] === root) return m[1]; }
   return null;
 }
+// With it, what the working tree already held then, so changes made before the session are not counted as its own:
+// `base:<JSON [root, snapshot, untracked, count]>`. snapshot: `git stash create` (a commit of the tracked files as they
+// were; it writes git objects, never the working tree, the index or a ref), HEAD when nothing was changed, '' for a
+// repository with no commit and nothing added, null when it could not be taken. untracked: the files git did not track
+// then (not ignored), which the stop does not count as the session's; null when there were more than PRE_MAX, with
+// count saying how many: the start is then only partly known and no not-this is compared there.
+const PRE_MAX = 2000;
+function baseOf(seen, root) {
+  for (const k of Object.keys(seen)) {
+    if (!k.startsWith('base:')) continue;
+    let v = null;
+    try { v = JSON.parse(k.slice('base:'.length)); } catch { v = null; }
+    if (Array.isArray(v) && v[0] === root) return { snapshot: typeof v[1] === 'string' ? v[1] : null, untracked: Array.isArray(v[2]) ? v[2] : null, count: Number(v[3]) || 0 };
+  }
+  return null;
+}
 function markHead(seen, root, now) {
   if (!root || headOf(seen, root) !== null) return;
   let sha = '';
   try { sha = git(root, 'rev-parse', '--verify', '-q', 'HEAD').trim(); } catch { sha = ''; }
   seen[`head:${sha}:${root}`] = now;
+  let snapshot = null;
+  try { snapshot = sha ? git(root, 'stash', 'create').trim() || sha : git(root, 'ls-files', '-z') ? null : ''; } catch { snapshot = null; }
+  let untracked = null;
+  let count = 0;
+  try { const all = git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean); count = all.length; untracked = count > PRE_MAX ? null : all; } catch { untracked = null; }
+  seen[`base:${JSON.stringify([root, snapshot, untracked, count])}`] = now;
 }
 function lastCall(seen) {
   let best = null;
@@ -1003,8 +1025,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -1030,7 +1052,7 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   const found = [];
   const notes = [];
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
-    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root) });
+    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root), start: baseOf(seen, root) });
     if (r?.note) notes.push(r.note);
     if (r?.found) found.push(...r.found);
     if (r?.pass) passed.push(r.pass);
@@ -1117,8 +1139,9 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
 // The Stop hook for one repository: its map's checks for the files edited there that are still changed.
 // answers: the session's answers to the gate (givenAnswers), compared with the change at the end; `found` in the result
 // names the items whose last answer the change does not bear out.
-// head: the commit the session started from there (headOf), null when the state does not say.
-function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [], head = null } = {}) {
+// head: the commit the session started from there (headOf), null when the state does not say; start: what the working
+// tree held then (baseOf), null when the state does not say.
+function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [], head = null, start = null } = {}) {
   try {
     if (!existsSync(join(root, MAP_PATH))) return null;
     const at = named ? ` in ${basename(root)}` : '';
@@ -1173,16 +1196,29 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     // A starting commit no longer under HEAD (a branch switch, a rebase, a commit gone) would put another branch's
     // changes in the diff, and a diff git cannot make would say nothing at all: both say so instead (review of
     // readfirst#204).
+    // The diff starts from what the working tree held at the start (`base:`, baseOf): changes already made then, and
+    // files git did not track then, are not the session's. A start only partly known (more untracked files than
+    // PRE_MAX, or no snapshot) compares nothing and says so.
     const notCompared = (why) => `readfirst${at}: ${notThis.length} not-this answer(s) were not compared with the change: ${why}.`;
-    let noStart = notThis.length && head === null ? notCompared("this session's starting commit was not recorded (a state from an older readfirst)") : null;
-    if (notThis.length && head) {
+    let noStart = notThis.length && (head === null || !start) ? notCompared("this session's starting commit was not recorded (a state from an older readfirst)") : null;
+    if (notThis.length && head && !noStart) {
       // cut: head is a commit sha shortened for the message, not a list.
       try { git(root, 'merge-base', '--is-ancestor', head, 'HEAD'); } catch { noStart = notCompared(`this session started at ${head.slice(0, 12)}, which is not under the commit checked out now (a branch switch or a rebase)`); }
     }
-    if (notThis.length && head !== null && !noStart) {
+    if (notThis.length && !noStart && start.snapshot === null) noStart = notCompared('the working tree at the session\'s start could not be recorded (git stash create failed)');
+    if (notThis.length && !noStart && start.untracked === null) noStart = notCompared(start.count > PRE_MAX ? `the session started with ${start.count} untracked files, more than the ${PRE_MAX} readfirst records, so its starting point is only partly known` : 'the files git did not track at the session\'s start could not be listed');
+    if (notThis.length && !noStart) {
+      let changes = null;
       try {
-        const changes = parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', head || EMPTY_TREE));
-        for (const f of git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean)) if (!changes.has(f)) changes.set(f, { lines: new Set(), text: [], whole: true });
+        changes = parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', start.snapshot || EMPTY_TREE));
+        const before = new Set(start.untracked);
+        for (const f of git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean)) if (!changes.has(f) && !before.has(f)) changes.set(f, { lines: new Set(), text: [], whole: true });
+        // readfirst keeps no copy of an untracked file from the start, so what the session changed in one is not judged:
+        // said, never left out silently.
+        const unkept = targets.filter((f) => before.has(f));
+        if (unkept.length) noStart = `readfirst${at}: ${unkept.map((f) => `\`${f}\``).join(', ')} ${unkept.length === 1 ? 'was' : 'were'} not tracked by git when the session began, so what the session changed there was not compared with its ${notThis.length} not-this answer(s).`;
+      } catch (e) { changes = null; noStart = notCompared(`the session's diff could not be read (${errorText(e)})`); }
+      if (changes) try {
         judge(list, { changes, read: readText(root), files, imports });
         for (const it of noteItems(list)) {
           if (!notThis.includes(it.id)) continue;
@@ -1190,7 +1226,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
           const outside = it.by.filter((s) => !given.has(s));
           if (outside.length) untrue.push({ id: it.id, line: `\`${it.id}\` was answered not-this (${[...given].map((s) => `\`${s}\``).join(', ')}), but the change touches it by ${outside.map((s) => `\`${s}\``).join(', ')}` });
         }
-      } catch (e) { noStart = notCompared(`the session's diff could not be read (${errorText(e)})`); }
+      } catch (e) { noStart = notCompared(`the session's diff could not be judged (${errorText(e)})`); }
     }
     const answerLine = () => {
       if (!untrue.length) return null;
