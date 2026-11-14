@@ -1185,7 +1185,11 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   }
   const gated = Object.keys(seen).some((k) => k.startsWith('denied:'));
   // Every item asked or answered in this session, by any file.
-  const asked = new Set(Object.keys(seen).filter((k) => /^(?:ask|answer):/u.test(k)).map((k) => { try { return JSON.parse(k.slice(k.indexOf(':') + 1))[0]; } catch { return null; } }));
+  const idsOf = (re) => new Set(Object.keys(seen).filter((k) => re.test(k)).map((k) => { try { return JSON.parse(k.slice(k.indexOf(':') + 1))[0]; } catch { return null; } }));
+  const asked = idsOf(/^(?:ask|answer):/u);
+  // Asked by the gate and never answered at all (an unsure answer is an answer: openUnsure names it).
+  const answeredIds = idsOf(/^answer:/u);
+  const unanswered = new Set([...idsOf(/^ask:/u)].filter((id) => id && !answeredIds.has(id)));
   const passed = [];
   const blocks = [];
   // Checks that did not run block once for a state of the files: the mark says so to the next stop.
@@ -1208,7 +1212,7 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     if (said(key)) notes.push(line); else { say(key); blocks.push(line); }
   }
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
-    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root), start: baseOf(seen, root), unlooked: gated ? unlooked.get(root) ?? [] : [], asked });
+    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root), start: baseOf(seen, root), unlooked: gated ? unlooked.get(root) ?? [] : [], asked, unanswered });
     if (r?.note) notes.push(r.note);
     if (r?.unchecked) unchecked.push(r.unchecked);
     if (r?.found) found.push(...r.found);
@@ -1312,7 +1316,7 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
 // names the items whose last answer the change does not bear out.
 // head: the commit the session started from there (headOf), null when the state does not say; start: what the working
 // tree held then (baseOf), null when the state does not say.
-function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [], head = null, start = null, unlooked = [], asked = new Set() } = {}) {
+function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [], head = null, start = null, unlooked = [], asked = new Set(), unanswered = new Set() } = {}) {
   try {
     if (!existsSync(join(root, MAP_PATH))) {
       // No map here means nothing to check, unless the commit has one that is not in the working tree (a sparse
@@ -1402,6 +1406,23 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
         const one = lateHere.length === 1;
         unaskedSaid = `readfirst${at}: the gate had no time to look up ${lateHere.join(', ')}, so ${one ? 'its' : 'their'} rules and risks were never asked:\n- ${open.map((i) => `\`${i.id}\`: ${i.text}`).join('\n- ')}\nRead ${one ? 'its' : 'their'} notes (\`npx readfirst read ${lateHere.join(' ')}\`) and say how the change keeps each, before you finish.`;
       }
+    }
+    // The items of the changed files the gate asked and no answer came for: the edit it asked about was refused and the
+    // file changed another way (a command, a script), so the question was left with nothing (review of 2026-11-14: the
+    // stop passed with its checks). Named with the files, once for that set (an `unasked:` key too); an asked item can
+    // still be answered.
+    const rows = new Map();
+    for (const [id, row, text] of [...list.rules.map((r) => [itemId('rule', r.id, r.rule), r, `Rule ${r.id}: ${r.rule}`]), ...list.risks.map((r) => [itemId('risk', r.group, r.text), r, `Risk: ${r.text}`])]) {
+      if (!unanswered.has(id)) continue;
+      const was = rows.get(id);
+      rows.set(id, { id, text, for: [...new Set([...(was?.for ?? []), ...(row.for ?? []).filter((f) => targets.includes(f))])].sort() });
+    }
+    const silent = [...rows.values()].sort((a, b) => a.id.localeCompare(b.id));
+    const silentKey = silent.length ? `unasked:${root}:${createHash('sha1').update(`asked\0${silent.map((i) => i.id).join('\0')}`).digest('hex').slice(0, 12)}` : null;
+    if (silentKey && !said(silentKey)) {
+      say(silentKey);
+      const where = [...new Set(silent.flatMap((i) => i.for))].sort();
+      unaskedSaid = [unaskedSaid, `readfirst${at}: the gate asked about ${where.join(', ')} and these were never answered, though the ${where.length === 1 ? 'file' : 'files'} changed:\n- ${silent.map((i) => `\`${i.id}\`: ${i.text}`).join('\n- ')}\nAnswer each (${ANSWER_HOW}), or say why it need not be, before you finish.`].filter(Boolean).join('\n');
     }
     // Answers the change does not bear out (plan 2.7), by each item's last answer: a not-this whose item the final diff
     // (judged again, as `readfirst diff` judges it) touches by a name outside its symbols; below, a done whose item's
