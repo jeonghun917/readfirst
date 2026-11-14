@@ -46,6 +46,29 @@ test('a function is read where it is called, with the state and the arguments th
     ['run() { "$@"; }; run cp /dev/null "x y"', []],
     ['f() { true; }; f() { cd s; }; f; echo > h', ['?f']],
     ['f() { g; }; g() { cd s; }; f; echo > h', ['?f']],
+    // Review of #217: a call inside ( ) or a pipeline runs as a subshell; a ( ) before the body's } ended nothing, so
+    // nothing after it was read; return ends the body; unset -f takes the function away.
+    ['f() { cd a; }; (f); echo > h', null],
+    ['f() { cd a; echo > g; }; f | cat; echo > h', ['g', 'h']],
+    ['f() { cd a; ( echo ) }; f; echo > h', ['h']],
+    // A block inside a { } body does not end it (the body was taken to end at the fi, and its cd was lost).
+    ['f() { if true; then :; fi; cd s; }; f; echo > h', ['?f']],
+    ['f() { cd a; return; cd s; }; f; echo > h', ['?f']],
+    ['f() { cd a; }; unset -f f; f; echo > h', ['?f']],
+    // The ledger's rows: a body run where it was written, a group in the background or a pipeline, a ( after a {, a
+    // group's redirect, a body that is an if.
+    ['f() { cd a; echo > g; }; (f); echo > h', ['g', 'h']],
+    ['f() { cd a; echo > g; }; x=$(f); echo > h', ['g', 'h']],
+    ['f() if true; then cd a; fi; echo > h', ['a/h']],
+    ['f() { { cd a; }; echo > g; }; f; echo > h', ['?f', 'g']],
+    ['{ cd a; } & wait; echo > h', ['a/h']],
+    ['{ cd a; } | cat; echo > h', ['a/h']],
+    ['{ { cd a; }; }; echo > h', null],
+    ['{ ( cd a; echo > g); }; echo > h', ['a/g', 'a/h']],
+    ['{ cd a; }>o; echo>h', ['a/h', 'a/o']],
+    ['f(){ echo {>x; }', ['x']],
+    ['f () { cd a; }; f; echo > h', ['?f']],
+    ['f ()\n{\n cd a\n}\necho > h', null],
     // As before.
     ['f() { echo > g1; }; f', null],
     ['f() { g() { echo > g5; }; }; f; g', null],
@@ -62,6 +85,16 @@ test('a function is read where it is called, with the state and the arguments th
   }
 });
 
+// A return that may not run (after && or ||, in an if) leaves the rest of the body read, and what it changed is not
+// known after the call; one that surely runs ends the body, also inside a function called by another.
+test('a return on some paths makes what follows it not known; a return on every path ends the body', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => u.part)]; };
+  assert.deepEqual(s('f() { cd /a; [ -e x ] && return; cd b; }; f; echo > h'), ['cd b']);
+  assert.deepEqual(s('f() { if x; then return; fi; cd /b; }; f; echo > h'), ['cd /b']);
+  assert.deepEqual(s('f() { if x; then :; fi; cd /b; }; f; echo > h'), ['/b/h'], 'no return: the cd is sure');
+  assert.deepEqual(s('f() { g; cd c; }; g() { cd /a; return; cd b; }; f; echo > h'), ['/a/c/h']);
+});
+
 // A function that calls itself, directly or through another, is read once for the call it is in: the call inside is
 // given as not known, with why. bash would run until it runs out of stack.
 test('a function that calls itself is read once, and the call inside is given as not known', () => {
@@ -70,6 +103,26 @@ test('a function that calls itself is read once, and the call inside is given as
     assert.equal(r.files.length, 1, script);
     assert.match(r.unknown[0]?.why ?? '', /calls itself/u, script);
   }
+});
+
+// A count, which no load changes: each body read at a call is put in front of eachCommand's list. Put there with
+// unshift(), everything waiting moved each time, the end of each call it is inside included: a chain of 2,000 calls
+// moved 20,030,022 elements (a stack moves 8,016). The elements unshift() and shift() move are counted.
+test('a chain of calls puts each body in front of the list without moving the rest', () => {
+  const n = 2000;
+  let text = 'f0() { echo > deep; }\n';
+  for (let i = 1; i <= n; i++) text += `f${i}() { f${i - 1}; }\n`;
+  const { unshift, shift } = Array.prototype;
+  let moved = 0;
+  Array.prototype.unshift = function counted(...a) { moved += this.length; return unshift.apply(this, a); };
+  Array.prototype.shift = function counted() { moved += Math.max(0, this.length - 1); return shift.call(this); };
+  try {
+    assert.deepEqual(shellWrites(`${text}f${n}`, '/r').files, ['/r/deep']);
+  } finally {
+    Array.prototype.unshift = unshift;
+    Array.prototype.shift = shift;
+  }
+  assert.ok(moved < 10 * n, `${moved} elements moved for ${n} calls`);
 });
 
 // A call tree that doubles at each level reads 2^n bodies: the bodies read for one command stop at a budget, and each

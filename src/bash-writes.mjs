@@ -847,7 +847,8 @@ function parens(segment, open) {
   let i = 0;
   let lead = 0;
   for (;;) {
-    i += b.slice(i).match(/^\s*(?:(?:do|then|else|elif|if|while|until|!|time(?:\s+-p)?)\s+)*/u)[0].length;
+    // And after the { of a group: `{ ( cd a; echo > g); }` (its cd was taken past the `)`, review of #217).
+    i += b.slice(i).match(/^\s*(?:(?:do|then|else|elif|if|while|until|!|\{|time(?:\s+-p)?)\s+)*/u)[0].length;
     // (( )) is arithmetic, not two subshells, after those words too: `if ((x)); then cd /a; fi` was read as two
     // subshells whose ) put back the state from before the if, so the if and its cd were taken as sure (2026-11-13).
     if (b.startsWith('((', i) && arithEnd(segment, i) >= 0) { if (!lead) return { lead: 0, body: segment, closes: 0, tail: '', opened: 0 }; break; }
@@ -986,6 +987,13 @@ function bodyText(text, name) {
 }
 // How many ( some shell text opens more than it closes, outside quotes.
 const parenDepth = (text) => { const b = blank(text); return (b.match(/\(/gu) ?? []).length - (b.match(/\)/gu) ?? []).length; };
+// Whether a segment opens a block (if, a loop, case: 1), closes one (-1) or neither (0), by its first command word
+// (howItRuns does the same and keeps the block; this only counts).
+const blockStep = (text) => {
+  let ws = words(text);
+  while (/^(?:do|then|else|elif|!|\{|\()$/u.test(ws[0] ?? '')) ws = ws.slice(1);
+  return OPENS.test(ws[0] ?? '') ? 1 : CLOSES.test(ws[0] ?? '') ? -1 : 0;
+};
 // How much some words open { } groups (`depth`: each { less each }), and whether their first word is a `{` (`opens`).
 // `{` and `}` are words of the shell's syntax only where a command could start: first, after `(`, `do`, `then`, `!`,
 // `time`, a function's `()`, a `)` that closes, or the end of a block (`fi }`); anywhere else they are arguments.
@@ -1021,7 +1029,9 @@ function braces(ws) {
 // 2026-11-13 only the first word was looked at, so `time for f in $L; do S=/b; done` named $S as /b after the loop.
 // An operator inside a $( ) or backticks (the shell text was split there: `S=$(echo b | tr b c)`) is not this
 // command's: eachCommand passes '' for it.
-function howItRuns(state, raw, before, after) {
+// rest: the words after a ( ) that closes in the segment (its tail), where a body's } may stand: `f() { cd a; ( echo ) }`
+// (the } was not counted, so the body never ended and nothing after it was read, review of #217).
+function howItRuns(state, raw, before, after, rest = []) {
   const pipe = /^\|&?$/u.test(before ?? '') || /^\|&?$/u.test(after ?? '');
   // A body whose { stands on the line after the name (`f()` then `{`) is the function's: follow reads the rest of it
   // as the body (it was read as a { } group that runs where it is written, so its cd moved the folder with no call,
@@ -1030,7 +1040,7 @@ function howItRuns(state, raw, before, after) {
   // `body`: the segment is part of a function's body, which follow does not run. The depth is counted here, on the
   // words before opening() takes a leading { off them (`braces`).
   let body = (state.fnDepth ?? 0) > 0;
-  const group = raw.length && (body || state.fnAwait) ? braces(raw) : null;
+  const group = raw.length && (body || state.fnAwait) ? braces(rest.length ? [...raw, ...rest] : raw) : null;
   if (state.fnAwait && raw.length) { state.fnAwait = false; body = group.opens; }
   if (body && group) state.fnDepth = Math.max(0, (state.fnDepth ?? 0) + group.depth);
   let ws = raw;
@@ -1103,6 +1113,8 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
   let rec = null;
   const active = new Map();
   let spent = 0;
+  const reading = []; // the calls whose body is being read, the innermost last
+  const groups = []; // the { } groups open: { at: the state before it, piped: it reads a pipe }
   let inside = 0; // bodies being read, one inside another
   // cut: the bodies read for one text stop at the budget; a call past it is given as unread, with the number.
   const budget = CALL_BUDGET + 8 * queue.length;
@@ -1115,7 +1127,12 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     if (seg.call) {
       const c = seg.call;
       if (seg.begins) {
+        // The body starts a list of its own: not after the call's `|` (its first cd was read as a pipeline stage).
+        before = '';
         inside++;
+        reading.push(c);
+        c.blocksAt = state.blocks?.length ?? 0;
+        c.outerAt = outer.length;
         active.set(c.name, (active.get(c.name) ?? 0) + 1);
         c.saved = { state: c.isolate ? snapshot(state) : null, args: [] };
         for (let n = 1; n <= 9; n++) {
@@ -1127,6 +1144,9 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
         }
       } else {
         inside--;
+        reading.pop();
+        // A return on some paths only (`[ x ] && return`): what the body changed after it may not have run.
+        if (c.returnAt) unsure(state, c.returnAt, 'is set only on some paths through the function (after a return)');
         active.set(c.name, active.get(c.name) - 1);
         if (c.saved.state) Object.assign(state, c.saved.state);
         for (const [k, v] of c.saved.args) { if (v === undefined) state.vars.delete(k); else state.vars.set(k, v); }
@@ -1164,10 +1184,34 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     // depth: the blocks open where the list starts; a block the list opens (`a && for r in x; do`) holds the list open
     // through the ; of its own syntax.
     if (!subBefore && (before === '&&' || before === '||') && !state.chain) state.chain = { ...snapshot({ ...state, blocks: [], chain: null }), depth: state.blocks?.length ?? 0 };
-    const how = howItRuns(state, raw, subBefore ? '' : before, subAfter ? '' : op);
+    const rest = p.closes > 0 && p.tail?.trim() ? [')', ...words(p.tail)] : [];
+    // A { } group opening: the state before it, for its end (taken before howItRuns, which may count it as a body's).
+    const grouped = !(state.fnDepth > 0 || state.fnAwait || rec || definition(opening(raw))) ? braces(rest.length ? [...raw, ...rest] : raw).depth : 0;
+    // Only the folder and the variables: a whole snapshot copies every function, and a chain of 32,000 calls (each body
+    // a group) ran out of memory.
+    for (let k = 0; k < grouped; k++) groups.push({ at: { base: state.base, why: state.why, vars: copyVars(state.vars), dirs: [...(state.dirs ?? [])] }, piped: before === '|' || before === '|&' });
+    const how = howItRuns(state, raw, subBefore ? '' : before, subAfter ? '' : op, rest);
+    // A { } group closing: its redirect (`{ cd a; }>o`) opens before the group runs, in the state from before it; a group
+    // in a pipeline or the background runs as a subshell, so what it changed does not stay (review of #217).
+    const closed = [];
+    for (let k = 0; k > grouped; k--) { const g = groups.pop(); if (g) closed.push(g); }
+    if (closed.length) how.groupAt = closed.at(-1).at;
     const keeping = rec !== null;
     if (keeping) how.body = true;
     if (inside > 0) how.inCall = true;
+    // return ends the body it is in: the rest of it is not read (`f() { cd a; return; cd b; }` stays in a). One that
+    // may not run (after && or ||, in a block or a subshell of the body) leaves the rest read, and what it changes not
+    // known after the call (review of #217).
+    if (calls && inside > 0 && !how.body && unquote(unwrap(opening(raw))[0] ?? '') === 'return') {
+      const top = reading.at(-1);
+      const maybe = before === '&&' || before === '||' || (state.blocks?.length ?? 0) > top.blocksAt || outer.length > top.outerAt || p.lead > 0 || p.closes > 0 || ticks;
+      if (maybe) top.returnAt ??= snapshot(state);
+      else {
+        while (front.length && !(front.at(-1).call === top && !front.at(-1).begins)) front.pop();
+        before = op;
+        continue;
+      }
+    }
     // A call of a function whose body was kept: read next, where it is called.
     let call = null;
     if (calls && !how.body) {
@@ -1183,28 +1227,38 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
           const all = args.join(' ');
           const segs = info.segs.map((s) => (/\$(?:\{[@*]\}|[@*])/u.test(s.text) ? { text: s.text.replace(/"\$(?:\{[@*]\}|[@*])"|\$(?:\{[@*]\}|[@*])/gu, all), op: s.op } : s));
           how.called = true;
-          call = { name, args, isolate: how.pipe || op === '&', op, segs };
+          // A copy of the state when the call runs as a subshell: in a pipeline, in the background, or inside a ( ) that
+          // closes in its segment (`(f)`: the ) has put the state back before the body is read; review of #217).
+          call = { name, args, isolate: how.pipe || op === '&' || p.closes > 0, op, segs };
         }
       }
     }
     const defined = state.fnBody;
     visit(p, raw, how, op);
-    for (let k = 0; k < p.closes; k++) Object.assign(state, outer.pop());
+    // A ( ) closing puts back what the shell held, not how deep a function's body is (the text's syntax): put back, the
+    // depth of `f() { cd a; ( echo ) }` went back to 1 at the ), so the body never ended (review of #217).
+    for (let k = 0; k < p.closes; k++) Object.assign(state, outer.pop(), { fnDepth: state.fnDepth });
+    const apart = op === '&' || op === '|' || op === '|&';
+    for (const g of closed) if (apart || g.piped) Object.assign(state, g.at);
     // A function's body: its redirects (`f() { ...; } > log`) are read where it is called.
     if (!how.body) tail(p.tail);
     if (call) { spent += call.segs.length; putFront([{ call, begins: true }, ...call.segs, { call }]); }
     // Its body's segments kept as they come, up to the } or ) that ends it (the first with its head taken off).
+    // A body that is an if, a loop or a case (`f() if true; then cd a; fi`) ends where that block does (it ran where it
+    // was written, review of #217).
     if (calls && keeping) {
       rec.info.segs.push({ text, op });
-      rec.depth += parenDepth(text);
-      if (rec.kind === '(' ? rec.depth <= 0 : !((state.fnDepth ?? 0) > 0 || state.fnAwait)) rec = null;
+      rec.depth += rec.kind === '(' ? parenDepth(text) : rec.kind === 'block' ? blockStep(text) : 0;
+      if (rec.kind === '{' ? !((state.fnDepth ?? 0) > 0 || state.fnAwait) : rec.depth <= 0) rec = null;
     } else if (calls && state.fnBody !== defined && state.fnBody?.name) {
       const info = state.fnBody;
       const rest = bodyText(text, info.name);
-      info.segs = rest.trim() ? [{ text: rest, op }] : [];
-      const kind = /^\s*\(/u.test(blank(rest)) ? '(' : '{';
-      const depth = kind === '(' ? parenDepth(rest) : 0;
-      if (kind === '(' ? depth > 0 : (state.fnDepth ?? 0) > 0 || state.fnAwait) rec = { info, kind, depth };
+      // Split as the list was: a case head at its start (`f() case x in x) cd a`) is split off by caseHead.
+      info.segs = rest.trim() ? caseHead(rest.trim(), op) ?? [{ text: rest, op }] : [];
+      // A { first is a group, whatever follows it (`f() { if x; ...; fi; cd b; }` ends at its }, not at the fi).
+      const kind = /^\s*\{/u.test(blank(rest)) || !rest.trim() ? '{' : /^\s*\((?!\()/u.test(blank(rest)) ? '(' : blockStep(rest) > 0 ? 'block' : '{';
+      const depth = kind === '(' ? parenDepth(rest) : kind === 'block' ? 1 : 0;
+      if (kind === '{' ? (state.fnDepth ?? 0) > 0 || state.fnAwait : depth > 0) rec = { info, kind, depth };
     }
     // Not at the end of the text: nothing follows there, and a here-document's walk (stateAt) ends at the command it
     // feeds, inside the list (`cd $S && python3 - <<E` lost its folder for a while on 2026-11-13).
@@ -1350,7 +1404,14 @@ function follow(state, ws, { pipe = false, maybe = false, body = false, called =
     const plain = list.length > 0 && list.length <= 64 && list.every((w) => !/[$`*?[{~]/u.test(w));
     if (cmd === 'for' && NAME.test(ws[1] ?? '')) unset(ws[1], `${ws[1]} is a loop variable`, plain ? list.map(unquote) : undefined);
     else if (cmd === 'read') ws.slice(1).filter((w) => NAME.test(w)).forEach((n) => unset(n, `${n} is read when the command runs`));
-    else if (cmd === 'unset') ws.slice(1).filter((w) => NAME.test(w)).forEach((n) => unset(n, `${n} is unset`));
+    // unset -f NAME takes a function away (its call then runs no body: a call of it after was read as one, review of
+    // #217); plain `unset NAME` takes the variable, or, with no such variable, the function.
+    else if (cmd === 'unset') {
+      const fns = ws.slice(1).some((w) => /^-[a-z]*f/u.test(w));
+      for (const n of ws.slice(1).filter((w) => NAME.test(w))) {
+        if (fns || (!state.vars.has(n) && state.fns.has(n))) { state.fns.delete(n); state.fnInfo.delete(n); } else unset(n, `${n} is unset`);
+      }
+    }
     return false;
   }
   // export -n takes the mark off: the shells it starts no longer see the variable.
@@ -1742,7 +1803,16 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     if (how.unread) { const name = unquote(unwrap(opened)[0] ?? ''); missing({ part: name, word: name, why: `${name} is a function this command defines, and its body is not read here: ${how.unread}`, prefix: '' }); }
     docsIn(raw);
     sub(p.body);
-    writesIn(unmark(p.body), how, piped);
+    // A { } group's redirect (`{ cd a; }>o`) opens before the group runs: read in the state from before it.
+    const text = unmark(p.body);
+    const k = how.groupAt ? blank(text).lastIndexOf('}') : -1;
+    if (k >= 0 && text.slice(k + 1).trim()) {
+      const now = { base: state.base, why: state.why, vars: state.vars };
+      Object.assign(state, { base: how.groupAt.base, why: how.groupAt.why, vars: how.groupAt.vars });
+      redirects(text.slice(k + 1));
+      Object.assign(state, now);
+      writesIn(text.slice(0, k + 1), how, piped);
+    } else writesIn(text, how, piped);
   };
   const after = (text) => { if (mark && text.includes(mark)) docsIn(words(text)); sub(text); redirects(unmark(text)); };
   eachCommand(shell, state, visit, after, { calls: true });
