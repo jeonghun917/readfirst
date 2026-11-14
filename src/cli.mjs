@@ -521,7 +521,8 @@ function headOf(seen, root) {
 }
 // With it, what the working tree already held then, so changes made before the session are not counted as its own:
 // `base:<JSON [root, snapshot, untracked, count]>`. snapshot: `git stash create` (a commit of the tracked files as they
-// were; it writes git objects, never the working tree, the index or a ref), HEAD when nothing was changed, '' for a
+// were; it writes git objects and may refresh the index's stat data as `git status` does, never a file's content, a
+// ref or the stash list), HEAD when nothing was changed, '' for a
 // repository with no commit and nothing added, null when it could not be taken. untracked: the files git did not track
 // then (not ignored), which the stop does not count as the session's; null when there were more than PRE_MAX, with
 // count saying how many: the start is then only partly known and no not-this is compared there.
