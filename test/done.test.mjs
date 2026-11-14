@@ -52,7 +52,7 @@ test('map: requires and dependents are checked like the rest of the map', () => 
   const p = mapProblems(bad, files);
   assert.ok(p.includes('requires[0].when: nope/** matches no tracked file'), p.join('\n'));
   assert.ok(p.includes('requires[0].also: at least one path or pattern'));
-  assert.ok(p.includes('requires[0].why: text'));
+  assert.ok(p.includes('requires[0].why: text (empty)'), 'it says why (test/map-check-says-why.test.mjs)');
   assert.ok(p.includes('requires[1]: { when, also, why }'));
   assert.ok(p.includes('dependents[0].repo: owner/name'));
   assert.ok(p.includes('dependents[0].extra: unknown field'));

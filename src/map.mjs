@@ -17,6 +17,13 @@ export const unBom = (s) => (typeof s === 'string' && s.charCodeAt(0) === 0xfeff
 const ID = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 const isRecord = (v) => !!v && typeof v === 'object' && !Array.isArray(v);
 const text = (v, max = 2000) => typeof v === 'string' && v.trim() !== '' && v.length <= max;
+// What a value is, as a problem names it when another was expected.
+const kindOf = (v) => (v === null ? 'null' : Array.isArray(v) ? 'a list' : typeof v === 'string' ? 'a string' : typeof v === 'number' ? 'a number' : typeof v === 'boolean' ? `${v}` : typeof v === 'object' ? 'an object' : typeof v);
+// Why a value is not text within `max` characters, or null when it is: a problem says this, not only what the field
+// should be (until 2026-11-14 a risk of 2,153 characters read "{ text, files? }", like one with no text at all).
+const textWhy = (v, max = 2000) => (v === undefined ? 'missing' : typeof v !== 'string' ? kindOf(v) : v.trim() === '' ? 'empty' : v.length > max ? `${v.length} characters, over the ${max.toLocaleString('en-US')}-character limit` : null);
+// Pushes `<where>: text (<why>)` when v is not text; true when it is.
+const needText = (v, where, p, max = 2000) => { const why = textWhy(v, max); if (why) p.push(`${where}: text (${why})`); return !why; };
 
 export function patternToRegExp(pattern) {
   // Within one segment: `*` is any run of characters, `?` one character; everything else is literal.
@@ -34,7 +41,8 @@ export const matcher = (patterns) => {
 };
 
 const strings = (v, where, p, max = 500) => {
-  if (!Array.isArray(v) || !v.every((s) => text(s, max))) p.push(`${where}: a list of non-empty strings`);
+  if (!Array.isArray(v)) p.push(`${where}: a list of non-empty strings (${kindOf(v)})`);
+  else { const i = v.findIndex((s) => !text(s, max)); if (i >= 0) p.push(`${where}: a list of non-empty strings (item ${i}: ${textWhy(v[i], max)})`); }
   return Array.isArray(v) ? v.filter((s) => text(s, max)) : [];
 };
 
@@ -72,9 +80,11 @@ const checkList = (v, where, p) => {
   if (v === undefined) return;
   if (!Array.isArray(v)) { p.push(`${where}: a list`); return; }
   v.forEach((c, i) => {
-    if (!isRecord(c) || !text(c.run, 500)) { p.push(`${where}[${i}]: { run, why? }`); return; }
+    if (!isRecord(c)) { p.push(`${where}[${i}]: { run, why? } (${kindOf(c)})`); return; }
+    // The line keeps its old start (`{ run, why? }`), with what is wrong with `run` after it.
+    if (textWhy(c.run, 500)) p.push(`${where}[${i}]: { run, why? } (run: ${textWhy(c.run, 500)})`);
     only(c, ['run', 'why'], `${where}[${i}]`, p);
-    if (c.why !== undefined && !text(c.why)) p.push(`${where}[${i}].why: text`);
+    if (c.why !== undefined) needText(c.why, `${where}[${i}].why`, p);
   });
 };
 
@@ -92,13 +102,13 @@ function hotspotProblems(map, files, p) {
     only(h, ['file', 'symbol', 'line', 'labels', 'rules', 'note'], at, p);
     if (typeof h.file !== 'string' || !h.file) p.push(`${at}.file: a path`);
     else if (!tracked.has(h.file)) p.push(`${at}.file: ${h.file} is not a tracked file`);
-    if (!text(h.symbol, 200)) p.push(`${at}.symbol: text`);
+    needText(h.symbol, `${at}.symbol`, p, 200);
     if (!Number.isInteger(h.line) || h.line < 1) p.push(`${at}.line: a line number`);
     const labels = strings(h.labels, `${at}.labels`, p, 64);
     if (!labels.length) p.push(`${at}.labels: at least one label`);
     for (const l of labels) if (!ID.test(l)) p.push(`${at}.labels: ${l}: lowercase letters, digits and "-"`);
     if (h.rules !== undefined) for (const r of strings(h.rules, `${at}.rules`, p, 64)) if (!ruleIds.has(r)) p.push(`${at}.rules: no rule ${r}`);
-    if (h.note !== undefined && !text(h.note, 500)) p.push(`${at}.note: text`);
+    if (h.note !== undefined) needText(h.note, `${at}.note`, p, 500);
   });
 }
 
@@ -125,7 +135,7 @@ function flowProblems(map, files, p) {
     const at = `flows[${i}]`;
     if (!isRecord(f)) { p.push(`${at}: { entry, file, line, checks, reaches }`); return; }
     only(f, ['entry', 'file', 'line', 'checks', 'reaches'], at, p);
-    if (!text(f.entry, 200)) p.push(`${at}.entry: text`);
+    needText(f.entry, `${at}.entry`, p, 200);
     place(f, at);
     if (!Array.isArray(f.checks) || !f.checks.every((c) => text(c, 200))) p.push(`${at}.checks: a list of names (empty when none was found)`);
     if (!Array.isArray(f.reaches) || !f.reaches.length) { p.push(`${at}.reaches: at least one { file, symbol, line, labels }`); return; }
@@ -134,7 +144,7 @@ function flowProblems(map, files, p) {
       if (!isRecord(r)) { p.push(`${rat}: { file, symbol, line, labels }`); return; }
       only(r, ['file', 'symbol', 'line', 'labels', 'tables', 'inputs'], rat, p);
       place(r, rat);
-      if (!text(r.symbol, 200)) p.push(`${rat}.symbol: text`);
+      needText(r.symbol, `${rat}.symbol`, p, 200);
       if (r.inputs !== undefined) { const ins = strings(r.inputs, `${rat}.inputs`, p, 120); if (ins.length > 10) p.push(`${rat}.inputs: at most 10`); }
       if (r.tables !== undefined) for (const t of strings(r.tables, `${rat}.tables`, p, 200)) if (!/^[\w.$"-]+$/u.test(t)) p.push(`${rat}.tables: ${t}: a table name`);
       const labels = strings(r.labels, `${rat}.labels`, p, 64);
@@ -212,7 +222,7 @@ function vocabularyProblems(map, files, p) {
         if (ok) { try { new RegExp(x.when, 'u'); } catch { ok = false; } }
         if (!ok) p.push(`${at}.when: a regular expression the entry's code must match for the check to count`);
       }
-      if (x.why !== undefined || ['notChecks', 'public', 'checksIf', 'notSinks'].includes(kind)) if (!text(x.why, 300)) p.push(`${at}.why: text`);
+      if (x.why !== undefined || ['notChecks', 'public', 'checksIf', 'notSinks'].includes(kind)) needText(x.why, `${at}.why`, p, 300);
       evidence(x.evidence, at, ['checks', 'sinks', 'entries', 'checksIf', 'once', 'sources'].includes(kind));
     });
   }
@@ -256,7 +266,7 @@ function modelProblems(map, files, p) {
       if (ok) { try { new RegExp(m.unless, 'u'); } catch { ok = false; } }
       if (!ok) p.push(`${at}.unless: a regular expression for the declarations that skip "check" (only with check)`);
     }
-    if (m.is === 'neutral' ? !text(m.why, 300) : m.why !== undefined && !text(m.why, 300)) p.push(`${at}.why: text`);
+    if (m.is === 'neutral' || m.why !== undefined) needText(m.why, `${at}.why`, p, 300);
     if (m.evidence === undefined) { if (m.is !== 'neutral') p.push(`${at}.evidence: "file:line" where the code shows it`); }
     else {
       const e = typeof m.evidence === 'string' ? m.evidence.match(/^(.+):(\d+)$/u) : null;
@@ -329,7 +339,7 @@ function requiresProblems(map, files, p) {
     const when = strings(r.when, `${at}.when`, p);
     if (!when.length) p.push(`${at}.when: at least one path or pattern`);
     if (!strings(r.also, `${at}.also`, p).length) p.push(`${at}.also: at least one path or pattern`);
-    if (!text(r.why)) p.push(`${at}.why: text`);
+    needText(r.why, `${at}.why`, p);
     for (const f of when) if (!files.some(matcher([f]))) p.push(`${at}.when: ${f} matches no tracked file`);
   });
 }
@@ -348,7 +358,7 @@ function dependentsProblems(map, files, p) {
     for (const f of own) if (!files.some(matcher([f]))) p.push(`${at}.files: ${f} matches no tracked file`);
     if (typeof d.repo !== 'string' || !REPO.test(d.repo)) p.push(`${at}.repo: owner/name`);
     if (d.paths !== undefined) strings(d.paths, `${at}.paths`, p);
-    if (!text(d.why)) p.push(`${at}.why: text`);
+    needText(d.why, `${at}.why`, p);
   });
 }
 
@@ -369,22 +379,26 @@ export function mapProblems(map, files, { placement = true } = {}) {
     if (typeof g.id !== 'string' || !ID.test(g.id)) p.push(`${at}.id: lowercase letters, digits and "-"`);
     else if (ids.has(g.id)) p.push(`${at}.id: ${g.id} is used twice`);
     ids.add(g.id);
-    if (!text(g.title, 200)) p.push(`${at}.title: text`);
+    needText(g.title, `${at}.title`, p, 200);
     if (!strings(g.files, `${at}.files`, p).length) p.push(`${at}.files: at least one path or pattern`);
     checkList(g.checks, `${at}.checks`, p);
     // Code being replaced: why, and optionally what to use instead (a group id or a path). Optional; checked below once
     // every group id is known.
     if (g.deprecated !== undefined) {
-      if (!isRecord(g.deprecated) || !text(g.deprecated.why)) p.push(`${at}.deprecated: { why, use? }`);
+      if (!isRecord(g.deprecated)) p.push(`${at}.deprecated: { why, use? } (${kindOf(g.deprecated)})`);
       else {
+        // Every problem at once: a bad why does not hide a bad use (review of readfirst#215).
+        if (textWhy(g.deprecated.why)) p.push(`${at}.deprecated: { why, use? } (why: ${textWhy(g.deprecated.why)})`);
         only(g.deprecated, ['why', 'use'], `${at}.deprecated`, p);
-        if (g.deprecated.use !== undefined && !text(g.deprecated.use, 500)) p.push(`${at}.deprecated.use: a group id or a path`);
+        if (g.deprecated.use !== undefined && textWhy(g.deprecated.use, 500)) p.push(`${at}.deprecated.use: a group id or a path (${textWhy(g.deprecated.use, 500)})`);
       }
     }
     if (g.risks !== undefined) {
       if (!Array.isArray(g.risks)) p.push(`${at}.risks: a list`);
       else g.risks.forEach((r, j) => {
-        if (!isRecord(r) || !text(r.text)) { p.push(`${at}.risks[${j}]: { text, files? }`); return; }
+        if (!isRecord(r)) { p.push(`${at}.risks[${j}]: { text, files? } (${kindOf(r)})`); return; }
+        // The line keeps its old start (`{ text, files? }`), with what is wrong with `text` after it.
+        if (textWhy(r.text)) p.push(`${at}.risks[${j}]: { text, files? } (text: ${textWhy(r.text)})`);
         only(r, ['text', 'files'], `${at}.risks[${j}]`, p);
         if (r.files !== undefined) strings(r.files, `${at}.risks[${j}].files`, p);
       });
@@ -405,8 +419,8 @@ export function mapProblems(map, files, { placement = true } = {}) {
         if (typeof r.id !== 'string' || !ID.test(r.id)) p.push(`${at}.id: lowercase letters, digits and "-"`);
         else if (ruleIds.has(r.id)) p.push(`${at}.id: ${r.id} is used twice`);
         ruleIds.add(r.id);
-        if (!text(r.rule)) p.push(`${at}.rule: text`);
-        if (r.why !== undefined && !text(r.why)) p.push(`${at}.why: text`);
+        needText(r.rule, `${at}.rule`, p);
+        if (r.why !== undefined) needText(r.why, `${at}.why`, p);
         if (!strings(r.files, `${at}.files`, p).length) p.push(`${at}.files: at least one path or pattern`);
         checkList(r.checks, `${at}.checks`, p);
         if (r.flow !== undefined) ruleFlowProblems(r.flow, `${at}.flow`, p);

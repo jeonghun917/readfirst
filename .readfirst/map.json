@@ -373,7 +373,7 @@
       ],
       "risks": [
         {
-          "text": "mapProblems rejects unknown fields, so a new map field must be added to the allowed-field list and made optional, and older readfirst versions will reject maps that use it; maps in users' repositories must keep passing under readfirst/map@1",
+          "text": "mapProblems rejects unknown fields, so a new map field must be added to the allowed-field list and made optional, and older readfirst versions will reject maps that use it; maps in users' repositories must keep passing under readfirst/map@1. Each problem says why, not only what the field should be: a text field goes through `needText` (`textWhy`: missing, the type it got, empty, or its length and the limit), and a field that is not an object or a list names the type it got (`kindOf`); until 2026-11-14 a risk of 2,153 characters read only `{ text, files? }`. A line keeps its old start and adds the reason in brackets, and the phrases `in no group` and `matches no tracked file` stay as they are: settleMap and another service read the lines by them (a test in the tests group pins both)",
           "files": [
             "src/map.mjs"
           ]
