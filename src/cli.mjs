@@ -530,6 +530,7 @@ function callWhat(tool, input, targets) {
   const first = (text) => String(text ?? '').split('\n').find((l) => l.trim()) ?? '';
   if (tool === 'Edit') return `Edit of ${files} (the edit of \`${clip(first(input?.old_string))}\`)`;
   if (tool === 'MultiEdit') return `MultiEdit of ${files} (${input?.edits?.length ?? 0} edits)`;
+  if (tool === 'NotebookEdit') return `NotebookEdit of ${files} (${clip(String(input?.edit_mode ?? 'replace'))} of cell ${clip(String(input?.cell_id ?? 'new'))})`;
   if (tool === 'Bash') return `Bash command \`${clip(first(input?.command))}\`${files ? ` (writing ${files})` : ''}`;
   return `${tool} of ${files}`;
 }
@@ -759,7 +760,8 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     event = JSON.parse(input);
     const cwd = event.cwd ?? process.cwd();
     const tool = event.tool_name ?? '';
-    const file = event.tool_input?.file_path;
+    // NotebookEdit names its file notebook_path (2026-11-14: until then it was not read at all).
+    const file = tool === 'NotebookEdit' ? event.tool_input?.notebook_path : event.tool_input?.file_path;
     // A variable the command does not set has the value Claude Code's environment gives it, which the hook shares:
     // $TMPDIR and $HOME are known paths, not unknown ones.
     // Not OLDPWD: the hook's own is not the folder the Bash shell was in before (review of 2026-11-13); the command's cd
@@ -772,7 +774,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const readSafely = (read) => { try { return read(); } catch (e) { misread ??= errorText(e); return null; } };
     const command = String(event.tool_input?.command ?? '');
     let written = tool === 'Bash' ? readSafely(() => readers.shellWrites(event.tool_input?.command, cwd, { vars: env })) : null;
-    const targets = [...new Set((/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
+    const targets = [...new Set((/^(?:Edit|Write|MultiEdit|NotebookEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
       : written ? written.files : []).map(physical))];
     const seen = readSeen(stateDir, event.session_id) ?? {};
     const before = { ...seen };
@@ -1684,11 +1686,21 @@ export function writeWorkflow(root) {
 }
 
 export const HOOK_COMMAND = 'npx --yes readfirst hook';
+// The tools the PreToolUse hook reads: the edits, a notebook cell's edit (NotebookEdit, since 2026-11-14), and Bash
+// (the files a command writes, the `readfirst read` and `find` it runs).
+// One list: the matcher install writes, and the tools it adds to an older readfirst entry that lacks them (its MultiEdit
+// too: an `Edit|Write` matcher stayed without it until 2026-11-14).
+const HOOK_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash'];
+const HOOK_MATCHER = HOOK_TOOLS.join('|');
+// A readfirst hook command however readfirst is run: `npx --yes readfirst hook`, `readfirst@1.2.3 hook`, or a
+// checkout's own `node "$CLAUDE_PROJECT_DIR/bin/readfirst.mjs" hook` (this repository's; until 2026-11-14 install did
+// not see it and added a second entry, so the hook ran twice).
+const READFIRST_HOOK = /(?:^|[\s"'/])readfirst(?:@[\w.-]+)?(?:\.mjs)?["']?\s+hook\b/u;
 export const STOP_HOOK_COMMAND = 'npx --yes readfirst hook --stop';
 // Adds the hook to the project's .claude/settings.json, keeping everything already there. With verify, also the Stop
 // hook that runs the checks before Claude Code finishes.
 // What to add by hand when installHook leaves the file alone.
-const hookSnippet = (verify = false) => `add ${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Edit|Write|MultiEdit|Bash', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }], ...(verify ? { Stop: [{ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }] } : {}) } })} to it by hand`;
+const hookSnippet = (verify = false) => `add ${JSON.stringify({ hooks: { PreToolUse: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }], ...(verify ? { Stop: [{ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }] } : {}) } })} to it by hand`;
 export function installHook(root, { verify = false } = {}) {
   const at = join(root, '.claude', 'settings.json');
   const away = outsideRepo(root, '.claude/settings.json');
@@ -1699,9 +1711,9 @@ export function installHook(root, { verify = false } = {}) {
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('.claude/settings.json was left alone (it is not a JSON object)');
   }
   const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
-  const has = (list) => list.some((m) => (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '')));
+  const has = (list) => list.some((m) => (m.hooks ?? []).some((h) => READFIRST_HOOK.test(h.command ?? '')));
   let added = false;
-  if (!has(pre)) { pre.push({ matcher: 'Edit|Write|MultiEdit|Bash', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }); added = true; }
+  if (!has(pre)) { pre.push({ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }); added = true; }
   if (verify) {
     const stop = (settings.hooks.Stop ??= []);
     if (!has(stop)) { stop.push({ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }); added = true; }
@@ -1709,14 +1721,17 @@ export function installHook(root, { verify = false } = {}) {
   // A readfirst hook installed before it read Bash commands (matcher Edit|Write|MultiEdit) never sees a file a command
   // writes, nor a `readfirst read` or `find` run in Bash, and installing again left it so (2026-11-13). Bash is added
   // to the matcher of each such entry; its command is left as it is (--gate stays the user's choice), and so is every
-  // other entry. A matcher is a pattern of tool names: none, '' or '*' already covers Bash.
-  const seesBash = (m) => {
+  // other entry. A matcher is a pattern of tool names: none, '' or '*' already covers Bash. Every other tool of HOOK_TOOLS
+  // is added the same way (2026-11-14: NotebookEdit, whose cell edits got no notes and were never checked at the stop,
+  // and MultiEdit, which an `Edit|Write` matcher lacked).
+  const sees = (m, tool) => {
     if (typeof m !== 'string' || m === '' || m === '*') return true;
-    try { return new RegExp(`^(?:${m})$`, 'u').test('Bash'); } catch { return m.split('|').map((s) => s.trim()).includes('Bash'); }
+    try { return new RegExp(`^(?:${m})$`, 'u').test(tool); } catch { return m.split('|').map((s) => s.trim()).includes(tool); }
   };
-  const narrow = pre.filter((m) => !seesBash(m.matcher) && (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '') && !/--stop\b/u.test(h.command ?? '')));
-  const widened = narrow.map((m) => [m.matcher, `${m.matcher}|Bash`]);
-  for (const m of narrow) m.matcher = `${m.matcher}|Bash`;
+  const lacks = (m) => HOOK_TOOLS.filter((tool) => !sees(m.matcher, tool));
+  const narrow = pre.filter((m) => lacks(m).length && (m.hooks ?? []).some((h) => READFIRST_HOOK.test(h.command ?? '') && !/--stop\b/u.test(h.command ?? '')));
+  const widened = narrow.map((m) => [m.matcher, [m.matcher, ...lacks(m)].join('|')]);
+  narrow.forEach((m, i) => { m.matcher = widened[i][1]; });
   if (!added && !widened.length) return false;
   if (!added) {
     // Only the matcher changes: the file keeps its own layout (and a byte order mark) when each old matcher is
@@ -1916,7 +1931,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     let added;
     try { added = installHook(root, { verify: args.verify }); } catch (e) { throw new Error(`${e.message}; ${hookSnippet(args.verify)}`); }
     io.out((added === 'matcher'
-      ? `added Bash to the readfirst hook's matcher in .claude/settings.json: it now also sees files a Bash command writes, and the \`readfirst read\` and \`find\` runs; its command was left as it was.\n`
+      ? `added what the readfirst hook's matcher in .claude/settings.json did not cover of the tools it reads (${HOOK_TOOLS.join(', ')}): it now also sees files a Bash command writes, the \`readfirst read\` and \`find\` runs, and notebook cell edits; its command was left as it was.\n`
       : added
       ? `added the readfirst hook to .claude/settings.json: Claude Code now sees the read list before each edit${args.verify ? ', and cannot finish while a check for a file it edited fails (it gets one try to fix it)' : ''}.\n`
       : '.claude/settings.json already has the readfirst hook.\n') + placeHint());
