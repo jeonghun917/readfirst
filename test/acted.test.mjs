@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { ACTED_LOG, actedLine, hookReport, runHook, runStopHook } from '../src/cli.mjs';
+import { ACTED_LOG, actedLine, hookReport, itemId, runHook, runStopHook } from '../src/cli.mjs';
 
 function repo() {
   const root = mkdtempSync(join(tmpdir(), 'readfirst-acted-'));
@@ -29,11 +29,15 @@ test('a refused edit made again at once is counted; one with another call in bet
   const root = repo();
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-acted-state-'));
   const edit = (file, now, session = 's1') => runHook(JSON.stringify({ session_id: session, cwd: root, tool_name: 'Edit', tool_input: { file_path: join(root, file) } }), { stateDir, gate: true, now });
+  const bash = (command, now) => runHook(JSON.stringify({ session_id: 's1', cwd: root, tool_name: 'Bash', tool_input: { command } }), { stateDir, gate: true, now });
   assert.match(edit('src/a.js', 1000), /"permissionDecision":"deny"/u, 'first edit refused with its notes');
-  assert.equal(edit('src/a.js', 2000), null, 'the same edit again goes through');
+  // Made again with nothing answered, it is refused again (test/answers.test.mjs), and counted.
+  assert.match(edit('src/a.js', 2000), /"permissionDecision":"deny"/u, 'the same edit again: refused again, nothing was answered');
   assert.match(edit('src/b.js', 3000), /deny/u);
-  runHook(JSON.stringify({ session_id: 's1', cwd: root, tool_name: 'Bash', tool_input: { command: 'cat src/b.js' } }), { stateDir, gate: true, now: 4000 });
-  assert.equal(edit('src/b.js', 5000), null, 'made again after a command in between');
+  bash('cat src/b.js', 4000);
+  assert.equal(bash(`npx readfirst answer '[{"item":"${itemId('risk', 'src', 'a and b move together')}","answer":"keeps","because":"a and b change in one edit"}]'`, 4500), null, 'the answer goes through');
+  assert.equal(edit('src/b.js', 5000), null, 'made again after commands in between');
+  assert.equal(edit('src/a.js', 6000), null);
   writeFileSync(join(root, 'src/a.js'), 'export const a = 3;\n');
   writeFileSync(join(root, 'src/b.js'), 'export const b = 4;\n');
   const out = JSON.parse(runStopHook(JSON.stringify({ session_id: 's1', cwd: root, stop_hook_active: false }), { stateDir, timeout: 30 }));

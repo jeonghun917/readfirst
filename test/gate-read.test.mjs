@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { runHook, runStopHook } from '../src/cli.mjs';
+import { itemId, runHook, runStopHook } from '../src/cli.mjs';
 
 function repo() {
   const root = mkdtempSync(join(tmpdir(), 'readfirst-gate-read-'));
@@ -29,15 +29,25 @@ let n = 0;
 const session = () => `gate-read-${process.pid}-${++n}`;
 const hook = (root, stateDir, id, tool, input, now) => runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input }), { stateDir, gate: true, now });
 const decision = (out) => (out ? JSON.parse(out).hookSpecificOutput.permissionDecision ?? 'context' : 'through');
+const reason = (out) => JSON.parse(out).hookSpecificOutput.permissionDecisionReason;
 const edit = (root) => ({ file_path: join(root, 'src/a.js'), old_string: '= 1', new_string: '= 2' });
+// The gate asks the map's one risk until it is answered (test/answers.test.mjs); a read decides whether the notes are
+// shown again, not whether the risk is asked.
+const RISK = itemId('risk', 'src', 'a and b move together');
+const answer = (root, stateDir, id, now) => hook(root, stateDir, id, 'Bash', { command: `npx readfirst answer '[{"item":"${RISK}","answer":"keeps","because":"a and b change in one edit"}]'` }, now);
 
-test('a readfirst read run in Bash counts as read: the edit after it goes through', () => {
+test('a readfirst read run in Bash counts as read: the edit after it is asked only for the answer, not shown the notes again', () => {
   for (const command of ['npx readfirst read src/a.js', 'node bin/readfirst.mjs read src/a.js --json', 'cd src && npx --yes readfirst read a.js 2>/dev/null', 'npx readfirst read src/b.js src/a.js']) {
     const { root } = repo();
     const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-gate-read-state-'));
     const id = session();
     hook(root, stateDir, id, 'Bash', { command }, 1000);
-    assert.equal(decision(hook(root, stateDir, id, 'Edit', edit(root), 2000)), 'through', command);
+    const out = hook(root, stateDir, id, 'Edit', edit(root), 2000);
+    assert.equal(decision(out), 'deny', command);
+    assert.doesNotMatch(reason(out), /readfirst notes for/u, `${command}: the notes are not shown again`);
+    assert.match(reason(out), new RegExp(`\`${RISK}\` \\(not judged[^)]*\\): Risk: a and b move together`, 'u'), `${command}: the risk is asked, with its text`);
+    answer(root, stateDir, id, 3000);
+    assert.equal(decision(hook(root, stateDir, id, 'Edit', edit(root), 4000)), 'through', `${command}: answered`);
   }
 });
 
@@ -61,8 +71,13 @@ test('a read and a write in the same Bash call: the write is refused, since the 
     const out = hook(root, stateDir, id, 'Bash', { command }, 1000);
     assert.equal(decision(out), 'deny', command);
     assert.match(JSON.parse(out).hookSpecificOutput.permissionDecisionReason, /a and b move together/u);
-    // The refused call ran nothing; made again it goes through (its notes were shown), as any refused call does.
-    assert.equal(decision(hook(root, stateDir, id, 'Bash', { command }, 2000)), 'through', `${command}: made again`);
+    // The refused call ran nothing; made again it is asked only for the answer (its notes were shown), and once
+    // answered it goes through.
+    const again = hook(root, stateDir, id, 'Bash', { command }, 2000);
+    assert.equal(decision(again), 'deny', `${command}: made again`);
+    assert.doesNotMatch(reason(again), /readfirst notes for/u);
+    answer(root, stateDir, id, 3000);
+    assert.equal(decision(hook(root, stateDir, id, 'Bash', { command }, 4000)), 'through', `${command}: answered`);
   }
 });
 
@@ -81,14 +96,17 @@ test('notes shown or read on another branch do not count on this one', () => {
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-gate-read-state-'));
   const id = session();
   assert.equal(decision(hook(root, stateDir, id, 'Edit', edit(root), 1000)), 'deny', 'first edit: the notes');
+  answer(root, stateDir, id, 1500);
+  // The answer holds for the session (the risk names nothing to judge), so what is left to see is whether the notes
+  // are given again: as context ('context') or not at all ('through').
   assert.equal(decision(hook(root, stateDir, id, 'Edit', edit(root), 2000)), 'through', 'made again on the same branch');
   git('checkout', '-q', '-b', 'next');
-  assert.equal(decision(hook(root, stateDir, id, 'Edit', edit(root), 3000)), 'deny', 'another branch: the notes again');
+  assert.equal(decision(hook(root, stateDir, id, 'Edit', edit(root), 3000)), 'context', 'another branch: the notes again');
   // A CLI read on one branch, an edit on another.
   hook(root, stateDir, id, 'Bash', { command: 'npx readfirst read src/b.js' }, 4000);
   git('checkout', '-q', 'main');
   const other = { file_path: join(root, 'src/b.js'), old_string: '= 1', new_string: '= 2' };
-  assert.equal(decision(hook(root, stateDir, id, 'Edit', other, 5000)), 'deny');
+  assert.equal(decision(hook(root, stateDir, id, 'Edit', other, 5000)), 'context');
   git('checkout', '-q', 'next');
   assert.equal(decision(hook(root, stateDir, id, 'Edit', other, 6000)), 'through', 'back on the branch it was read on');
 });

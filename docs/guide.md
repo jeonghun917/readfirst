@@ -185,15 +185,33 @@ the temp folder until a commit or a new file (about 0.1 s). If a call writes mor
 time, the notes name the files it skipped, the Stop hook still checks them, and the next call that writes them gets
 their notes.
 
-Want it read for sure, not just offered? Change the command to `npx --yes readfirst hook --gate`: the first call that
-touches a file whose notes Claude Code has not seen is refused with the notes as the reason, and the same call goes
-through when it is made again. Notes count as seen on the branch they were seen on, and a `readfirst read` that
-Claude Code ran in Bash counts too, when its whole output came back: one sent to `/dev/null`, a file or a pipe
-(`| head`), or cut by `--limit`, does not.
+Want it read for sure, not just offered? Change the command to `npx --yes readfirst hook --gate`.
 Each rule and risk in the notes carries a fixed id (`rule:<id>`, or `risk:<group>:<8 hex>` from its text) and what the
 edit about to be made does to it: touched (and by which name or line), not touched, or not judged (it names nothing
 readfirst can find in the code; a Bash command writes the file and there is no edit to compare; the edit changes too
 much of the file to place within the hook's budget; or judging the edit failed, with the error).
+The gate asks each item the edit touches, or cannot judge it against, and refuses the call until each has an answer:
+what is done about it and why, as one quoted JSON argument of `readfirst answer`, for example
+
+```sh
+npx readfirst answer '[{"item":"rule:no-double-charge","answer":"keeps","because":"the charge still runs once per order"},
+  {"item":"risk:billing:1a2b3c4d","answer":"not-this","because":"it is about refunds; this edit is in the charge","symbols":["charge"]}]'
+```
+
+`answer` is `keeps` (the change keeps what the item asks), `not-this` (it is about something else; `symbols` names
+what the change touches, among the names the notes gave, so an item readfirst could not judge takes no `not-this`),
+`done` (the change is what it asks for) or `unsure`. The hook
+reads the answer from the command line, one literal argument: one given through `$( )`, a file, a variable (even one
+the command sets), a here-document or a pipe is not read. It counts from the next call on, and only when its own call goes through, so an
+answer and an edit in one command is refused for the edit. An answer holds for the session while an edit touches its
+item by the same names; one that touches a new name asks again, and an item not touched is not asked at all. The same
+call made again without an answer is refused again, with the items still open. An `unsure` lets the edit through, and
+the Stop hook stops once to name every item still unsure. Once the session has been asked 4 items or more, an answer
+is refused when it would leave more than half of them with `unsure` as their last answer. The `readfirst answer` command itself only prints what it was
+given; it writes nothing.
+Notes count as seen on the branch they were seen on, and a `readfirst read` that Claude Code ran in Bash counts too,
+when its whole output came back: one sent to `/dev/null`, a file or a pipe (`| head`), or cut by `--limit`, does not.
+Notes already seen are not shown again; their items are still asked until answered.
 In a Bash command, the variables the command sets for itself are followed (`S=/a; cd $S && sed -i ... f` writes
 /a/f). A write whose place the command cannot tell before it runs (a variable from outside it such as `$TMPDIR`, a
 `$( )`, a loop variable) is named with the part that is not known; the gate refuses that call once and lets it through
@@ -227,7 +245,8 @@ to cover all the checks together.
 
 Whether the notes were acted on: the Stop hook ends with one line for the session, what the map asked for the files
 you edited (checks to run, files that change together), what was done, every item that was not, and how many edits the
-gate refused were made again at once with no other edit or command in between (their notes were likely not read). It
+gate refused were made again at once with no other edit or command in between (their notes were likely not read), and
+how many answers were left unsure. It
 keeps that line in `readfirst-acted.jsonl` in the temp folder; `npx readfirst hook --report` adds up every session kept
 there and names each item not done, most often first. Nothing leaves the machine.
 
