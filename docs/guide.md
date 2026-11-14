@@ -199,14 +199,15 @@ npx readfirst answer '[{"item":"rule:no-double-charge","answer":"keeps","because
 ```
 
 `answer` is `keeps` (the change keeps what the item asks), `not-this` (it is about something else; `symbols` names
-what the change touches, among the names the notes gave), `done` (the change is what it asks for) or `unsure`. The hook
+what the change touches, among the names the notes gave, so an item readfirst could not judge takes no `not-this`),
+`done` (the change is what it asks for) or `unsure`. The hook
 reads the answer from the command line, one literal argument: one given through `$( )`, a file, a variable (even one
 the command sets), a here-document or a pipe is not read. It counts from the next call on, and only when its own call goes through, so an
 answer and an edit in one command is refused for the edit. An answer holds for the session while an edit touches its
 item by the same names; one that touches a new name asks again, and an item not touched is not asked at all. The same
 call made again without an answer is refused again, with the items still open. An `unsure` lets the edit through, and
-the Stop hook stops once to name every item still unsure; once unsure answers are more than half of the items asked in
-the session, an answer with another `unsure` is refused. The `readfirst answer` command itself only prints what it was
+the Stop hook stops once to name every item still unsure. Once the session has been asked 4 items or more, an answer
+is refused when its `unsure` answers, with the session's earlier ones, would be more than half of the items asked. The `readfirst answer` command itself only prints what it was
 given; it writes nothing.
 Notes count as seen on the branch they were seen on, and a `readfirst read` that Claude Code ran in Bash counts too,
 when its whole output came back: one sent to `/dev/null`, a file or a pipe (`| head`), or cut by `--limit`, does not.

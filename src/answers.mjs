@@ -15,6 +15,8 @@
 import { commandWords } from './bash-writes.mjs';
 
 export const ANSWER_KINDS = ['keeps', 'not-this', 'done', 'unsure'];
+// The items a session must have been asked before unsure answers over half of them are refused.
+const UNSURE_FROM = 4;
 const KIND_LINE = 'keeps (the change keeps what it asks; say how), not-this (it is about something else; `symbols`: what the change touches), done (the change does what it asks), unsure';
 
 // The answers in one JSON text, checked for their shape alone: { answers, problems }. Any problem and nothing of the
@@ -118,9 +120,10 @@ export function answered(answers, item, by) {
 // The answers a Bash command gives, checked against the session: { keys, problems, count }. `keys`: the state keys to
 // add when the call is let through. Nothing is kept from a command with a problem in any of its answers.
 // - each item must be one the gate asked in this session;
-// - a not-this answer's symbols must be among the names the change touched the item by (it cannot claim a whole file);
-// - once unsure answers are more than half of the items asked in the session, an answer with an unsure is refused
-//   (counted across answers, so splitting them does not help).
+// - a not-this answer's symbols must be among the names the change touched the item by (it cannot claim a whole file),
+//   and an item readfirst could not judge takes no not-this;
+// - with 4 or more items asked, an answer with an unsure is refused when the unsure answers, its own counted, would be
+//   more than half of them (counted across answers, so splitting them does not help).
 export function answersIn(command, cwd, seen) {
   const runs = answerRuns(command, cwd);
   if (!runs.length) return null;
@@ -137,14 +140,21 @@ export function answersIn(command, cwd, seen) {
   for (const a of answers) {
     const by = asked.get(a.item);
     if (!by) { problems.push(`\`${a.item}\` was not asked in this session: answer the ids the refusal gave`); continue; }
-    if (a.answer === 'not-this' && by.size) {
+    // An item readfirst could not judge has no names the change touched it by, so a not-this, whose symbols must be among
+    // them (plan 2.5), cannot hold: it would close the item without anything read.
+    if (a.answer === 'not-this' && !by.size) problems.push(`\`${a.item}\`: readfirst could not judge it against the change, so there are no names it was touched by for a not-this to stay within: answer keeps, done or unsure`);
+    else if (a.answer === 'not-this') {
       const wider = a.symbols.filter((s) => !by.has(s));
       if (wider.length) problems.push(`\`${a.item}\`: not-this names ${wider.map((s) => `\`${s}\``).join(', ')}, which the change did not touch it by (it touched ${[...by].map((s) => `\`${s}\``).join(', ')}): name only those`);
     }
   }
-  const unsureBefore = before.filter((a) => a.answer === 'unsure').length;
-  if (answers.some((a) => a.answer === 'unsure') && unsureBefore * 2 > asked.size) {
-    problems.push(`${unsureBefore} answers in this session were unsure, more than half of the ${asked.size} items asked: an unsure answer is no answer now; answer keeps, not-this or done`);
+  // Counted with this command's own (plan 2.6: across answers), so neither one answer of all unsure nor answers split
+  // in parts get past it. Below UNSURE_FROM items asked it does not apply: one unsure of one item asked would always be
+  // over half, and the Stop hook's refusal for an open unsure is the cost there.
+  const unsureNow = answers.filter((a) => a.answer === 'unsure').length;
+  const unsureAll = before.filter((a) => a.answer === 'unsure').length + unsureNow;
+  if (unsureNow && asked.size >= UNSURE_FROM && unsureAll * 2 > asked.size) {
+    problems.push(`${unsureAll} unsure answers in this session with this one, more than half of the ${asked.size} items asked: an unsure answer is no answer now; answer keeps, not-this or done`);
   }
   if (problems.length) return { keys: {}, problems, count: 0 };
   const keys = {};

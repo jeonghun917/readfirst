@@ -19,11 +19,11 @@ const PROSE = 'this module is old and fragile; go slowly';
 const RULE = '`beta` never opens a socket';
 const ID = { named: itemId('risk', 'src', NAMED), both: itemId('risk', 'src', BOTH), prose: itemId('risk', 'src', PROSE), rule: 'rule:no-net' };
 let n = 0;
-function session() {
+function session({ risks = [NAMED, BOTH, PROSE], rules = [{ id: 'no-net', rule: RULE, files: ['src/**'] }] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'readfirst-answers-'));
   const files = {
     'src/a.js': A,
-    '.readfirst/map.json': JSON.stringify({ format: 'readfirst/map@1', groups: [{ id: 'src', title: 'the code', files: ['src/**'], risks: [{ text: NAMED }, { text: BOTH }, { text: PROSE }] }], rules: [{ id: 'no-net', rule: RULE, files: ['src/**'] }] }),
+    '.readfirst/map.json': JSON.stringify({ format: 'readfirst/map@1', groups: [{ id: 'src', title: 'the code', files: ['src/**'], risks: risks.map((text) => ({ text })) }], rules }),
   };
   for (const [p, body] of Object.entries(files)) { mkdirSync(dirname(join(root, p)), { recursive: true }); writeFileSync(join(root, p), body); }
   const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8' });
@@ -117,6 +117,8 @@ test('an answer is checked: ids asked, a kind, a because, and a not-this no wide
   assert.match(refused([{ item: ID.rule, answer: 'keeps' }], 'a because'), /has no "because"/u);
   assert.match(refused([{ item: ID.rule, answer: 'not-this', because: 'about alpha', symbols: ['alpha'] }], 'wider'), /not-this names `alpha`, which the change did not touch it by \(it touched `beta`\)/u);
   assert.match(refused([{ item: ID.rule, answer: 'not-this', because: 'x' }], 'no symbols'), /a not-this answer names in "symbols"/u);
+  // The prose risk was not judged: no names, so no not-this, whatever symbols it names.
+  assert.match(refused([{ item: ID.prose, answer: 'not-this', because: 'the edit is in beta', symbols: ['beta'] }], 'not-this on an item not judged'), /readfirst could not judge it against the change, so there are no names it was touched by for a not-this to stay within: answer keeps, done or unsure/u);
   assert.match(s.bash("npx readfirst answer '[{'").permissionDecisionReason, /not JSON/u);
   // One bad answer and nothing of the command is kept, the good ones neither.
   refused([...keeps(ID.rule), { item: ID.prose, answer: 'keeps' }], 'one bad');
@@ -140,24 +142,39 @@ test('an answer holds while the change touches the item by the same names; a new
   assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through', 'beta still answered');
 });
 
-test('unsure lets the call through and blocks the stop once; past half of the items asked it is no answer', () => {
+const unsure = (...list) => list.map((item) => ({ item, answer: 'unsure', because: 'cannot tell what the cache keys on' }));
+
+test('with 4 items asked: all unsure at once is refused, and so are unsure answers split to get past half', () => {
   const s = session();
-  const ids = asked(s.call('Edit', inBeta(s.root)));
-  assert.equal(ids.length, 3);
-  const unsure = (...list) => list.map((item) => ({ item, answer: 'unsure', because: 'cannot tell what the cache keys on' }));
-  assert.equal(s.bash(answer([...unsure(ID.rule, ID.both), ...keeps(ID.prose)])), null, 'two of three unsure: taken');
-  assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through', 'an unsure answer lets the edit through');
+  // A write by sed has no edit to judge: all four items are asked.
+  const ids = asked(s.bash('sed -i s/two/pair/ src/a.js'));
+  assert.deepEqual(ids.sort(), [ID.both, ID.named, ID.prose, ID.rule].sort());
+  const all = s.bash(answer(unsure(...ids)));
+  assert.equal(all.permissionDecision, 'deny', 'one answer, every item unsure');
+  assert.match(all.permissionDecisionReason, /4 unsure answers in this session with this one, more than half of the 4 items asked/u);
+  assert.equal(s.bash(answer([...unsure(ID.rule, ID.both), ...keeps(ID.prose, ID.named)])), null, 'two of four unsure: not more than half, taken');
+  const third = s.bash(answer(unsure(ID.prose)));
+  assert.equal(third.permissionDecision, 'deny', 'split: a third unsure in another answer');
+  assert.match(third.permissionDecisionReason, /3 unsure answers in this session with this one, more than half of the 4 items asked/u);
+  assert.equal(decision(s.bash('sed -i s/two/pair/ src/a.js')), 'through', 'unsure answers let the write through');
   const stopped = s.stop();
   assert.equal(stopped?.decision, 'block');
   assert.match(stopped.reason, /2 answer\(s\) of this session are still unsure:\n- `risk:src:[0-9a-f]{8}`: cannot tell what the cache keys on\n- `rule:no-net`: cannot tell/u);
   assert.notEqual(s.stop()?.decision, 'block', 'once, so a stop cannot loop');
-  // Two unsure of three asked is more than half: an answer with another unsure is refused.
-  const more = s.bash(answer(unsure(ID.prose)));
-  assert.equal(more.permissionDecision, 'deny');
-  assert.match(more.permissionDecisionReason, /2 answers in this session were unsure, more than half of the 3 items asked/u);
   // Answered again with another kind, they are no longer open.
   assert.equal(s.bash(answer(keeps(ID.rule, ID.both))), null);
   assert.equal(s.stop()?.decision, undefined, 'nothing unsure left');
+});
+
+test('with fewer than 4 items asked an unsure is taken, and the Stop hook refuses once for it', () => {
+  const s = session({ risks: [PROSE], rules: [] });
+  const ids = asked(s.call('Edit', inBeta(s.root)));
+  assert.deepEqual(ids, [ID.prose]);
+  assert.equal(s.bash(answer(unsure(ID.prose))), null, 'one of one item unsure: taken');
+  assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through');
+  const stopped = s.stop();
+  assert.equal(stopped?.decision, 'block');
+  assert.match(stopped.reason, new RegExp(`1 answer\\(s\\) of this session are still unsure:\\n- \`${ID.prose}\``, 'u'));
 });
 
 test('a map that cannot be read: nothing is asked, and the notes say the map could not be read', () => {
