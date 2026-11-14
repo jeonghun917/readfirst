@@ -249,6 +249,10 @@ test('scopes: a comma inside type arguments splits no parameter, declarator or p
   // A return type is a type used: `: T` and `: K` as well as the parameters'.
   assert.equal(t.references.filter((r) => r.name === 'T' && r.line === 6).length, 2);
   assert.equal(t.references.filter((r) => r.name === 'K' && r.line === 7).length, 2);
+  // A type parameter's constraint and default see the type parameters, in a function, an arrow, a method.
+  const g = scopes('a.ts', 'type X<A> = A;\nfunction g<T, U extends T = T>(a: U): T { return a; }\nconst h = <V, W extends X<V> = V>(b: W): V => b;\nclass C { m<P, Q extends P = P>(q: Q): P { return q; } }\n');
+  assert.ok(g.references.every((r) => r.to.binding !== undefined && (r.name.length > 1 || g.bindings[r.to.binding].how !== 'const')), JSON.stringify(g.references.map((r) => `${r.name}@${r.line}`)));
+  assert.deepEqual(g.bindings.filter((b) => b.how === 'type-parameter').map((b) => b.name).sort(), ['P', 'Q', 'T', 'U', 'V', 'W']);
   // A `<` whose `>` lies past a closing bracket is a comparison: `[a < b], c > (d)`.
   const u = scopes('a.ts', 'const a = 1, b = 2, c = 3, d = 4, k = (x, y) => x + y;\nconst w = k([a < b], c > (d));\n');
   assert.ok(u.references.every((r) => !r.type), JSON.stringify(u.references.filter((r) => r.type)));

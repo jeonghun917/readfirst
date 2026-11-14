@@ -558,24 +558,29 @@ function typeAngles(T, arrowTypeParams) {
   T.typeAngles = new Map();
   // The first token from j on, at j's depth, that type arguments cannot hold: a value's operator or the bracket that
   // closes the depth (afterAngle reads past one); n if none.
+  // closeAt: the same for the closing bracket alone (a generic arrow's `<T, U = T>` holds an `=`, and no comparison
+  // is followed by `(…) =>`).
   const opAt = new Int32Array(n + 1).fill(n);
+  const closeAt = new Int32Array(n + 1).fill(n);
   for (let j = n - 1; j >= 0; j--) {
     countStep();
     const t = toks[j];
-    if (t.k === 'punct' && (VALUE_OPS.has(t.v) || ')]}'.includes(t.v))) opAt[j] = j;
-    else if (isOpen(t)) { const c = match.get(j); opAt[j] = c === undefined ? j : opAt[c + 1]; }
-    else opAt[j] = opAt[j + 1];
+    if (t.k === 'punct' && ')]}'.includes(t.v)) { opAt[j] = j; closeAt[j] = j; }
+    else if (isOpen(t)) { const c = match.get(j); opAt[j] = c === undefined ? j : opAt[c + 1]; closeAt[j] = c === undefined ? j : closeAt[c + 1]; }
+    else { opAt[j] = t.k === 'punct' && VALUE_OPS.has(t.v) ? j : opAt[j + 1]; closeAt[j] = closeAt[j + 1]; }
   }
   for (let j = 0; j < n; j++) {
     countStep();
     if (!isPunct(toks[j], '<') || T.marks[j]) continue; // a JSX tag's `<` is marked already
     const a = afterAngle(toks, j);
-    if (a <= 0 || opAt[j + 1] < a - 1) continue;
+    if (a <= 0 || closeAt[j + 1] < a - 1) continue;
+    const valueInside = opAt[j + 1] < a - 1;
     const prev = toks[j - 1];
     const next = toks[a];
     const called = isPunct(next, '(') || (next?.k === 'val' && next.v === '`');
     let kind = null;
     if (isWord(prev) && prev.v !== 'async') {
+      if (valueInside) continue;
       let s = j - 1; // the start of the name before: `a.b.C`
       while (isPunct(toks[s - 1], '.') && isWord(toks[s - 2])) s -= 2;
       const before = toks[s - 1];
@@ -784,8 +789,10 @@ function readScript(T) {
     if (isPunct(toks[q], ':')) { marks[q] = SKIP; const from = q + 1; q = skipType(from); annotationOf(T, from, q); }
     if (!isPunct(toks[q], '{')) { for (let r = p; r < q; r++) if (!marks[r] || marks[r] === REF) marks[r] = SKIP; return -1; }
     const end = (match.get(q) ?? n - 1) + 1;
-    const s = T.scope('function', name, p, end);
-    scopeStartAt(p, s);
+    // A generic function's scope opens at its type parameters, so their constraints and defaults see them.
+    const from = typeOpen >= 0 ? typeOpen : p;
+    const s = T.scope('function', name, from, end);
+    scopeStartAt(from, s);
     roles.set(q, 'body');
     if (typeOpen >= 0) bindTypeParams(typeOpen, p - 1, s);
     params(p, c, s);
@@ -1013,8 +1020,9 @@ function readScript(T) {
         if (isWord(toks[a - 1], 'async')) a--;
         const bodyOpen = isPunct(toks[j + 1], '{') ? j + 1 : -1;
         const end = bodyOpen >= 0 ? (match.get(bodyOpen) ?? n - 1) + 1 : null;
-        const s = T.scope('function', null, a, end ?? n);
         const typeOpen = open >= 0 ? arrowTypeParams.get(open) : undefined;
+        if (typeOpen !== undefined && typeOpen < a) a = typeOpen;
+        const s = T.scope('function', null, a, end ?? n);
         if (typeOpen !== undefined) bindTypeParams(typeOpen, open - 1, s);
         if (open >= 0) params(open, close, s);
         else { marks[j - 1] = BIND; T.bind(s, prev.v, j - 1, 'parameter'); }
