@@ -10,6 +10,31 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { main } from '../src/cli.mjs';
 
+// Ledger, 2026-11-14: a line counted as right while it sat in any declaration the item names, so evidence written for
+// beta that the code pushed into alpha was never said. It is right only in the declaration git carries it with.
+test('an evidence line pushed into another declaration the item names is said, and fix carries it on', () => {
+  const root = mkdtempSync(join(tmpdir(), 'readfirst-fix-names-'));
+  const code = 'export function alpha() {\n  return 1;\n}\nexport function beta() {\n  return 2;\n}\n';
+  const files = {
+    'src/a.js': code,
+    '.readfirst/map.json': `${JSON.stringify({ format: 'readfirst/map@1', groups: [{ id: 'src', title: 'the code', files: ['src/**', '.readfirst/**'], risks: [{ text: '`alpha` and `beta` keep their order - src/a.js:5' }] }] }, null, 2)}\n`,
+  };
+  for (const [p, body] of Object.entries(files)) { mkdirSync(dirname(join(root, p)), { recursive: true }); writeFileSync(join(root, p), body); }
+  const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  git('add', '.');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'start');
+  // Three blank lines on top: line 5 (beta's return) is now at 8, and line 5 is alpha's return.
+  writeFileSync(join(root, 'src/a.js'), `\n\n\n${code}`);
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', 'header');
+  let checked = '';
+  main(['--root', root, 'check'], { out: (s) => { checked += s; }, err: (s) => { checked += s; } });
+  assert.match(checked, /src\/a\.js:5 is in `alpha`, but the line it was written for moved with `beta` to src\/a\.js:8/u);
+  let out = '';
+  main(['--root', root, 'fix', '--json'], { out: (s) => { out += s; }, err: () => {} });
+  assert.deepEqual(JSON.parse(out).changes.filter((c) => /src\/a\.js/u.test(c)), ['groups.src.risks[0]: src/a.js:5 -> src/a.js:8 (`beta` moved)']);
+});
+
 test('each evidence line fix moves is named by the declaration it moved with', () => {
   const root = mkdtempSync(join(tmpdir(), 'readfirst-fix-names-'));
   const code = 'export function alpha() {\n  return 1;\n}\nexport function beta() {\n  return 2;\n}\n';
