@@ -33,8 +33,8 @@ import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom, unshownRisks } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
-import { bashReads, shellWrites } from './bash-writes.mjs';
-import { ANSWER_HOW, ANSWER_KINDS, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, itemTally, lastAnswers, openUnsure, parseAnswer, wideItems } from './answers.mjs';
+import { bashReads, commandWords, shellWrites } from './bash-writes.mjs';
+import { ANSWER_HOW, ANSWER_KINDS, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, itemTally, lastAnswers, openUnsure, parseAnswer, readfirstAt, wideItems } from './answers.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { definitions, find, findText, meets, words } from './find.mjs';
@@ -530,6 +530,7 @@ function callWhat(tool, input, targets) {
   const first = (text) => String(text ?? '').split('\n').find((l) => l.trim()) ?? '';
   if (tool === 'Edit') return `Edit of ${files} (the edit of \`${clip(first(input?.old_string))}\`)`;
   if (tool === 'MultiEdit') return `MultiEdit of ${files} (${input?.edits?.length ?? 0} edits)`;
+  if (tool === 'NotebookEdit') return `NotebookEdit of ${files} (${clip(String(input?.edit_mode ?? 'replace'))} of cell ${clip(String(input?.cell_id ?? 'new'))})`;
   if (tool === 'Bash') return `Bash command \`${clip(first(input?.command))}\`${files ? ` (writing ${files})` : ''}`;
   return `${tool} of ${files}`;
 }
@@ -660,14 +661,66 @@ export const ACTED_LOG = 'readfirst-acted.jsonl';
 // (`find "retry a payment"` for retryPayment, by find's own words and meets), so searching first and then writing
 // passes without a refusal; or any find run after the gate asked about these very names, so a name the query does
 // not happen to share a word with costs one refusal and never more.
-const FIND_RUN = /(?:^|[\s;&|(])(?:npx\s+(?:--yes\s+|-y\s+)?)?(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)\s+find\b/u;
-// The words a find command asked: what follows `find` up to the end of that command, options left out.
-const findQuery = (command) => { const m = String(command).match(FIND_RUN); return m ? words(String(command).slice(m.index + m[0].length).split(/[;|&\n]/u)[0].replace(/(?:^|\s)--?[\w-]+(?:=\S+)?/gu, ' ')) : []; };
-// Whether a find of this session asked about `name` in the repository `root`.
-function findAsked(seen, root, name) {
+// What a find asked, read as the shell runs the command (commandWords; until 2026-11-14 a pattern took the first find
+// of the command and the text after it as written, so a second find was not read and a loop's `$q` was the query):
+// each query of every find in the command, in a list or a pipeline, options left out. A word the command does not give
+// as written is left out, but a for loop's variable stands for each of the loop's values written out
+// (`for q in "a" "b"; do readfirst find "$q"; done` asks "a" and "b"). An option that takes a value (`VALUES`, the
+// options parse() reads a value for) takes its value with it: `--lang python` asks nothing of python. Each query comes
+// with the folder its find runs in (`at`, after the command's cd's); a find whose folder readfirst cannot tell, or that
+// asks nothing, gives none, so it opens nothing (review of 1552438: both counted as a find in the starting folder).
+export function findQueries(command, cwd) {
+  const text = String(command ?? '');
+  if (!/readfirst/u.test(text) || !/\bfind\b/u.test(text)) return [];
+  const loops = new Map();
+  const out = [];
+  for (const c of commandWords(text, cwd)) {
+    const w = c.words;
+    if (w[0]?.known && w[0].text === 'for' && w[2]?.text === 'in') { loops.set(w[1]?.text, w.slice(3).filter((x) => x.known).map((x) => x.text)); continue; }
+    if (c.body || c.at == null) continue;
+    const start = readfirstAt(w, 'find');
+    if (start < 0) continue;
+    let runs = [[]];
+    // --root: find searches that folder (from the command's), so its query counts there; a value not written out
+    // leaves the folder not known.
+    let root = c.at;
+    for (let i = start; i < w.length; i++) {
+      const x = w[i];
+      // An option is told by the word as written, before it is known: `--root=$D` is an option whose value is not
+      // known (review of 099df6e: it was read as neither, and the find counted in the command's folder).
+      const flag = x.known ? x.text : String(x.raw ?? '').replace(/^["']/u, '');
+      if (flag.startsWith('-')) {
+        const [name, value] = flag.replace(/^--?/u, '').split(/=(.*)/su);
+        const given = value !== undefined ? x : VALUES.has(name) ? w[++i] : null;
+        if (name === 'root') root = given?.known ? resolve(c.at, value ?? given.text) : null;
+        continue;
+      }
+      if (x.known) { runs.forEach((r) => r.push(x.text)); continue; }
+      const values = loops.get(String(x.raw).match(/^"?\$\{?([A-Za-z_]\w*)\}?"?$/u)?.[1]);
+      if (values?.length) runs = runs.flatMap((r) => values.map((v) => [...r, v]));
+    }
+    if (root != null) out.push(...runs.map((r) => r.join(' ')).filter((q) => q.trim()).map((query) => ({ query, at: root })));
+  }
+  return out;
+}
+// The plain lowercase words of a text, camelCase split, nothing dropped.
+const plainWords = (text) => String(text).replace(/([a-z0-9])([A-Z])/gu, '$1 $2').toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+// The words a find query is kept by: find's own (words), and, marked `=`, each word find drops (a stop word such as
+// make or build), so a name made only of such words can still be asked about (findAsked).
+const askedWords = (query) => [...new Set([...words(query), ...plainWords(query).filter((t) => !words(t).length).map((t) => `=${t}`)])];
+// The repository a folder is in, one for all its worktrees: its git common folder, resolved through symlinks. The find
+// marks are kept by it (until 2026-11-14 by the checkout's top level, so a find run in one worktree did not count in
+// another of the same repository).
+const repoIdOf = (dir) => { try { return realpathSync(resolve(dir, git(dir, 'rev-parse', '--git-common-dir').trim())); } catch { return null; } };
+// Whether a find of this session asked about `name` under any of `keys` (the repository's id, and its top level, which
+// older state files used). A name whose words find all drops counts when a find asked one of them as written.
+function findAsked(seen, keys, name) {
   const mine = words(name);
-  const prefix = `findwords:${root}:`;
-  return Object.keys(seen).some((k) => k.startsWith(prefix) && k.slice(prefix.length).split(' ').some((q) => mine.some((w) => meets(q, w))));
+  const plain = mine.length ? [] : plainWords(name);
+  return keys.some((key) => {
+    const prefix = `findwords:${key}:`;
+    return Object.keys(seen).some((k) => k.startsWith(prefix) && k.slice(prefix.length).split(' ').some((q) => (q.startsWith('=') ? plain.includes(q.slice(1)) : mine.some((w) => meets(q, w)))));
+  });
 }
 // Only names another file could use count (2026-11-14: a const local to a function, an inner function and a test's own
 // helper were asked about too): what definitions reads as reusable (the file's top level, a class's member, an export),
@@ -712,7 +765,8 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     event = JSON.parse(input);
     const cwd = event.cwd ?? process.cwd();
     const tool = event.tool_name ?? '';
-    const file = event.tool_input?.file_path;
+    // NotebookEdit names its file notebook_path (2026-11-14: until then it was not read at all).
+    const file = tool === 'NotebookEdit' ? event.tool_input?.notebook_path : event.tool_input?.file_path;
     // A variable the command does not set has the value Claude Code's environment gives it, which the hook shares:
     // $TMPDIR and $HOME are known paths, not unknown ones.
     // Not OLDPWD: the hook's own is not the folder the Bash shell was in before (review of 2026-11-13); the command's cd
@@ -725,7 +779,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const readSafely = (read) => { try { return read(); } catch (e) { misread ??= errorText(e); return null; } };
     const command = String(event.tool_input?.command ?? '');
     let written = tool === 'Bash' ? readSafely(() => readers.shellWrites(event.tool_input?.command, cwd, { vars: env })) : null;
-    const targets = [...new Set((/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
+    const targets = [...new Set((/^(?:Edit|Write|MultiEdit|NotebookEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
       : written ? written.files : []).map(physical))];
     const seen = readSeen(stateDir, event.session_id) ?? {};
     const before = { ...seen };
@@ -738,10 +792,11 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const resentNow = Boolean(prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]);
     const markResent = () => { if (resentNow) seen[`resent:${sig}:${now}`] = now; };
     seen[`call:${sig}`] = now;
-    if (tool === 'Bash' && FIND_RUN.test(String(event.tool_input?.command ?? ''))) {
-      const root = repoOf(cwd);
-      const asked = findQuery(event.tool_input.command);
-      if (root) { seen[`find:${root}`] = now; if (asked.length) seen[`findwords:${root}:${[...new Set(asked)].join(' ')}`] = now; }
+    // Each find is marked in the repository it runs in, and only when it asked something.
+    for (const { query, at } of tool === 'Bash' ? findQueries(event.tool_input?.command, cwd) : []) {
+      const id = repoIdOf(at);
+      const asked = askedWords(query);
+      if (id && asked.length) { seen[`find:${id}`] = now; seen[`findwords:${id}:${asked.join(' ')}`] = now; }
     }
     // `readfirst read` run in Bash shows the same notes the hook would (2026-11-13: the gate did not count it, so a
     // file read that way was refused all the same). It counts for the branch it ran on, and only when its whole
@@ -827,10 +882,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => { const root = rootOf(abs, known); return { abs, root, names: newCode(tool, event.tool_input, abs, root ? relative(root, abs) : abs) }; })
       .filter((f) => f.names.length && f.root && existsSync(join(f.root, MAP_PATH))) : [];
     // The names no find asked about; the ask is kept with them, so the same file given other new names later is asked again.
-    const open = added.map((f) => ({ ...f, names: f.names.filter((n) => !findAsked(seen, f.root, n)) })).filter((f) => f.names.length);
+    // A find is looked for by the repository's id (repoIdOf) and by the file's top level, which state files kept until
+    // 2026-11-14.
+    const marks = new Map();
+    const marksOf = (root) => { if (!marks.has(root)) marks.set(root, [repoIdOf(root), root].filter(Boolean)); return marks.get(root); };
+    const open = added.map((f) => ({ ...f, names: f.names.filter((n) => !findAsked(seen, marksOf(f.root), n)) })).filter((f) => f.names.length);
     const askKey = `nofind:${sig}:${open.flatMap((f) => f.names).sort().join(',')}`;
     const askedAt = before[askKey];
-    const fresh = open.filter((f) => !(askedAt && seen[`find:${f.root}`] > askedAt));
+    const fresh = open.filter((f) => !(askedAt && marksOf(f.root).some((k) => seen[`find:${k}`] > askedAt)));
     const askFind = fresh.length > 0 && !askedAt;
     const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
@@ -1632,11 +1691,21 @@ export function writeWorkflow(root) {
 }
 
 export const HOOK_COMMAND = 'npx --yes readfirst hook';
+// The tools the PreToolUse hook reads: the edits, a notebook cell's edit (NotebookEdit, since 2026-11-14), and Bash
+// (the files a command writes, the `readfirst read` and `find` it runs).
+// One list: the matcher install writes, and the tools it adds to an older readfirst entry that lacks them (its MultiEdit
+// too: an `Edit|Write` matcher stayed without it until 2026-11-14).
+const HOOK_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash'];
+const HOOK_MATCHER = HOOK_TOOLS.join('|');
+// A readfirst hook command however readfirst is run: `npx --yes readfirst hook`, `readfirst@1.2.3 hook`, or a
+// checkout's own `node "$CLAUDE_PROJECT_DIR/bin/readfirst.mjs" hook` (this repository's; until 2026-11-14 install did
+// not see it and added a second entry, so the hook ran twice).
+const READFIRST_HOOK = /(?:^|[\s"'/])readfirst(?:@[\w.-]+)?(?:\.mjs)?["']?\s+hook\b/u;
 export const STOP_HOOK_COMMAND = 'npx --yes readfirst hook --stop';
 // Adds the hook to the project's .claude/settings.json, keeping everything already there. With verify, also the Stop
 // hook that runs the checks before Claude Code finishes.
 // What to add by hand when installHook leaves the file alone.
-const hookSnippet = (verify = false) => `add ${JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Edit|Write|MultiEdit|Bash', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }], ...(verify ? { Stop: [{ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }] } : {}) } })} to it by hand`;
+const hookSnippet = (verify = false) => `add ${JSON.stringify({ hooks: { PreToolUse: [{ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }], ...(verify ? { Stop: [{ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }] } : {}) } })} to it by hand`;
 export function installHook(root, { verify = false } = {}) {
   const at = join(root, '.claude', 'settings.json');
   const away = outsideRepo(root, '.claude/settings.json');
@@ -1647,9 +1716,9 @@ export function installHook(root, { verify = false } = {}) {
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('.claude/settings.json was left alone (it is not a JSON object)');
   }
   const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
-  const has = (list) => list.some((m) => (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '')));
+  const has = (list) => list.some((m) => (m.hooks ?? []).some((h) => READFIRST_HOOK.test(h.command ?? '')));
   let added = false;
-  if (!has(pre)) { pre.push({ matcher: 'Edit|Write|MultiEdit|Bash', hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }); added = true; }
+  if (!has(pre)) { pre.push({ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }); added = true; }
   if (verify) {
     const stop = (settings.hooks.Stop ??= []);
     if (!has(stop)) { stop.push({ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }); added = true; }
@@ -1657,14 +1726,17 @@ export function installHook(root, { verify = false } = {}) {
   // A readfirst hook installed before it read Bash commands (matcher Edit|Write|MultiEdit) never sees a file a command
   // writes, nor a `readfirst read` or `find` run in Bash, and installing again left it so (2026-11-13). Bash is added
   // to the matcher of each such entry; its command is left as it is (--gate stays the user's choice), and so is every
-  // other entry. A matcher is a pattern of tool names: none, '' or '*' already covers Bash.
-  const seesBash = (m) => {
+  // other entry. A matcher is a pattern of tool names: none, '' or '*' already covers Bash. Every other tool of HOOK_TOOLS
+  // is added the same way (2026-11-14: NotebookEdit, whose cell edits got no notes and were never checked at the stop,
+  // and MultiEdit, which an `Edit|Write` matcher lacked).
+  const sees = (m, tool) => {
     if (typeof m !== 'string' || m === '' || m === '*') return true;
-    try { return new RegExp(`^(?:${m})$`, 'u').test('Bash'); } catch { return m.split('|').map((s) => s.trim()).includes('Bash'); }
+    try { return new RegExp(`^(?:${m})$`, 'u').test(tool); } catch { return m.split('|').map((s) => s.trim()).includes(tool); }
   };
-  const narrow = pre.filter((m) => !seesBash(m.matcher) && (m.hooks ?? []).some((h) => /readfirst hook/u.test(h.command ?? '') && !/--stop\b/u.test(h.command ?? '')));
-  const widened = narrow.map((m) => [m.matcher, `${m.matcher}|Bash`]);
-  for (const m of narrow) m.matcher = `${m.matcher}|Bash`;
+  const lacks = (m) => HOOK_TOOLS.filter((tool) => !sees(m.matcher, tool));
+  const narrow = pre.filter((m) => lacks(m).length && (m.hooks ?? []).some((h) => READFIRST_HOOK.test(h.command ?? '') && !/--stop\b/u.test(h.command ?? '')));
+  const widened = narrow.map((m) => [m.matcher, [m.matcher, ...lacks(m)].join('|')]);
+  narrow.forEach((m, i) => { m.matcher = widened[i][1]; });
   if (!added && !widened.length) return false;
   if (!added) {
     // Only the matcher changes: the file keeps its own layout (and a byte order mark) when each old matcher is
@@ -1864,7 +1936,7 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     let added;
     try { added = installHook(root, { verify: args.verify }); } catch (e) { throw new Error(`${e.message}; ${hookSnippet(args.verify)}`); }
     io.out((added === 'matcher'
-      ? `added Bash to the readfirst hook's matcher in .claude/settings.json: it now also sees files a Bash command writes, and the \`readfirst read\` and \`find\` runs; its command was left as it was.\n`
+      ? `added what the readfirst hook's matcher in .claude/settings.json did not cover of the tools it reads (${HOOK_TOOLS.join(', ')}): it now also sees files a Bash command writes, the \`readfirst read\` and \`find\` runs, and notebook cell edits; its command was left as it was.\n`
       : added
       ? `added the readfirst hook to .claude/settings.json: Claude Code now sees the read list before each edit${args.verify ? ', and cannot finish while a check for a file it edited fails (it gets one try to fix it)' : ''}.\n`
       : '.claude/settings.json already has the readfirst hook.\n') + placeHint());
