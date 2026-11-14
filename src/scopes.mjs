@@ -18,7 +18,7 @@ import { codeRows, tokens, bracketMatches, afterAngle, countStep, needsMore, con
 import { importResolver } from './imports.mjs';
 
 // Why a name or a module is not known: the closed list.
-export const REASONS = ['import-star', 'eval', 'with-statement', 'dynamic-import', 'computed-require', 'unresolved-module', 'undefined-name', 'locals-globals', 'string-annotation'];
+export const REASONS = ['import-star', 'eval', 'with-statement', 'dynamic-import', 'computed-require', 'unresolved-module', 'undefined-name', 'locals-globals', 'string-annotation', 'this-outside-class'];
 
 const wordSet = (s) => new Set(s.split(/\s+/u).filter(Boolean));
 const LANGS = {
@@ -86,19 +86,27 @@ const TREF = 4; // a name in a type annotation: a use, with `type: true`
 const SKIP = 5; // a type, or a part of an import: nothing to look up
 const ASSIGN = 6; // `x = …` in JavaScript: a new binding of the x the name finds, not a use
 const AREF = 7; // `x += …`, `x++`: a use of x and then a new binding of it
+const THIS = 8; // JavaScript's `this` or `super`: a use of the class around (past arrow functions), if there is one
 const AUGMENTED = new Set(['+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**=', '<<=', '&&=', '||=', '??=']);
 
 // The table of a file: { scopes, bindings, references, unknown }, or null for a file src/code.mjs does not read.
 // - scopes[i]: { kind: 'module'|'function'|'class'|'block'|'comprehension', name, from, to (lines), parent }
 // - bindings[i]: { name, scope, line, how, import?, annotation?, type?, hidden? }. how: import, parameter, assign, def,
-//   class, for, with, except, catch, destructure, global, nonlocal, var, let, const, type. import: { module, name,
+//   class, for, with, except, catch, destructure, global, nonlocal, var, let, const, type, type-parameter, case, and
+//   this / super (a class's own, hidden, which `this` and `super` in it mean). import: { module, name,
 //   alias, form } (form: esm, require, export-from, py-import, py-from; name: the imported name, 'default', '*' or null
 //   for the module itself). annotation: { names: [{ name, member, ref }] } (ref: the reference the name is looked up
 //   as), or { unknown: 'string-annotation' }. type: true for a type-only binding (`import type`, `declare`,
 //   `if TYPE_CHECKING`). A global or nonlocal statement and an `export … from` are bindings with `hidden: true`:
 //   listed, not looked up.
-// - references[i]: { name, line, scope, member, to, type?, early? }. to: { binding } | { builtin: true } |
-//   { unknown: reason }. member: the name after a `.` that follows, if any.
+// - references[i]: { name, line, scope, members, call, to, type?, early?, decorates? }. to: { binding } |
+//   { builtin: true } | { unknown: reason }. members: the steps after the name, through calls and indexes:
+//   { name, call } for `.name` or `?.name` (call: a `(` follows), { index: true } for `[…]`
+//   (`a.b(x)[k].c()` → [{ name: 'b', call: true }, { index: true }, { name: 'c', call: true }]). call: whether a `(`
+//   (or `?.(`) follows the name itself; `new X(…)` and a tagged template are no call. JavaScript's `this` and `super`
+//   are references too, to the class around them (past arrow functions), or unknown 'this-outside-class'.
+//   decorates: for a name in a decorator, the scope it decorates (a def's, a class's, a method's; a field's
+//   decorator, the class; a parameter's, its function).
 // - unknown[i]: { line, reason, text }: what makes a scope's names, or an import, unknowable (import *, eval, with,
 //   import() or require() of something that is not one string).
 export function scopes(path, body) {
@@ -227,6 +235,8 @@ function readPython(T, rows) {
   }
   const blocks = []; // { scope, indent } for a def or class body, { typeOnly: true, indent } for `if TYPE_CHECKING:`
   const matches = []; // the indents of the `match` statements around: a `case` deeper than the last is a case clause
+  const decorating = []; // the decorators read since the last def or class: { a, b } token ranges
+  const decorated = (s) => { for (const d of decorating) (T.decorators ??= []).push({ ...d, scope: s }); decorating.length = 0; };
   const scopeNow = () => { for (let k = blocks.length - 1; k >= 0; k--) if (blocks[k].scope !== undefined) return blocks[k].scope; return moduleScope; };
   let typeOnlyOpen = 0; // `if TYPE_CHECKING:` blocks open around the statement
   const typeOnly = () => typeOnlyOpen > 0;
@@ -318,7 +328,8 @@ function readPython(T, rows) {
     const s = scopeNow();
     const t = toks[k];
     const indent = indentWidth(toks[i].line);
-    if (isPunct(toks[i], '@')) { walkExpr(i + 1, e); return; }
+    // A decorator: its names are uses, of the def or class that comes next.
+    if (isPunct(toks[i], '@')) { walkExpr(i + 1, e); decorating.push({ a: i + 1, b: e }); return; }
     if (!isWord(t)) { pyAssignment(i, e, s); return; }
     if (t.v === 'import') {
       for (const [pa, pb] of partsBetween(T, k + 1, e)) {
@@ -379,6 +390,7 @@ function readPython(T, rows) {
         }
         if (isPunct(toks[c + 1], '-') && isPunct(toks[c + 2], '>')) { marks[c + 1] = SKIP; marks[c + 2] = SKIP; annotationOf(T, c + 3, e); }
       }
+      decorated(fnScope);
       blocks.push({ scope: fnScope, indent });
       return;
     }
@@ -391,6 +403,7 @@ function readPython(T, rows) {
       const cls = T.scope('class', toks[nameAt].v, e + 1, n);
       T.scopes[cls].isClass = true;
       T.scopes[cls].line = toks[k].line;
+      decorated(cls);
       blocks.push({ scope: cls, indent });
       return;
     }
@@ -674,8 +687,10 @@ function readScript(T) {
   const varScope = () => stack.at(-1).fn;
   const blockScope = () => stack.at(-1).s;
   const endsStatement = (j) => j > 0 && toks[j].first && !needsMore(toks[j - 1]) && !continues(toks[j]);
-  // Whether token j starts a class member: after the `{` of the body, a `;`, a member's `}`, or a line's end.
-  const memberStart = (j) => isPunct(toks[j - 1], '{') || isPunct(toks[j - 1], ';') || isPunct(toks[j - 1], '}') || endsStatement(j);
+  // Whether token j starts a class member: after the `{` of the body, a `;`, a member's `}`, a line's end, or a
+  // decorator on the same line (`@d m() {}`, `@d() x = 1`: `decoratorEnds` holds where each decorator ends).
+  const decoratorEnds = new Set();
+  const memberStart = (j) => isPunct(toks[j - 1], '{') || isPunct(toks[j - 1], ';') || isPunct(toks[j - 1], '}') || endsStatement(j) || decoratorEnds.has(j);
   // Whether token j is the first of a block's statements (`{ function f() {} … }`: a declaration, not a value).
   const blockStart = (j) => isPunct(toks[j - 1], '{') && ['block', 'body'].includes(ctx.at(-1).role);
   // Where the look for an arrow's `=>` past `): R` stops: the `=>`, or what ends the type (a ternary's `?` or `:` too,
@@ -730,10 +745,11 @@ function readScript(T) {
       // A parameter's decorators (`@Res()`, `@a.b(x)`): the walk reads them as uses; the parameter comes after.
       while (q < pb && isPunct(toks[q], '@')) {
         marks[q] = SKIP;
-        q++;
+        const from = ++q;
         while (q + 2 < pb && isWord(toks[q]) && isPunct(toks[q + 1], '.') && isWord(toks[q + 2])) q += 2;
         if (isWord(toks[q])) q++;
         if (isPunct(toks[q], '(')) q = (match.get(q) ?? pb - 1) + 1;
+        (T.decorators ??= []).push({ a: from, b: q, scope: s }); // a parameter's decorator: of its function
       }
       while (q < pb && isWord(toks[q]) && PARAM_WORDS.has(toks[q].v) && (isWord(toks[q + 1]) || isPunct(toks[q + 1], '{') || isPunct(toks[q + 1], '['))) { marks[q] = SKIP; q++; }
       if (isWord(toks[q], 'this')) { const end = firstAt(T, q, pb, (t) => isPunct(t, '=')); for (let r = q; r < end; r++) marks[r] = SKIP; continue; }
@@ -1016,6 +1032,16 @@ function readScript(T) {
       }
       // A `=>` already marked is a function type's, inside a type read before (`<T extends (p: A) => B>`).
       if (t.v === '=>' && marks[j]) continue;
+      // A decorator (`@Component({…})`, `@a.b`): its names are uses; what it decorates is found after the walk.
+      if (t.v === '@') {
+        let k = j + 1;
+        while (isWord(toks[k]) && isPunct(toks[k + 1], '.') && isWord(toks[k + 2])) k += 2;
+        if (isWord(toks[k])) k++;
+        if (isPunct(toks[k], '(')) k = (match.get(k) ?? n - 1) + 1;
+        (T.decorators ??= []).push({ a: j + 1, b: k, target: k });
+        decoratorEnds.add(k);
+        continue;
+      }
       if (t.v === '=>') {
         let a = -1;
         let open = -1;
@@ -1032,6 +1058,7 @@ function readScript(T) {
         const typeOpen = open >= 0 ? arrowTypeParams.get(open) : undefined;
         if (typeOpen !== undefined && typeOpen < a) a = typeOpen;
         const s = T.scope('function', null, a, end ?? n);
+        T.scopes[s].arrow = true; // its `this` is the one around it
         if (typeOpen !== undefined) bindTypeParams(typeOpen, open - 1, s);
         if (open >= 0) params(open, close, s);
         else { marks[j - 1] = BIND; T.bind(s, prev.v, j - 1, 'parameter'); }
@@ -1069,7 +1096,7 @@ function readScript(T) {
         let q = k + 1;
         if (isPunct(toks[q], '?') || isPunct(toks[q], '!')) q++;
         if (isPunct(toks[q], '(') || isPunct(toks[q], '<')) callableAt(q, toks[k].v);
-        else if (isPunct(toks[q], ':')) { marks[q] = SKIP; skipType(q + 1); }
+        else if (isPunct(toks[q], ':')) { marks[q] = SKIP; annotationOf(T, q + 1, skipType(q + 1)); } // a field's type: types used
       }
       continue;
     }
@@ -1127,7 +1154,7 @@ function readScript(T) {
       const bodyOpen = firstAt(T, q, n, (x) => isPunct(x, '{') || isWord(x, 'implements'));
       if (isWord(toks[bodyOpen], 'implements')) skipType(bodyOpen + 1);
       const open = isPunct(toks[bodyOpen], '{') ? bodyOpen : firstAt(T, bodyOpen, n, (x) => isPunct(x, '{'));
-      if (open < n) { roles.set(open, 'class'); T.classNames ??= new Map(); if (named) T.classNames.set(open, toks[k].v); }
+      if (open < n) { roles.set(open, 'class'); T.classNames ??= new Map(); if (named) T.classNames.set(open, toks[k].v); (T.classOpenAt ??= new Map()).set(j, open); }
       // `class C<K> extends B<K> {`: the class scope opens at its type parameters, so the heritage sees them too.
       if (open < n && typeOpen >= 0) {
         const s = T.scope('class', named ? toks[k].v : null, typeOpen, (match.get(open) ?? n - 1) + 1);
@@ -1190,7 +1217,8 @@ function readScript(T) {
     if ((v === 'as' || v === 'satisfies') && prev && !isPunct(prev, '{') && !isPunct(prev, ',')) { marks[j] = SKIP; j = skipType(j + 1) - 1; continue; }
     // The `:` that ends a `case` or `default` label: a `{` after it opens a block, not an object.
     if (v === 'case' || (v === 'default' && isPunct(toks[j + 1], ':'))) caseColons.add(firstAt(T, j + 1, n, (x) => isPunct(x, ':')));
-    if (T.data.keywords.has(v)) { if (v !== 'this' && v !== 'super') marks[j] = SKIP; continue; }
+    if (v === 'this' || v === 'super') { marks[j] = THIS; continue; }
+    if (T.data.keywords.has(v)) { marks[j] = SKIP; continue; }
     // A label: a name and a `:` that start a statement.
     if (isPunct(toks[j + 1], ':') && (role === 'block' || role === 'body') && (endsStatement(j) || isPunct(prev, ';') || isPunct(prev, '{') || isPunct(prev, '}'))) { marks[j] = SKIP; continue; }
     if (v === 'eval' && isPunct(toks[j + 1], '(')) T.unknownAt(j, 'eval', 'eval');
@@ -1204,12 +1232,36 @@ function readScript(T) {
     const s = T.classAt?.get(c.at);
     if (s !== undefined) T.bind(s, c.name, c.pos, 'class');
   }
+  // What each decorator decorates: past the decorators after it and the words before a declaration, a class (its
+  // scope), a method (its function's scope), or a field (scope -1: the class it stands in). Read from the last: a
+  // decorator followed by another decorates what that one does, so a run of them is passed once.
+  const decoratorAt = new Map((T.decorators ?? []).map((d) => [d.a - 1, d]));
+  for (const d of (T.decorators ?? []).toReversed()) {
+    if (d.scope !== undefined) continue;
+    let k = d.target;
+    for (;;) {
+      countStep();
+      if (decoratorAt.get(k)?.scope !== undefined && isPunct(toks[k], '@')) { d.scope = decoratorAt.get(k).scope; break; }
+      if (isPunct(toks[k], '@')) {
+        k++;
+        while (isWord(toks[k]) && isPunct(toks[k + 1], '.') && isWord(toks[k + 2])) k += 2;
+        if (isWord(toks[k])) k++;
+        if (isPunct(toks[k], '(')) k = (match.get(k) ?? n - 1) + 1;
+      } else if ((isWord(toks[k]) && (MEMBER_WORDS.has(toks[k].v) || ['export', 'default', 'abstract'].includes(toks[k].v)) && (isWord(toks[k + 1]) || isPunct(toks[k + 1], '[') || isPunct(toks[k + 1], '*'))) || isPunct(toks[k], '*')) k++;
+      else break;
+    }
+    if (d.scope !== undefined) continue;
+    if (isWord(toks[k], 'class')) { d.scope = T.classAt?.get(T.classOpenAt?.get(k)) ?? -1; continue; }
+    let q = isPunct(toks[k], '[') ? (match.get(k) ?? n - 1) + 1 : k + 1;
+    if (isPunct(toks[q], '?') || isPunct(toks[q], '!')) q++;
+    d.scope = (isPunct(toks[q], '(') || isPunct(toks[q], '<')) ? (starts.get(q)?.[0] ?? -1) : -1;
+  }
 }
 
 // --------------------------------------------------------------------------------------------------- the second walk
 
 function finishTable(T, lineCount) {
-  const { toks, n, marks, scopes, bindings, data } = T;
+  const { toks, n, marks, scopes, bindings, data, match } = T;
   for (const s of scopes) for (const list of s.names.values()) list.sort((x, y) => bindings[x].pos - bindings[y].pos);
   const order = scopes.map((_, i) => i).sort((x, y) => scopes[x].a - scopes[y].a || scopes[y].b - scopes[x].b || x - y);
   const parent = new Array(scopes.length).fill(null);
@@ -1253,6 +1305,71 @@ function finishTable(T, lineCount) {
     list.cursor = k;
     return k >= 0 ? { binding: list[k], early: false, at: k } : { binding: list[0], early: true, at: -1 };
   };
+  // The scope a decorator's tokens decorate (-1: the class it stands in, for a field's), -2 for other tokens.
+  const decorates = new Int32Array(n).fill(-2);
+  for (const d of T.decorators ?? []) for (let p = d.a; p < d.b && p < n; p++) { countStep(); decorates[p] = d.scope; }
+  // The steps after a name: `.name` and `?.name` (with whether a call follows), `[…]` (an index), a call's `(…)`
+  // passed; `new X(…)` constructs, it does not call. call: whether the name itself is called.
+  const afterCall = (k) => {
+    if (isPunct(toks[k], '?.') && isPunct(toks[k + 1], '(')) k++;
+    return isPunct(toks[k], '(') && !toks[k].synthetic ? (match.get(k) ?? n - 1) + 1 : -1;
+  };
+  const chainAt = (p) => {
+    let constructing = isWord(toks[p - 1], 'new');
+    let q = p + 1;
+    let after = afterCall(q);
+    const call = after >= 0 && !constructing;
+    if (after >= 0) { q = after; constructing = false; }
+    const members = [];
+    for (;;) {
+      countStep();
+      if ((isPunct(toks[q], '.') || isPunct(toks[q], '?.')) && isWord(toks[q + 1])) {
+        const name = toks[q + 1].v;
+        after = afterCall(q + 2);
+        members.push({ name, call: after >= 0 && !constructing });
+        if (after >= 0) { q = after; constructing = false; } else q += 2;
+      } else if (isPunct(toks[q], '[') || (isPunct(toks[q], '?.') && isPunct(toks[q + 1], '['))) {
+        if (isPunct(toks[q], '?.')) q++;
+        members.push({ index: true });
+        q = (match.get(q) ?? n - 1) + 1;
+      } else if (isPunct(toks[q], '(') && !toks[q].synthetic) {
+        q = (match.get(q) ?? n - 1) + 1; // a call of what a call gave
+        constructing = false;
+      } else break;
+    }
+    return { call, members };
+  };
+  // `this` and `super` (JavaScript): the class around, past arrow functions, as a hidden binding of that class; in any
+  // other function, or outside every class, what they are depends on the call.
+  // thisClass[s]: the class `this` means in scope s (-1: none; -2: not found yet). Each scope is walked once, so a
+  // `this` deep in nested arrows or blocks does not walk up past all of them again.
+  const classOwn = new Map();
+  const thisClass = new Int32Array(scopes.length).fill(-2);
+  const thisOf = (s, name) => {
+    const path = [];
+    let q = s;
+    let c = -1;
+    while (q !== null) {
+      countStep();
+      if (thisClass[q] !== -2) { c = thisClass[q]; break; }
+      path.push(q);
+      const sc = scopes[q];
+      if (sc.isClass) { c = q; break; }
+      if (sc.kind === 'function' && !sc.arrow) { c = parent[q] !== null && scopes[parent[q]].isClass ? parent[q] : -1; break; }
+      q = parent[q];
+    }
+    for (const r of path) thisClass[r] = c;
+    if (c < 0) return { unknown: 'this-outside-class' };
+    const key = `${c} ${name}`;
+    if (!classOwn.has(key)) { bindings.push({ name, scope: c, line: toks[scopes[c].a]?.line ?? 1, how: name, hidden: true, pos: scopes[c].a }); classOwn.set(key, bindings.length - 1); }
+    return { binding: classOwn.get(key) };
+  };
+  const reference = (p, s, name, to) => {
+    const { call, members } = chainAt(p);
+    const ref = { name, line: toks[p].line, scope: s, members, call, to };
+    if (decorates[p] !== -2) ref.decorates = decorates[p] >= 0 ? decorates[p] : s;
+    return ref;
+  };
   sweepScopes((s, p) => {
     blur[s] = scopes[s].reason ?? (p === null ? null : blur[p]);
     for (const name of scopes[s].names.keys()) { pushScope(all, name, s); if (!scopes[s].isClass) pushScope(noClass, name, s); }
@@ -1260,6 +1377,7 @@ function finishTable(T, lineCount) {
     for (const name of scopes[s].names.keys()) { all.get(name).pop(); if (!scopes[s].isClass) noClass.get(name).pop(); }
   }, (p, s) => {
     const mark = marks[p];
+    if (mark === THIS) { refAt.set(p, references.length); references.push(reference(p, s, toks[p].v, thisOf(s, toks[p].v))); return; }
     if (mark !== REF && mark !== TREF && mark !== ASSIGN && mark !== AREF) return;
     const name = toks[p].v;
     const homeScope = T.lang === 'py'
@@ -1282,7 +1400,7 @@ function finishTable(T, lineCount) {
     } else if (data.builtins.has(name)) to = { builtin: true };
     else to = { unknown: blur[s] ?? 'undefined-name' };
     if (mark === ASSIGN && homeScope !== null) return;
-    const ref = { name, line: toks[p].line, scope: s, member: (isPunct(toks[p + 1], '.') || isPunct(toks[p + 1], '?.')) && isWord(toks[p + 2]) ? toks[p + 2].v : null, to };
+    const ref = reference(p, s, name, to);
     if (mark === TREF) ref.type = true;
     if (early) ref.early = true;
     refAt.set(p, references.length);

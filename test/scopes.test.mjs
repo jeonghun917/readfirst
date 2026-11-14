@@ -8,7 +8,7 @@ import { linearIn, timeShapes } from './linear-time.mjs';
 
 // The reference to `name` on `line` (the first one, or the one with that member), and the binding it means.
 const referenceAt = (t, name, line, member) => {
-  const r = t.references.find((x) => x.name === name && x.line === line && (member === undefined || x.member === member));
+  const r = t.references.find((x) => x.name === name && x.line === line && (member === undefined || x.members[0]?.name === member));
   assert.ok(r, `no reference to ${name} on line ${line}: ${JSON.stringify(t.references.filter((x) => x.line === line))}`);
   return r;
 };
@@ -51,7 +51,7 @@ for (const [shape, [inner, member, line, annotation]] of Object.entries(OUTER)) 
     const repo = repoWith(['app/__init__.py', 'app/api.py', 'app/store/__init__.py']);
     assert.deepEqual(resolveImport('app/api.py', imp.import, repo), { file: 'app/store/__init__.py' });
     // A docstring is a string: its `datastore.save()` and `datastore.missing()` are not uses.
-    assert.ok(!t.references.some((r) => r.line === 1 || r.member === 'missing'));
+    assert.ok(!t.references.some((r) => r.line === 1 || r.members[0]?.name === 'missing'));
   });
 }
 
@@ -363,6 +363,43 @@ test('scopes: JSX tag names, attributes and text are no names; a component and t
   assert.equal(scopes('a.ts', 'type T = 1;\nconst y = 1;\nconst z = <T>y;\n').references.find((r) => r.name === 'y').to.binding !== undefined, true);
 });
 
+test('scopes: members are the steps after a name, through calls and indexes; call is whether the name is called', () => {
+  const t = scopes('a.js', 'const a = {}, k = 1;\na.b(1).c;\na[k].c;\na?.b?.(1);\na`x`;\nnew a();\na?.(1);\na.b\n');
+  assert.deepEqual(referenceAt(t, 'a', 2).members, [{ name: 'b', call: true }, { name: 'c', call: false }]);
+  assert.deepEqual(referenceAt(t, 'a', 3).members, [{ index: true }, { name: 'c', call: false }]);
+  assert.deepEqual(referenceAt(t, 'a', 4).members, [{ name: 'b', call: true }]);
+  assert.deepEqual([5, 6, 7, 8].map((l) => referenceAt(t, 'a', l).call), [false, false, true, false]);
+  assert.deepEqual(referenceAt(t, 'a', 8).members, [{ name: 'b', call: false }]);
+  assert.ok(!('member' in referenceAt(t, 'a', 2)));
+  const p = referenceAt(scopes('a.py', 'class A:\n    def m(self):\n        super().r.m()\n'), 'super', 3);
+  assert.deepEqual([p.call, p.members], [true, [{ name: 'r', call: false }, { name: 'm', call: true }]]);
+});
+
+test('scopes: this and super mean the class around them, past arrow functions; elsewhere they depend on the call', () => {
+  const t = scopes('a.js', 'this.x;\nclass A extends Object {\n  m() { this.y; super.z(); const f = () => this.w; function g() { return this.v; } }\n}\n');
+  assert.deepEqual(referenceAt(t, 'this', 1).to, { unknown: 'this-outside-class' });
+  const own = t.references.filter((r) => r.line === 3).map((r) => [r.name, r.members[0].name, r.to.unknown ?? `${bindingOf(t, r).how}@${t.scopes[bindingOf(t, r).scope].name}`]);
+  assert.deepEqual(own, [['this', 'y', 'this@A'], ['super', 'z', 'super@A'], ['this', 'w', 'this@A'], ['this', 'v', 'this-outside-class']]);
+  assert.ok(t.bindings.filter((b) => b.how === 'this' || b.how === 'super').every((b) => b.hidden));
+});
+
+test('scopes: decorates is the scope a decorator decorates: a def, a class, a method, a field\'s class, a parameter\'s function', () => {
+  const py = scopes('a.py', 'import d\n@d.x(\n  1)\ndef f(): pass\n@d\nclass C:\n    @d\n    def m(self): pass\n');
+  assert.deepEqual([2, 5, 7].map((l) => py.scopes[referenceAt(py, 'd', l).decorates].name), ['f', 'C', 'm']);
+  const ts = scopes('a.ts', 'import d from "d";\n@d @d.e class E {\n  @d x = 1;\n  @d() @d m(@d p: number) { return p; }\n  @d\n  n() {}\n}\n');
+  assert.deepEqual(ts.references.filter((r) => r.name === 'd').map((r) => `${r.line}:${ts.scopes[r.decorates].kind}:${ts.scopes[r.decorates].name}`),
+    ['2:class:E', '2:class:E', '3:class:E', '4:function:m', '4:function:m', '4:function:m', '5:function:n']);
+  assert.ok(!ts.references.some((r) => r.to.unknown), JSON.stringify(resolved(ts)));
+  assert.equal(referenceAt(ts, 'p', 4).to.binding !== undefined, true);
+  assert.ok(!('decorates' in referenceAt(ts, 'p', 4)));
+});
+
+test('scopes: a class field\'s type names are types used, decorated or not; its value is a use', () => {
+  const t = scopes('a.ts', 'type A = 1; const d = 1, v = 2;\nclass C {\n  f: A = v;\n  @d() g?: { k: A; [key: string]: Map<A, (p: A) => A> }; h!: A\n  static i: A;\n}\n');
+  assert.deepEqual(resolved(t), ['A@3->type@1', 'v@3->const@1', 'd@4->const@1', 'A@4->type@1', 'A@4->type@1', 'A@4->type@1', 'A@4->type@1', 'A@4->type@1', 'A@5->type@1']);
+  assert.ok(t.references.filter((r) => r.name === 'A').every((r) => r.type));
+});
+
 test('scopes: every reason given is one of REASONS', () => {
   const t = scopes('a.js', "with (o) { a; }\neval('x');\nimport(name);\nrequire(name);\n");
   for (const r of [...t.references.filter((x) => x.to.unknown).map((x) => x.to.unknown), ...t.unknown.map((x) => x.reason)]) assert.ok(REASONS.includes(r), r);
@@ -443,6 +480,11 @@ const SCOPE_SHAPES = {
   'js: a long JSX element': (n) => `const h = 1;\nconst e = <div>${'<b className="c" on={h}>text {h}</b>'.repeat(n / 40)}</div>;\n`,
   'js: deep JSX': (n) => `const h = 1;\nconst e = ${'<i a={h}>'.repeat(n / 18)}{h}${'</i>'.repeat(n / 18)};\n`,
   'ts: many type parameters with defaults': (n) => `function f<${Array.from({ length: n / 24 }, (_, i) => `T${i} extends Map<A, B> = C`).join(', ')}>(a: T0) { return a; }\n`,
+  // A run of decorators finds what it decorates once, not once per decorator; a chain's members, nested this and super.
+  'ts: many decorators on one member': (n) => `const d = 1;\nclass C {\n  ${'@d.e(d) '.repeat(n / 8)}m() {}\n}\n`,
+  'py: many decorators on one def': (n) => `d = 1\n${'@d.e(d)\n'.repeat(n / 8)}def f(): pass\n`,
+  'js: a long member chain with calls': (n) => `const a = 1;\na${'.b(a)[a]?.c'.repeat(n / 12)};\n`,
+  'js: nested this and super in a method': (n) => `class C extends Object {\n  m() { return ${'this.f(super.g(() => '.repeat(n / 30)}1${'))'.repeat(n / 30)}; }\n}\n`,
 };
 
 test('scopes: linear steps in the length of a file, its nesting and its lists', () => {
