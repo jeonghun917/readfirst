@@ -95,6 +95,26 @@ test('a # glued to the end of a quoted word is part of the word, and bash agrees
   assert.deepEqual(commandWords('readfirst answer a\\\n#x', '/r').map((x) => x.words.map((w) => w.text)), [['readfirst', 'answer', 'a#x']]);
 });
 
+// Review of #202 (2026-11-14): every reader joined a backslash and a newline first, over the whole text. bash joins
+// them only where it reads code, in "...", $( ), backticks and a body under a tag not quoted: a comment ends at its
+// newline, '...' and a body under a quoted tag keep them, and `\\` before a newline is a backslash and a line end.
+test('a backslash and a newline join lines where bash joins them, and nowhere else', { skip: !hasBash && 'bash is not installed' }, () => {
+  for (const script of [
+    // A comment ends at its newline: the next line ran on into it, and its write was lost.
+    '# a comment \\\necho > f1', 'echo a # c \\\n > f2', 'echo hi # note\\\\\necho > f3',
+    // An escaped backslash, and a CR before the newline: no join, so the # starts a comment.
+    'echo a\\\\\n#b > n1', 'echo a\\\r\n#b > n2',
+    // Under a quoted tag a body keeps it, so its tag line ends the body.
+    "cat <<'E'\na\\\nE\necho > f4",
+    // Under a tag not quoted the body joins, so the tag line after a \ is no tag line.
+    'cat <<E\na\\\nE\necho > f5\nE', 'cat <<E\na\\\nE\nE\necho > f6', 'cat <<E\n$(echo \\\n> f7)\nE',
+    // In quotes, backticks and code, as before.
+    "echo 'a\\\nb' > f8", 'echo "a\\\nb" > f9', 'echo `echo \\\n> f10`', 'echo a \\\n  > f12', 'echo a\\\n#b > f13', 'echo a\\\n\\\n#b > f14',
+  ]) {
+    assert.deepEqual(named(script), bashMade(script), script);
+  }
+});
+
 test('a `readfirst read` in a here-document body is no read; one run as a command still is', () => {
   const reads = (c) => bashReads(c, '/r').map((r) => r.files);
   assert.deepEqual(reads('cat > notes.md <<EOF\nnpx readfirst read src/x.mjs\nEOF'), []);

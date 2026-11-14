@@ -141,6 +141,10 @@ const SHAPES = {
   "unclosed ' then $((": "(n) => \"echo 'x \" + '$((1)) '.repeat(n)",
   "unclosed ' then quotes": "(n) => \"echo 'x \" + '\"a\" '.repeat(n)",
   'unclosed (( then ((': "(n) => 'echo ' + '(( '.repeat(n)",
+  // Lines: eachCommand took each from the front of its list with shift(), which moves the rest each time (32,000
+  // comment lines took 0.5 to 0.9 s a reader, 2026-11-14).
+  'comment lines ending in a backslash': "(n) => '# c \\\\\\n'.repeat(n) + 'echo > f'",
+  'command lines': "(n) => 'echo a\\n'.repeat(n)",
 };
 const SIZES = [2000, 8000, 32000];
 const TIMED = `const { parentPort } = require('node:worker_threads');
