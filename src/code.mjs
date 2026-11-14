@@ -170,16 +170,42 @@ export function closeOf(toks, k) {
   }
   return -1;
 }
-// Past type arguments or parameters `<...>` that open at k: the token after their `>`, or -1.
+// Past type arguments or parameters `<...>` that open at k: the token after their `>`, or -1. The `<` and `>` are
+// counted from k to the end of the tokens, a bracket passed whole (its match as closeOf finds it) and a closing one
+// read past; a bracket that never closes, or the end, gives -1. The answers for a list of tokens are found once, for
+// all its tokens (angleEnds): read from each `<`, a `<` left open went to the end every time, and `<` after `<`
+// (`function f<a` line after line, members `m<a` in a class) took time growing with the square of the text.
+const ANGLE_ENDS = new WeakMap();
 function afterAngle(toks, k) {
-  let depth = 0;
-  for (let j = k; j < toks.length; j++) {
+  if (counting) steps++;
+  let ends = ANGLE_ENDS.get(toks);
+  if (!ends) { ends = angleEnds(toks); ANGLE_ENDS.set(toks, ends); }
+  return ends[k + 1];
+}
+// For each token j, where reading on from it first meets a `>` that no `<` read since opened: the token after that
+// `>`, or -1. Filled from the last token back, so each answer is made of later ones: a `>` is its own; a `<` skips to
+// past its own `>` and goes on from there; a bracket skips to past its match (closesFrom, the matches closeOf gives);
+// anything else is the next token's. The `<` at k is then closed by the answer for k + 1.
+function angleEnds(toks) {
+  const closes = new Map();
+  for (let j = 0; j < toks.length; j++) {
     if (counting) steps++;
-    if (isPunct(toks[j], '<')) depth++;
-    else if (isPunct(toks[j], '>')) { if (--depth === 0) return j + 1; }
-    else if (toks[j].k === 'punct' && '([{'.includes(toks[j].v)) { j = closeOf(toks, j); if (j < 0) return -1; }
+    if (toks[j].k !== 'punct' || !'([{'.includes(toks[j].v)) continue;
+    const at = closesFrom(toks, j);
+    for (const [open, close] of at) closes.set(open, close);
+    if (!at.has(j)) break; // never closed: everything after it is inside it, and closesFrom has read it all
+    j = at.get(j);
   }
-  return -1;
+  const ends = new Int32Array(toks.length + 1).fill(-1);
+  for (let j = toks.length - 1; j >= 0; j--) {
+    if (counting) steps++;
+    const t = toks[j];
+    if (t.k === 'punct' && '([{'.includes(t.v)) ends[j] = closes.has(j) ? ends[closes.get(j) + 1] : -1;
+    else if (isPunct(t, '>')) ends[j] = j + 1;
+    else if (isPunct(t, '<')) ends[j] = ends[j + 1] < 0 ? -1 : ends[ends[j + 1]];
+    else ends[j] = ends[j + 1];
+  }
+  return ends;
 }
 // Whether a function or class begins at token k: `function`, `class`, or an arrow function, which is
 // [async] [<T>] (parameters) followed by `=>` or by `:` (a return type), or [async] name `=>`.
@@ -237,13 +263,10 @@ function paramsOpen(toks, k) {
 // begins after `as` or `satisfies` (`headers = {} as Record<string, string>`) and, in a parameter list (typed), after
 // a parameter's `:` (`m: Map<string, number>`), up to its `=`; and a `<` right after `new Name`
 // (`out = new Map<string, boolean>()`). py: a `lambda` in a default value has parameters of its own, to its `:`.
-// close: what finds a bracket's match, closeOf unless the caller has the matches already (closesFrom). The type
-// arguments' `>` are matched once for the whole inside (anglesWithin), not by a scan from each `<`: a `<` left open
-// is read to the end, and one scan per `<` made `m: Map<Map<Map<…` take time growing with its square.
+// close: what finds a bracket's match, closeOf unless the caller has the matches already (closesFrom).
 function partsOf(toks, from, to, typed, py = false, close = closeOf) {
   const out = [];
   let start = from;
-  let angles = null;
   let inType = false;
   let after = null; // 'new', 'name' or 'dot' while reading `new a.b`
   for (let j = from; j < to; j++) {
@@ -263,28 +286,13 @@ function partsOf(toks, from, to, typed, py = false, close = closeOf) {
     const typeArguments = t.v === '<' && (inType || after === 'name');
     after = null;
     if ('([{'.includes(t.v)) { const c = close(toks, j); if (c < 0 || c >= to) return out; j = c; }
-    else if (typeArguments) { angles ??= anglesWithin(toks, j, to, close); const a = angles.get(j); if (a !== undefined) j = a - 1; }
+    else if (typeArguments) { const a = afterAngle(toks, j); if (a > 0 && a <= to) j = a - 1; }
     else if (typed && t.v === ':') inType = true;
     else if (t.v === '=') inType = false;
     else if (t.v === ',') { if (j > start) out.push([start, j]); start = j + 1; inType = false; }
   }
   if (to > start) out.push([start, to]);
   return out;
-}
-// For each `<` from token `from` to the one before `to`, outside the brackets in it, the token after the `>` that
-// afterAngle would find for it when that `>` comes before `to`: a Map, in one pass. A `<` it finds no such `>` for is
-// not in it (afterAngle's answer for it is -1, or past `to`). Every `<` a walk from `from` meets (brackets passed
-// whole, `<...>` passed whole) is one this pass meets too. close: as in partsOf.
-function anglesWithin(toks, from, to, close) {
-  const at = new Map();
-  const opened = [];
-  for (let j = from; j < to; j++) {
-    if (counting) steps++;
-    if (isPunct(toks[j], '<')) opened.push(j);
-    else if (isPunct(toks[j], '>')) { if (opened.length) at.set(opened.pop(), j + 1); }
-    else if (toks[j].k === 'punct' && '([{'.includes(toks[j].v)) { j = close(toks, j); if (j < 0 || j >= to) break; }
-  }
-  return at;
 }
 // The match of every bracket from the one at `open` to its own match, in one pass: a Map from each opening token to
 // its closing token, the same matches closeOf gives one at a time. A bracket not closed by then is not in it.
