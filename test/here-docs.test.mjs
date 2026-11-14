@@ -50,6 +50,51 @@ test('a shift, a here-string and a line that only starts with the tag are no her
   }
 });
 
+// 2026-11-14: with a tag not quoted, bash expands the body first, so a $( ) or backtick in it runs; nothing was named.
+// With a quoted tag the body is data, as before; a <( ) or a quote in a body is plain text.
+test('a $( ) or backtick in a here-document whose tag is not quoted runs, and bash agrees', { skip: !hasBash && 'bash is not installed' }, () => {
+  for (const [script, missed] of [
+    ['cat <<E\n$(echo > f)\nE', true],
+    ['cat <<E\n`echo > g`\nE', true],
+    ["cat <<E\nit's $(cd a; echo > f)\nE", true],
+    ['cat <<-E\n\t$(echo > f)\n\tE', true],
+    ['cat <<E > out\n$(echo $(echo > f))\nE', true],
+    ['cat <<E\n$(( $(echo > f) ))\nE', true],
+    ['cat <<E\n"$(echo > f)"\nE', true],
+    ['python3 - <<E\n$(echo > f)\nE', true],
+    ['cd a; cat <<E\n$(echo > f)\nE', true],
+    // Read where the command stands, with its variables and beside its redirect (review of #202).
+    ['x=a; cat <<E\n$(cd $x; echo > f)\nE', true],
+    ['cd a && cat > g <<E\n$(echo > f)\nE', true],
+    // The look-alikes: a quoted tag, an escaped $, a <( ) in a body, and a shell fed the body (read as before).
+    ["cat <<'E'\n$(echo > f)\nE", false],
+    ['cat <<"E"\n$(echo > f)\nE', false],
+    ['cat <<\\E\n$(echo > f)\nE', false],
+    ['cat <<E\n\\$(echo > f)\nE', false],
+    ['cat <<E\n<(echo > f)\nE', false],
+    ['bash <<E\n$(echo > f)\nE', false],
+  ]) {
+    const made = bashMade(script);
+    assert.deepEqual(named(script), made, script);
+    if (missed) assert.ok(made.length > 0, `bash makes a file here: ${script}`);
+  }
+});
+
+// 2026-11-14 (review of #200): withoutComments took a # right after a closing quote for a comment, as the quote is
+// blanked to spaces where it looks: bash reads `'[1]'#x` as the word [1]#x, and `echo 'a'#b > f` writes f.
+test('a # glued to the end of a quoted word is part of the word, and bash agrees', { skip: !hasBash && 'bash is not installed' }, () => {
+  // Review of #202: a blank escaped by a backslash is part of the word (`a\ #b` is one word), and a # right after | or
+  // & starts a comment (it did not, so `|# c > n` named n).
+  for (const script of ["echo 'a'#b > f", 'cat "x"#y > g', "cat 'a'#<<E > f\n$(echo > g)\nE", "echo a #'b' > c", "echo 'a' #c > z", 'echo a;#c > z',
+    'echo a\\ #b > f5', "echo 'a'\\ #b > f6", 'echo a\\\\ #b > f7', 'echo a;true|# c > n1', 'echo a&# c > n2', 'echo $(x)#y > h', 'cat <(echo a)#x > n3',
+    // A backslash and a newline are taken out, not read as a space: `a\` + newline + `#b` is the word a#b.
+    'echo a\\\n#b > f8', 'echo a\\\n\\\n#b > f9', 'echo a \\\n#b > n4', 'echo a\\\nb > f10']) {
+    assert.deepEqual(named(script), bashMade(script), script);
+  }
+  assert.deepEqual(commandWords("readfirst answer '[1]'#x", '/r').map((x) => x.words.map((w) => w.text)), [['readfirst', 'answer', '[1]#x']]);
+  assert.deepEqual(commandWords('readfirst answer a\\\n#x', '/r').map((x) => x.words.map((w) => w.text)), [['readfirst', 'answer', 'a#x']]);
+});
+
 test('a `readfirst read` in a here-document body is no read; one run as a command still is', () => {
   const reads = (c) => bashReads(c, '/r').map((r) => r.files);
   assert.deepEqual(reads('cat > notes.md <<EOF\nnpx readfirst read src/x.mjs\nEOF'), []);

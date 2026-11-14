@@ -29,7 +29,8 @@ test('an edit that adds a function before find ran is refused once, names it, an
   const root = repo();
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-find-state-'));
   const file = join(root, 'src/a.js');
-  assert.match(call(root, stateDir, 'Edit', { file_path: file, old_string: 'return 1;', new_string: 'return 2;' }, 1000), /deny/u, 'the first edit of the file: its notes');
+  // Its notes hold a check and no rule or risk: nothing to answer, so they go through as context (test/answers.test.mjs).
+  assert.match(call(root, stateDir, 'Edit', { file_path: file, old_string: 'return 1;', new_string: 'return 2;' }, 1000), /"additionalContext":"readfirst notes for src\/a\.js/u, 'the first edit of the file: its notes');
   assert.equal(call(root, stateDir, 'Edit', { file_path: file, old_string: 'return 1;', new_string: 'return 2;' }, 2000), null, 'no new function: nothing to say');
   const add = { file_path: file, old_string: '  return 1;\n}\n', new_string: '  return 1;\n}\nexport function betaHelper() {\n  return 2;\n}\n' };
   const refused = JSON.parse(call(root, stateDir, 'Edit', add, 3000));

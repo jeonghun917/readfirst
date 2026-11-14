@@ -80,3 +80,60 @@ test('a failing check with long output says how many lines came before the last 
   assert.match(v.out, /line 45/u);
   assert.doesNotMatch(v.out, /line 15\n/u);
 });
+
+// 2026-11-14: verify said `npm test` failed, and its last 30 lines were the runner's summary, so which test failed was
+// not shown (two runs in a row, then never again: it could not be found). A TAP `not ok` line before the last lines is
+// shown with the block under it; a todo or a skip is not.
+test('a failing check shows each failing test, wherever it stands in the output', () => {
+  const tap = [
+    'TAP version 13', 'ok 1 - first', 'not ok 2 - the one that failed', '  ---', '  error: |-', '    expected 1, got 2', '  ...',
+    'not ok 3 - a todo # TODO not done yet', '  ---', '  ...',
+    ...Array.from({ length: 40 }, (_, k) => `ok ${k + 4} - filler ${k}`), '# tests 43', '# fail 1',
+  ];
+  const map = { format: MAP_FORMAT, groups: [{ id: 'src', title: 'Source', files: ['src/**'], checks: [{ run: 'node src/tap.mjs', why: 'tap output' }] }] };
+  const script = `console.log(${JSON.stringify(tap.join('\n'))});\nprocess.exit(1);\n`;
+  const { root, git } = repo({ 'src/tap.mjs': script, '.readfirst/map.json': JSON.stringify(map) });
+  git('checkout', '-q', '-b', 'work');
+  writeFileSync(join(root, 'src/tap.mjs'), `${script}// changed\n`);
+  const v = run(root, 'verify', '--base', 'main');
+  assert.equal(v.code, 1);
+  assert.match(v.out, /\(the failing tests, from the earlier lines:\)\nnot ok 2 - the one that failed\n {2}---\n {2}error: \|-\n {4}expected 1, got 2\n {2}\.\.\.\n/u);
+  assert.doesNotMatch(v.out, /a todo/u, 'a todo is not a failure');
+  // 52 lines: the last 30 are shown, and of the 22 before them the failing test's 5.
+  assert.match(v.out, /\(17 of the 22 earlier lines not shown; run `node src\/tap\.mjs` to see them all\)\nok 16 - filler 12\n/u);
+  assert.match(v.out, /# fail 1/u);
+});
+
+// Review of #201 (2026-11-14), each on node's own TAP: a `...` line in an error's text ended the block (the rest of the
+// message and the stack were lost); `\# TODO` in a test's name hid a failing test; a block that runs on into the last
+// lines was shown twice and the count of lines left out went below zero; and a thousand failures were all shown whole.
+const verifyTap = (tap) => {
+  const map = { format: MAP_FORMAT, groups: [{ id: 'src', title: 'Source', files: ['src/**'], checks: [{ run: 'node src/tap.mjs', why: 'tap output' }] }] };
+  const script = `console.log(${JSON.stringify(tap.join('\n'))});\nprocess.exit(1);\n`;
+  const { root, git } = repo({ 'src/tap.mjs': script, '.readfirst/map.json': JSON.stringify(map) });
+  git('checkout', '-q', '-b', 'work');
+  writeFileSync(join(root, 'src/tap.mjs'), `${script}// changed\n`);
+  return run(root, 'verify', '--base', 'main').out;
+};
+const filler = (n, at = 0) => Array.from({ length: n }, (_, k) => `ok ${at + k} - filler ${k}`);
+
+test('a failing test is shown whole and once: dots in its error, a \\# in its name, a block that runs into the last lines', () => {
+  const dots = verifyTap(['not ok 1 - throws', '  ---', '  error: |-', '    boom', '    ...', '    more text after dots', '  stack: |-', '    at x', '  ...', ...filler(40, 2)]);
+  assert.match(dots, /\n {4}\.\.\.\n {4}more text after dots\n {2}stack: \|-\n {4}at x\n {2}\.\.\.\n/u, 'the block goes on past a deeper ...');
+  const named = verifyTap(['not ok 1 - parses \\# TODO comments', '  ---', '  ...', 'not ok 2 - later # TODO not yet', '  ---', '  ...', ...filler(40, 3)]);
+  assert.match(named, /not ok 1 - parses \\# TODO comments/u, 'a # in the name is no directive');
+  assert.doesNotMatch(named, /later # TODO/u);
+  // 10 lines of ok, a block of 43 lines, and 2 lines of summary: 56 lines, the last 30 from line 27.
+  const long = verifyTap([...filler(10), 'not ok 11 - long', '  ---', ...Array.from({ length: 41 }, (_, k) => `  line ${k}`), '  ...', '# tests 11', '# fail 1']);
+  assert.equal(long.match(/ {2}line 20\n/gu)?.length, 1, 'no line of the block twice');
+  assert.match(long, /\(10 of the 26 earlier lines not shown; run/u);
+});
+
+test('a thousand failing tests: each is named, the blocks of the first ten are shown, and the rest are counted', () => {
+  const tap = Array.from({ length: 1000 }, (_, k) => [`not ok ${k + 1} - broke ${k}`, '  ---', '  error: |-', `    failure ${k}`, '  ...']).flat();
+  const out = verifyTap([...tap, ...filler(40, 1001)]);
+  assert.match(out, /not ok 1000 - broke 999\n/u, 'the last is named');
+  assert.match(out, / {4}failure 9\n/u);
+  assert.doesNotMatch(out, / {4}failure 10\n/u, 'its block is not shown');
+  assert.match(out, /\(the blocks under 990 of these 1000 failing tests not shown; run `node src\/tap\.mjs` to see them\)/u);
+});
