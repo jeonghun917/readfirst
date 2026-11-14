@@ -1045,8 +1045,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -1071,9 +1071,11 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   const tally = { asked: 0, acted: 0, notActed: [] };
   const found = [];
   const notes = [];
+  const unchecked = [];
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
     const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root), start: baseOf(seen, root) });
     if (r?.note) notes.push(r.note);
+    if (r?.unchecked) unchecked.push(r.unchecked);
     if (r?.found) found.push(...r.found);
     if (r?.pass) passed.push(r.pass);
     if (r?.block) blocks.push(r.block);
@@ -1087,7 +1089,7 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     say(unsureKey);
     blocks.push(`readfirst: ${unsure.length} answer(s) of this session are still unsure:\n- ${unsure.map((a) => `\`${a.item}\`: ${a.because}`).join('\n- ')}\nAnswer each again with keeps, not-this or done (${ANSWER_HOW}) once you know, or say why it stays unsure.`);
   }
-  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length, misread: Object.keys(seen).filter((k) => k.startsWith('misread:')).length, failed: Object.keys(seen).filter((k) => k.startsWith('failed:')).map((k) => k.slice('failed:'.length)), unsure: unsure.length, untrue: found.length, items: itemTally(seen, found) };
+  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length, misread: Object.keys(seen).filter((k) => k.startsWith('misread:')).length, failed: Object.keys(seen).filter((k) => k.startsWith('failed:')).map((k) => k.slice('failed:'.length)), unsure: unsure.length, untrue: found.length, items: itemTally(seen, found), unchecked: unchecked.length };
   const line = actedLine(record);
   if (line) { try { appendFileSync(join(stateDir, ACTED_LOG), `${JSON.stringify(record)}\n`); } catch { /* the line is still said */ } }
   if (blocks.length) return JSON.stringify({ decision: 'block', reason: [...blocks, ...notes, ...(line ? [line] : [])].join('\n\n') });
@@ -1097,8 +1099,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
 
 // The Stop hook's last line (step 4): what the map asked for the files edited, what was done, what was not, and how
 // often a refused edit was made again at once. Every item not done is named.
-export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0, noFind = 0, misread = 0, failed = [], unsure = 0, untrue = 0 }) {
-  if (!asked && !resent && !noFind && !misread && !failed.length && !unsure && !untrue) return null; // notes shown and nothing asked: the stop stays quiet, as before
+export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0, noFind = 0, misread = 0, failed = [], unsure = 0, untrue = 0, unchecked = 0 }) {
+  if (!asked && !resent && !noFind && !misread && !failed.length && !unsure && !untrue && !unchecked) return null; // notes shown and nothing asked: the stop stays quiet, as before
   const unsureLine = `${unsure ? `; ${unsure} answer(s) left unsure` : ''}${untrue ? `; ${untrue} answer(s) the change does not bear out` : ''}`;
   const not = notActed.length ? `, not done: ${notActed.join('; ')}` : '';
   const again = resent ? `; ${resent} refused edit(s) made again at once with nothing in between, so their notes were likely not read` : '';
@@ -1106,7 +1108,7 @@ export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], rese
   const misreadLine = misread ? `; readfirst hit an error reading ${misread} command(s), each counted once per folder it ran in, refused once as writes it could not place` : '';
   // One failed: key per tool and error, so the same error on many calls is one.
   const failedLine = failed.length ? `; the hook failed and let calls through unchecked, with ${failed.length} different error(s) (${failed.join('; ')})` : '';
-  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}${misreadLine}${failedLine}${unsureLine}.`;
+  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}${misreadLine}${failedLine}${unsureLine}${unchecked ? `; the stop could not check ${unchecked} repository(ies), so their checks did not run` : ''}.`;
 }
 
 // The last line of each session in ACTED_LOG, or null when there is none (no session recorded, or no such file).
@@ -1150,6 +1152,7 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
     `- errors the hook let calls through unchecked on: ${failures.size} different, in ${rows.filter((r) => Array.isArray(r.failed) && r.failed.length).length} session(s)`,
     `- answers left unsure at the stop: ${sum('unsure')}, in ${rows.filter((r) => r.unsure > 0).length} session(s)`,
     `- answers the change did not bear out at the stop: ${sum('untrue')}, in ${rows.filter((r) => r.untrue > 0).length} session(s)`,
+    `- repositories the stop could not check (its checks did not run): ${sum('unchecked')}, in ${rows.filter((r) => r.unchecked > 0).length} session(s)`,
     ...(itemRows.length ? ['Items the gate asked, most asked first:', ...itemRows] : []),
     ...(failures.size ? ['Hook errors, in most sessions first:', ...[...failures].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
     ...(counts.size ? ['Not done, most often first:', ...[...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
@@ -1339,8 +1342,17 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
       ...missing.map((t) => `readfirst${at}: ${t.for.join(', ')} changed, but none of ${t.also.join(', ')} did. The map says they change together: ${t.why}. Change it too, or say why it does not apply, before you finish.`),
       ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}${c.hint ? `\nIt looks like ${c.hint}.` : ''}`),
     ].join('\n') };
-  } catch {
-    return null;
+  } catch (e) {
+    // The stop could not check this repository (a broken index, a git that fails): until this said nothing at all, and
+    // the checks were skipped silently. It is said, refused once for the repository and the kind of error (quoted
+    // values and numbers left out, as for failed:), and counted in the session's line.
+    const why = errorText(e);
+    const kind = why.replace(/(['"`]).*?\1/gu, '$1…$1').replace(/\d+/gu, 'N');
+    const key = `unchecked:${root}:${createHash('sha1').update(kind).digest('hex').slice(0, 12)}`;
+    const line = `readfirst${named ? ` in ${basename(root)}` : ''}: the stop could not check this repository (${why}), so the checks the map lists for the files you edited did not run and no answer was compared with the change. Fix what stopped it, or say why it cannot be fixed, before you finish.`;
+    if (said(key)) return { unchecked: why, note: line };
+    say(key);
+    return { unchecked: why, block: line };
   }
 }
 

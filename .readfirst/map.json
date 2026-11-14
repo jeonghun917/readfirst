@@ -229,6 +229,12 @@
           ]
         },
         {
+          "text": "a `stopFor` that throws (a broken .git/index makes its first `git status` fail, a git that is gone, a folder that is no longer a repository) no longer returns null: until 2026-11-14 that skipped every check the map lists and every answer comparison with no word, as if there were nothing to check. Its catch names the repository and the error, refuses the stop once per repository and kind of error (`unchecked:<root>:<hash>`, the error with quoted values and numbers left out, as for `failed:`; a state key the tag list in runStopHook skips) and says it again as a note on later stops. The session's line gains `unchecked`, the count of repositories not checked, and `hook --report` adds it up. A new early return in stopFor that means nothing could be checked must say so the same way.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
           "text": "the find-first gate in `runHook` recognises `readfirst find` only by the `FIND_RUN` pattern (readfirst, readfirst@version, npx with --yes/-y, or a path ending in readfirst.mjs, followed by `find`) in a Bash call; any other way of running it (a shell alias, `node -e`, a script that wraps it) leaves no `find:<root>` mark and no `findwords:` mark, and the next edit that adds a function is refused as if find never ran. A find that did run opens the gate only for the new names it asked about (`findAsked`: a word of its query, read by `findQuery` with the options left out, meets a word of the name, by `words` and `meets` of src/find.mjs), or, for names the gate already refused once, any find run after that refusal: one search at the start no longer covers every function written afterwards. What counts as new code is `newCode`, which applies the edit to the file as it is on disk and compares the names `definitions` (src/find.mjs) finds in the whole file before and after (for Write, the new content against the file as it is; an edit whose old text is not in the file adds nothing); a change to `definitions`, `words` or `meets` changes what the gate refuses.",
           "files": [
             "src/cli.mjs"
