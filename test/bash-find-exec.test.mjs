@@ -44,6 +44,7 @@ test('a write to the files find finds is not known, under the folder it starts f
     // Options before the starts (review of #223: the start was taken to be `.`).
     ['find -L d -name x.txt -exec cp {} {}.l \\;', ['?{}@d']],
     ['find -O3 -D tree d -name x.txt -exec cp {} {}.o \\;', ['?{}@d']],
+    ['find -L -- d -name x.txt -exec cp {} {}.dd \\;', ['?{}@d']],
   ]) {
     const dir = setUp();
     const made = bashMade(script, dir);

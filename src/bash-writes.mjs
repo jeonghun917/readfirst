@@ -1433,6 +1433,8 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // review of #223).
     let lead = 0;
     while (lead < args.length && /^-(?:[HLP]|O\d*|D)$/u.test(args[lead])) lead += args[lead] === '-D' ? 2 : 1;
+    // A `--` after them ends the options (`find -L -- /x -exec …`, review of edb0e8f).
+    if (args[lead] === '--') lead++;
     let first = args.findIndex((w, k) => k >= lead && /^[-(!),]/u.test(w) && w !== '-');
     if (first < 0) first = args.length;
     const roots = first > lead ? raw.slice(lead, first) : ['.'];
