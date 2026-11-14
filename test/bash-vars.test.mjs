@@ -6,7 +6,8 @@
 // Words are read as the shell reads them: `a\&b.js` is the file a&b.js (the backslash was kept until this test).
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -133,6 +134,37 @@ test('hook --gate: a write to a variable from outside the command is refused onc
   assert.equal(told.permissionDecision, undefined);
   assert.match(told.additionalContext, /`a\.js` \(\$D: D is not set by the command; could be in /u);
   assert.ok(readFileSync(join(stateDir, `readfirst-hook-bash-vars-${process.pid}-${n}.lines`), 'utf8').includes('"unknown:'), 'the mark is kept');
+});
+
+// The mark is the command with where it runs: the same text in another folder or repository writes somewhere else, so
+// it is asked again (until 2026-11-14 the mark was the command's hash alone, and a command refused once in one folder
+// went through with no word in every other).
+test('hook --gate: the same unknown write in another folder or repository is refused again; through a symlink it is the same folder', () => {
+  n++;
+  const [a, b] = [repo(), repo()];
+  mkdirSync(join(a, 'sub'));
+  const link = join(mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-link-')), 'a');
+  symlinkSync(a, link);
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
+  const command = 'echo x > "$OUT/f.txt"';
+  assert.equal(hook(a, stateDir, command).permissionDecision, 'deny');
+  assert.equal(hook(a, stateDir, command), null, 'made again in the same folder, it goes through');
+  assert.equal(hook(link, stateDir, command), null, 'the same folder reached through a symlink is the same place');
+  assert.equal(hook(b, stateDir, command)?.permissionDecision, 'deny', 'another repository is asked again');
+  assert.equal(hook(b, stateDir, command), null);
+  assert.equal(hook(join(a, 'sub'), stateDir, command)?.permissionDecision, 'deny', 'another folder of the same repository is asked again');
+  assert.equal(hook(join(a, 'sub'), stateDir, command), null);
+  // A state file an older readfirst wrote holds the command's hash alone: that mark still counts as asked.
+  n++;
+  const old = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
+  appendFileSync(join(old, `readfirst-hook-bash-vars-${process.pid}-${n}.lines`), `${JSON.stringify([`unknown:${createHash('sha1').update(command).digest('hex').slice(0, 12)}`, 1])}\n`);
+  assert.equal(hook(a, old, command), null, 'an old mark is kept');
+  // A reader that throws (misread:) is asked once per folder too.
+  n++;
+  const boom = { shellWrites: () => { throw new RangeError('too deep'); }, bashReads };
+  const misread = mkdtempSync(join(tmpdir(), 'readfirst-bash-vars-state-'));
+  const run = (cwd) => { const out = runHook(JSON.stringify({ session_id: `bash-vars-${process.pid}-${n}`, cwd, tool_name: 'Bash', tool_input: { command: 'echo hi > o' } }), { stateDir: misread, gate: true, readers: boom }); return out ? JSON.parse(out).hookSpecificOutput.permissionDecision : null; };
+  assert.deepEqual([run(a), run(a), run(b), run(b)], ['deny', null, 'deny', null]);
 });
 
 // A session runs from the folder it was started in, often one above its repositories: the repositories a write could
