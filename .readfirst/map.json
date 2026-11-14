@@ -142,7 +142,7 @@
           ]
         },
         {
-          "text": "the PreToolUse hook gives every file a call writes its notes, each repository's lines once (a line for only some files names them) and every line, with nothing cut (0.27.1; before, the first 10 files and 12 lines a file, and files 11 and on were never checked at the stop). It has a budget (runHook's `budget`, 10 s of the 15 s Claude Code allows): files it had no time for are named in the notes, marked `touched:` for the Stop hook and looked up on the next call; with --gate the call is refused so it is made again. Speed comes from src/hook-cache.mjs, never from leaving files or lines out.",
+          "text": "the PreToolUse hook gives every file a call writes its notes, each repository's lines once (a line for only some files names them) and every line, with nothing cut (0.27.1; before, the first 10 files and 12 lines a file, and files 11 and on were never checked at the stop). It has a budget (runHook's `budget`, 10 s of the 15 s Claude Code allows): files it had no time for are named in the notes, marked `touched:` for the Stop hook and looked up on the next call; with --gate the call is refused once, and made again at once (`resentNow`: the same call, nothing in between) it goes through with them named, however slow the lookup still is (until 2026-11-14 it was refused each time the lookup ran out of time again, with no end). Every refusal that says to make the same call again must let it through when made again as told, and a test in the tests group tries each. Speed comes from src/hook-cache.mjs, never from leaving files or lines out.",
           "files": [
             "src/cli.mjs"
           ]

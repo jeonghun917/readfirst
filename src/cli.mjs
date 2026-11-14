@@ -714,7 +714,10 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const save = () => { try { addSeen(stateDir, event.session_id, before, seen); return true; } catch { return false; } };
     const sig = callSig(tool, targets);
     const prev = lastCall(seen);
-    if (prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]) seen[`resent:${sig}:${now}`] = now;
+    // The same call made again right after the gate refused it, with nothing in between: what the refusal asked to be
+    // made again goes through (the files it had no time for, below).
+    const resentNow = Boolean(prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]);
+    if (resentNow) seen[`resent:${sig}:${now}`] = now;
     seen[`call:${sig}`] = now;
     if (tool === 'Bash' && FIND_RUN.test(String(event.tool_input?.command ?? ''))) {
       const root = repoOf(cwd);
@@ -810,10 +813,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const askFind = fresh.length > 0 && !askedAt;
     const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
-    if (gate && (asks.length || askFind || askUnknown)) seen[`denied:${sig}`] = now;
-    if (!(gate && (asks.length || late.length || askFind || askUnknown))) Object.assign(seen, reads);
+    // Files it had no time for refuse the call once: made again at once it goes through, the files named and still
+    // marked for the stop. Until 2026-11-14 it was refused each time the lookup ran out of time again, so in a
+    // repository too slow for the budget the agent was told to make the same call forever (test/retry-goes-through.test.mjs).
+    const askLate = late.length > 0 && !resentNow;
+    if (gate && (asks.length || askLate || askFind || askUnknown)) seen[`denied:${sig}`] = now;
+    if (!(gate && (asks.length || askLate || askFind || askUnknown))) Object.assign(seen, reads);
     const saved = save();
-    const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
+    const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate && askLate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
     if (!notes.length && !waiting.length && !lateLine && !findLine && !unknownLine && !askLine) return null;
     // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies for items not answered
     // and, once per call, for files it had no time for, new code written before `readfirst find` and writes it cannot
@@ -821,7 +828,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const text = [...notes, ...(askLine ? [askLine] : []), ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...(unknownLine ? [unknownLine] : []), ...waiting].join('\n\n');
     // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
     // the notes as context instead.
-    if (gate && (asks.length || lateLine || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    if (gate && (asks.length || askLate || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch (e) {
     // Never fails closed (the call goes through), but what failed is kept (failed:<tool>:<error>) for the Stop hook and
