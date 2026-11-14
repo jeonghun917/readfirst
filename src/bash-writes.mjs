@@ -471,7 +471,9 @@ const moveTo = (from, t) => {
 // spans: each construct with its kind, where it opens and closes, and the length of its opener and closer.
 // A quote, ( or (( that never closes is a plain character, as before; a $( ), backtick or <( ) that never closes is a
 // command bash cannot parse, and its text is hidden (spans, unclosed).
-function scanText(s) {
+// doc: the text is the body of a here-document whose tag is not quoted. There, as inside "...", only backslashes, $( ),
+// backticks and arithmetic are the shell's; a quote is a plain character and nothing closes the body.
+function scanText(s, doc = false) {
   const end = new Map();
   const subEnd = new Map();
   const spans = [];
@@ -495,11 +497,11 @@ function scanText(s) {
   // where it opens, from where each ( closes (`pairs`), so what stands in its first ( ) is read as commands from the
   // start: it was read as arithmetic until the ) and then taken back, and a <( ) or (( )) in it had no place in the
   // table (`$((cd a; ((n>1))) && echo hi)` wrote a file 1, 2026-11-14). One that never closes is arithmetic, as before.
-  const closes = pairs(s, lastQuote);
+  const closes = pairs(s, lastQuote, doc);
   const arith = (j) => { const k = closes[j + 1]; return k < 0 || s[k + 1] === ')'; };
   for (let j = 0; j < s.length; j++) {
     const f = stack.at(-1);
-    const ctx = f ? f.ctx : 'code';
+    const ctx = f ? f.ctx : doc ? 'doc' : 'code';
     const c = s[j];
     if (ctx === 'sq') { if (c === "'") closeTop(j + 1, 1); continue; }
     if (c === '\\') { j++; continue; }
@@ -513,7 +515,7 @@ function scanText(s) {
       continue;
     }
     if (c === '$' && s[j + 1] === '[') { push('$[', j, 'arith', 2, { depth: 1, square: true }); j++; continue; }
-    if (ctx === 'dq') { if (c === '"') closeTop(j + 1, 1); continue; }
+    if (ctx === 'dq' || ctx === 'doc') { if (c === '"' && ctx === 'dq') closeTop(j + 1, 1); continue; }
     if (c === "'") { if (j < lastQuote) push("'", j, 'sq', 1); else end.set(j, -1); continue; }
     if (c === '"') { push('"', j, 'dq', 1); continue; }
     if (ctx === 'arith') {
@@ -541,7 +543,7 @@ function scanText(s) {
 // backticks, $( and $[ ] are read as scanText reads them (a ( or ) in quotes, backticks or $[ ] is none), and every
 // other ( and ) pairs, wherever it stands: a ( in arithmetic and a ( of commands close at the same ), so this can be
 // known before what a (( is has been decided. lastQuote: the last ' in the text (a ' after it never closes).
-function pairs(s, lastQuote) {
+function pairs(s, lastQuote, doc = false) {
   const closes = new Int32Array(s.length).fill(-1);
   const stack = []; // a ( (its index), or the kind of quote: "'", '"', '`', '[' for $[ ] (with its depth)
   for (let j = 0; j < s.length; j++) {
@@ -554,6 +556,7 @@ function pairs(s, lastQuote) {
     if (c === '$' && s[j + 1] === '(') { stack.push(j + 1); j++; continue; }
     if (c === '$' && s[j + 1] === '[') { stack.push({ depth: 1 }); j++; continue; }
     if (f === '"') { if (c === '"') stack.pop(); continue; }
+    if (doc && f === undefined) continue; // a here-document's body: as inside "...", and nothing closes it
     if (c === "'") { if (j < lastQuote) stack.push("'"); continue; }
     if (c === '"') { stack.push('"'); continue; }
     if (typeof f === 'object') { if (c === '[') f.depth++; else if (c === ']' && --f.depth === 0) stack.pop(); continue; }
@@ -561,6 +564,18 @@ function pairs(s, lastQuote) {
     else if (c === ')' && typeof f === 'number') closes[stack.pop()] = j;
   }
   return closes;
+}
+// The $( ) and backticks of a here-document's body whose tag is not quoted, as written, the outermost of each (one
+// inside another is read with it). A <( ) there is plain text, as bash leaves it.
+function docSubstitutions(body) {
+  const out = [];
+  let past = 0;
+  for (const x of scanText(body, true).spans) {
+    if (x.unclosed || x.from < past || (x.kind !== '$(' && x.kind !== '`')) continue;
+    out.push(body.slice(x.from, x.to));
+    past = x.to;
+  }
+  return out;
 }
 // The command substitutions, whose text is commands run by a subshell of their own: $( ), backticks, <( ) and >( ).
 const LIFTED = new Set(['$(', '`', '<(']);
@@ -705,7 +720,13 @@ function withoutComments(text) {
   const b = blank(text);
   let out = '';
   let at = 0;
-  for (const m of b.matchAll(/(?<=^|[ \t;])#[^\n]*/gmu)) { out += text.slice(at, m.index); at = m.index + m[0].length; }
+  // The character before the # is read in the text itself: in the blanked text a quote just closed is a space, so
+  // `'[1]'#x` and `echo 'a'#b > f` lost the rest of the word and the redirect (2026-11-14; bash reads `[1]#x`).
+  for (const m of b.matchAll(/(?<=^|[ \t;])#[^\n]*/gmu)) {
+    if (m.index > 0 && !/[\s;]/u.test(text[m.index - 1])) continue;
+    out += text.slice(at, m.index);
+    at = m.index + m[0].length;
+  }
   return out + text.slice(at);
 }
 // How a command segment opens and closes subshells, given how many are open before it: `lead` ( at its start, `body`
@@ -1276,8 +1297,13 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const args = at < 0 ? [] : hw.slice(at + 1).filter((w) => w !== '-' && !w.startsWith('-') && !/^[<>|&]/u.test(w));
     // A shell fed a here-document runs its body as commands: read them as commands. With a quoted tag (<<'E') the
     // body is read by that shell alone, which sees only exported variables; without, the outer shell expands it first.
-    if (at >= 0 && SHELLS.test(hw[at].split('/').pop())) inner(body, quote ? exportedOnly(state.vars) : state.vars);
+    const fed = at >= 0 && SHELLS.test(hw[at].split('/').pop());
+    if (fed) inner(body, quote ? exportedOnly(state.vars) : state.vars);
     else if (at >= 0 && CODE_WRITES.test(body)) codeTargets(body, { args, exists: here, glob }).forEach(add);
+    // With a tag not quoted, the shell expands the body before the command gets it: each $( ) and backtick in it runs,
+    // as a subshell where the command stands (`cat <<E` with `$(echo > f)` in its body makes f; nothing was named
+    // until 2026-11-14). A shell fed the body reads them with its commands (above).
+    if (!quote && !fed) { const subs = docSubstitutions(body); if (subs.length) inner(subs.join('\n'), state.vars); }
   }
   const shell = withoutComments(bare);
   Object.assign(state, start()); // the segments below follow the cds and assignments again themselves
