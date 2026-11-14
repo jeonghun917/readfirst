@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { shellWrites } from '../src/bash-writes.mjs';
+import { runHook } from '../src/cli.mjs';
 
 const hasGit = spawnSync('bash', ['-c', 'git --version && patch --version'], { env: { PATH: process.env.PATH }, stdio: 'ignore' }).status === 0;
 // Who commits, and no signing, for git run here and by bash (a cherry-pick commits).
@@ -95,20 +96,54 @@ test('git and sort that only read or make a branch where HEAD is write nothing, 
   }
 });
 
-// No registry here to run them against: what npm, pnpm and yarn write by what they are told to do.
-test('npm, pnpm and yarn write their lock file, and package.json when they are given packages', () => {
-  const s = (c) => shellWrites(c, '/r').files;
-  assert.deepEqual(s('npm install'), ['/r/package-lock.json']);
-  assert.deepEqual(s('npm i lodash'), ['/r/package-lock.json', '/r/package.json']);
-  assert.deepEqual(s('npm uninstall lodash'), ['/r/package-lock.json', '/r/package.json']);
-  assert.deepEqual(s('npm --prefix web install'), ['/r/web/package-lock.json']);
-  assert.deepEqual(s('pnpm add x'), ['/r/pnpm-lock.yaml', '/r/package.json']);
-  assert.deepEqual(s('pnpm -C app install'), ['/r/app/pnpm-lock.yaml']);
-  assert.deepEqual(s('yarn'), ['/r/yarn.lock']);
-  assert.deepEqual(s('yarn add x --cwd w'), ['/r/w/yarn.lock', '/r/w/package.json']);
-  assert.deepEqual(s('npm ci'), []);
+// No registry here to run them against: what npm, pnpm and yarn write by what they are told to do. Installing is not
+// known, with what it writes, under its folder, and marked `moves` (shown, not refused); npm version and npm pkg set
+// name package.json.
+test('npm, pnpm and yarn installs are not known, with what they write; npm version and pkg set name package.json', () => {
+  const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => `?${u.part}@${u.prefix}${u.moves ? ' moves' : ''}: ${u.why}`)]; };
+  assert.deepEqual(s('npm install'), ['?npm install@/r/ moves: npm install writes package-lock.json and node_modules, as the packages it installs make it']);
+  assert.deepEqual(s('npm i lodash'), ['?npm i@/r/ moves: npm i writes package-lock.json, package.json and node_modules, as the packages it installs make it']);
+  assert.match(s('npm uninstall lodash')[0], /package-lock\.json, package\.json/u);
+  assert.match(s('npm --prefix web install')[0], /^\?npm install@\/r\/web\/ moves/u);
+  assert.match(s('npm -w pkg install x')[0], /^\?npm install@\/r\/ moves: npm install writes package-lock\.json, package\.json/u, 'the value of -w is no subcommand');
+  assert.match(s('pnpm add x')[0], /pnpm-lock\.yaml, package\.json/u);
+  assert.match(s('pnpm -C app install')[0], /^\?pnpm install@\/r\/app\/ moves/u);
+  assert.match(s('yarn')[0], /^\?yarn@\/r\/ moves: yarn writes yarn\.lock and node_modules/u);
+  assert.match(s('yarn add x --cwd w')[0], /^\?yarn add@\/r\/w\/ moves/u);
+  assert.match(s('npm ci')[0], /^\?npm ci@\/r\/ moves: npm ci writes node_modules,/u);
+  assert.deepEqual(s('npm version patch'), ['/r/package.json', '/r/package-lock.json']);
+  assert.deepEqual(s('npm pkg set scripts.x=y'), ['/r/package.json']);
+  assert.deepEqual(s('npm pkg get name'), []);
   assert.deepEqual(s('npm test'), []);
   assert.deepEqual(s('npm run build'), []);
+});
+
+// Review of e0a8185: a rename-only patch (no ---/+++), git rm and git mv, and patch -o were missed in silence.
+test('a rename-only patch, git rm, git mv and patch -o name their files, and bash agrees', { skip: !hasGit && 'bash, git or patch is not installed' }, () => {
+  const MV = 'diff --git a/a.txt b/moved.txt\nsimilarity index 100%\nrename from a.txt\nrename to moved.txt\n';
+  for (const script of ['git apply mv.diff', 'git rm -q a.txt', 'git mv a.txt m.txt', 'patch -o out2 a.txt < fix.diff']) {
+    const d = setUp();
+    writeFileSync(join(d, 'mv.diff'), MV);
+    const changed = bashChanged(script, d);
+    assert.ok(changed.length > 0, `bash changes a file: ${script}`);
+    assert.deepEqual(named(script, d), changed, script);
+  }
+  assert.deepEqual(named('git rm -q --cached a.txt', setUp()), [], 'the index only');
+});
+
+// The hook with --gate: a move between commits is shown, not refused (review of e0a8185: `git checkout -q main` and
+// `git pull` were refused once each, naming no file to read); a write readfirst cannot place is still refused.
+test('hook --gate shows a move between commits without refusing it, and still refuses a write it cannot place', { skip: !hasGit && 'bash, git or patch is not installed' }, () => {
+  const root = setUp();
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-more-state-'));
+  const hook = (command, session) => { const out = runHook(JSON.stringify({ session_id: session, cwd: root, tool_name: 'Bash', tool_input: { command } }), { stateDir, gate: true }); return out ? JSON.parse(out).hookSpecificOutput : null; };
+  for (const command of ['git checkout -q other', 'git pull -q', 'git stash', 'git merge -q other', 'npm install']) {
+    const told = hook(command, `more-${process.pid}-${command}`);
+    assert.equal(told?.permissionDecision, undefined, command);
+    assert.match(told.additionalContext, /changes files readfirst cannot name before it runs/u, command);
+  }
+  const refused = hook('git clean -fq', `more-${process.pid}-clean`);
+  assert.equal(refused.permissionDecision, 'deny', 'clean takes away files where they are: refused once');
 });
 
 test('a patch read from a pipe is not known, and one that makes or removes a file names it', () => {

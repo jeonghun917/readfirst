@@ -782,7 +782,8 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos, Date.now() + budget / 5) : [];
     // Asked once per command and folder (commandKey): the same text run in another folder or repository is asked again.
     const unknownKey = unplaced.length ? `unknown:${keysOnce().here}` : null;
-    const askUnknown = Boolean(unknownKey) && !before[unknownKey] && !before[`unknown:${keys.old}`];
+    const newUnknown = Boolean(unknownKey) && !before[unknownKey] && !before[`unknown:${keys.old}`];
+    const askUnknown = newUnknown && refuses(unplaced);
     if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) { if (!seen[`start:${r}`]) seen[`start:${r}`] = now; markHead(seen, r, now); } }
     // Said once per command: made again, it goes through without the line.
     // Five repositories are named for a write and the rest counted with where they are (below its folder, or the ones
@@ -794,7 +795,8 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       if (u.looked) return `could be in a repository below ${u.prefix}${u.roots.length ? ` (${some} and more: readfirst stopped looking at ${u.looked})` : ` (readfirst stopped looking at ${u.looked})`}`;
       return u.roots.length ? `could be in ${some}` : 'could be in any repository: none is known to this session';
     };
-    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${clip(u.word)}\` (${clip(u.part)}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
+    const unknownLine = !newUnknown ? null : askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${clip(u.word)}\` (${clip(u.part)}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.`
+      : `readfirst: this command changes files readfirst cannot name before it runs: ${unplaced.map((u) => `\`${clip(u.part)}\` (${u.why}; ${landIn(u)})`).join('; ')}. The Stop hook checks the files that change.`;
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
@@ -921,6 +923,14 @@ function rootOf(abs, known = new Map()) {
 // A part not known inside one folder name (`within`: `/tmp/zz-$r/f`) narrows that to the folders whose name fits its
 // known letters (/tmp/zz-*) and what is below them: it walked all of /tmp, 12 s, and named every repository there
 // (2026-11-13). The walks share 2000 folders and the time until `until`.
+// Whether writes readfirst cannot place make the gate refuse the call once. Not those that only move between commits
+// or install packages (`moves`, from shellWrites: git checkout of a branch, merge, rebase, pull, a stash, npm
+// install...): the refusal could name no file to read, and the Stop hook checks the files they change (its HEAD reflog
+// tells what came in from what the session wrote). Their line is shown, without refusing (review of readfirst#225:
+// `git checkout -q main` and `git pull` were each refused once, naming no file).
+function refuses(unplaced) {
+  return unplaced.some((u) => !u.moves);
+}
 // Returns [{ ...unknown, roots }], roots empty when no repository is known at all (it could be any).
 function couldLandIn(unknown, seen, cwd, made = [], until = Infinity) {
   const walk = { left: 2000, until };

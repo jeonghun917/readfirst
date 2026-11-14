@@ -206,6 +206,14 @@ function diffPaths(text, strip) {
   const out = new Set();
   let old = null;
   for (const line of String(text).split('\n')) {
+    // A git diff that only renames or copies a file, or changes a binary one, has no ---/+++ lines: its
+    // `diff --git a/x b/y` header names both (a rename-only patch was missed, review of #225). The names in it are
+    // taken as git takes them, with strip folders off.
+    const g = line.match(/^diff --git ("[^"]*"|\S+) ("[^"]*"|\S+)\s*$/u);
+    if (g) {
+      for (const n of [g[1], g[2]]) { const parts = n.replace(/^"|"$/gu, '').split('/'); if (parts.length > strip) out.add(parts.slice(strip).join('/')); }
+      continue;
+    }
     const m = line.match(/^(---|\+\+\+) ("[^"]*"|[^\t\n]+?)(?:\t.*)?\s*$/u);
     if (!m) continue;
     const name = m[2].replace(/^"|"$/gu, '');
@@ -1479,13 +1487,19 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     if (!moves) return;
     const part = `git ${sub}`;
     const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
-    missing({ part, word: part, why: `${part} changes the tracked files it brings, known only when it runs`, prefix: under });
+    // `moves`: a move between commits (all of these but clean, which takes away files where they are): the hook shows
+    // it without refusing (refuses in src/cli.mjs), since it can name no file to read first.
+    missing({ part, word: part, why: `${part} changes the tracked files it brings, known only when it runs`, prefix: under, ...(sub === 'clean' ? {} : { moves: true }) });
   };
-  // npm, pnpm and yarn write their lock file when they install, add, remove or update packages (package-lock.json,
-  // pnpm-lock.yaml, yarn.lock), and package.json when the command names packages; `npm ci` writes neither. The folder:
-  // --prefix (npm), -C / --dir (pnpm), --cwd (yarn), or where the command runs. What they write into node_modules is
-  // not named.
+  // npm, pnpm and yarn. Installing, adding, removing or updating packages writes the lock file (package-lock.json,
+  // pnpm-lock.yaml, yarn.lock), package.json when the command names packages, and node_modules: given as not known,
+  // with what it writes, and `moves`, so the hook shows it without refusing (it could name no file to read first; the
+  // Stop hook checks what changed). `npm ci` writes node_modules only: the same. `npm version` and `npm pkg
+  // set|delete|fix` write package.json (and npm version the lock file): named. The folder: --prefix (npm), -C / --dir
+  // (pnpm), --cwd (yarn), or where the command runs; options that take a value (-w, --workspace, --filter, ...) are
+  // skipped with it (`npm -w pkg install x` took pkg for the subcommand, review of #225).
   const LOCKS = { npm: 'package-lock.json', pnpm: 'pnpm-lock.yaml', yarn: 'yarn.lock' };
+  const PKG_VALUES = /^(?:-w|--workspace|--filter|-F|--registry|--tag|--cache|--userconfig|--loglevel|--omit|--include|--save-prefix)$/u;
   const packages = (cmd, args) => {
     let dir = '.';
     const words = [];
@@ -1494,13 +1508,20 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       const m = w.match(/^--(prefix|dir|cwd)=(.*)$/u);
       if (m) { dir = m[2]; continue; }
       if (/^(?:--prefix|--dir|--cwd|-C)$/u.test(w)) { dir = args[++i] ?? '.'; continue; }
+      if (PKG_VALUES.test(w)) { i++; continue; }
       if (!w.startsWith('-')) words.push(w);
     }
     const [sub, ...named] = words;
-    if (sub === undefined && cmd === 'yarn') { add(join(dir, LOCKS.yarn)); return; }
-    if (!/^(?:install|i|add|uninstall|un|remove|rm|update|up|upgrade)$/u.test(sub ?? '')) return;
-    add(join(dir, LOCKS[cmd]));
-    if (named.length || /^(?:uninstall|un|remove|rm)$/u.test(sub)) add(join(dir, 'package.json'));
+    if (cmd === 'npm' && (sub === 'version' || (sub === 'pkg' && /^(?:set|delete|fix)$/u.test(named[0] ?? '')))) {
+      add(join(dir, 'package.json'));
+      if (sub === 'version') add(join(dir, LOCKS.npm));
+      return;
+    }
+    if (!(sub === undefined && cmd === 'yarn') && !/^(?:install|i|ci|add|uninstall|un|remove|rm|update|up|upgrade)$/u.test(sub ?? '')) return;
+    const what = sub === 'ci' ? 'node_modules' : `${LOCKS[cmd]}${named.length || /^(?:uninstall|un|remove|rm)$/u.test(sub ?? '') ? ', package.json' : ''} and node_modules`;
+    const part = `${cmd}${sub ? ` ${sub}` : ''}`;
+    const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+    missing({ part, word: part, why: `${part} writes ${what}, as the packages it installs make it`, prefix: under, moves: true });
   };
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
@@ -1640,8 +1661,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // patch it reads names.
     else if (cmd === 'patch') {
       const named = patchFiles(args);
-      if (named.length) named.forEach(add);
-      else if (!args.some((w) => /^(?:--dry-run|-o|--output)$/u.test(w))) {
+      // -o FILE writes the patched text there, not over the file (review of #225: nothing was named).
+      const out = args.find((w) => /^--output=/u.test(w))?.slice(9) ?? (args.includes('-o') ? args[args.indexOf('-o') + 1] : undefined);
+      if (out !== undefined && !args.includes('--dry-run')) add(out);
+      else if (named.length) named.forEach(add);
+      else if (!args.includes('--dry-run')) {
         const p = args.find((w) => /^-p\d+$/u.test(w)) ?? (args.includes('-p') ? `-p${args[args.indexOf('-p') + 1]}` : undefined);
         const input = args.find((w) => /^--input=/u.test(w))?.slice(8) ?? (args.includes('-i') ? args[args.indexOf('-i') + 1] : stdinFile(ws) && dq(stdinFile(ws)));
         applyPatch('patch', input === undefined ? null : readText(input), p === undefined ? undefined : Number(p.slice(2)), '.');
@@ -1683,6 +1707,13 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
           const patches = ap.filter((w, k) => !w.startsWith('-') && !/^-[pCx]$/u.test(ap[k - 1] ?? ''));
           const input = patches.length ? patches : stdinFile(ws) ? [dq(stdinFile(ws))] : [null];
           for (const f of input) applyPatch('git apply', f == null ? null : readText(f), p === undefined ? 1 : Number(p.slice(2)), join(dir, into));
+        }
+      } else if (sub === 'rm' || sub === 'mv') {
+        // git rm takes its paths away (not with --cached: the index only); git mv names where they were and go.
+        const gr = args.slice(i + 1);
+        if (!(sub === 'rm' && gr.includes('--cached')) && !gr.some((w) => /^(?:-n|--dry-run)$/u.test(w))) {
+          const dd = gr.indexOf('--');
+          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => add(join(dir, p)));
         }
       } else if (sub !== undefined) gitMoves(sub, args.slice(i + 1), dir);
       for (const m of made ? perTurn(made) ?? [made] : []) {
