@@ -25,7 +25,7 @@
 // Options: --root <dir> (default: the current git repository), --json, --limit <n>, --version; --name=value works too.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { importEdges } from './imports.mjs';
@@ -34,7 +34,7 @@ import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateM
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
 import { bashReads, shellWrites } from './bash-writes.mjs';
-import { ANSWER_HOW, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, openUnsure, parseAnswer } from './answers.mjs';
+import { ANSWER_HOW, ANSWER_KINDS, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, itemTally, lastAnswers, openUnsure, parseAnswer, wideItems } from './answers.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { definitions, find, findText, meets, words } from './find.mjs';
@@ -127,7 +127,22 @@ function firstWord(argv) {
 }
 
 // stderr is captured, not shown: a repository with no commits yet makes `rev-parse HEAD` complain, and that is expected.
-const git = (root, ...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] });
+// GIT_OPTIONAL_LOCKS=0: readfirst runs beside the user's own git (in hooks, at the same time as their commands), so its
+// `git status` neither refreshes nor locks their index, as git asks of background tools.
+// Read at each call, as git inherited process.env before: a variable set after this module loaded still reaches git.
+const gitEnv = (more = {}) => ({ ...process.env, GIT_OPTIONAL_LOCKS: '0', ...more });
+// A git that exits 0 but says error: or fatal: on stderr gave no answer to trust: a cut index makes `git status` list
+// files as deleted and untracked with rc 0 and only "error: cache entry has null sha1" (review of readfirst#207).
+// Both throw, and the error keeps git's own error:/fatal: lines whole (`gitErrors`), for the reasons said at the stop.
+const git = (root, ...a) => {
+  const r = spawnSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env: gitEnv() });
+  if (r.error) throw r.error;
+  const said = String(r.stderr ?? '').split('\n').map((l) => l.trim()).filter((l) => /^(?:error|fatal): /u.test(l));
+  if (r.status === 0 && !said.length) return r.stdout;
+  const e = new Error(`Command failed: git ${a.join(' ')}${said.length ? `: ${said.join('; ')}` : r.stderr?.trim() ? `: ${r.stderr.trim()}` : ''}`);
+  Object.assign(e, { status: r.status, stdout: r.stdout, stderr: r.stderr, gitErrors: said });
+  throw e;
+};
 
 export function repoFiles(root) {
   // Tracked files plus new files not ignored by .gitignore, so a file being added can be looked up before its commit.
@@ -248,7 +263,19 @@ function onBaseItself(changed, io) {
 function changedFiles(root, base) {
   if (base !== undefined && !exists(root, base)) throw new Error(`no branch or commit named ${base} here (\`git branch -a\` lists them)`);
   const ref = base ?? ['origin/main', 'main', 'origin/master', 'master'].find((r) => exists(root, r));
-  if (!ref) throw new Error('no base branch found: pass --base <ref>');
+  if (!ref) {
+    // A base branch whose ref is there but names no commit git can read (a broken ref file) is not "no base branch"
+    // (review of readfirst#207): say which one, and what git says of it.
+    for (const [name, full] of [['origin/main', 'refs/remotes/origin/main'], ['main', 'refs/heads/main'], ['origin/master', 'refs/remotes/origin/master'], ['master', 'refs/heads/master']]) {
+      let at = '';
+      try { at = git(root, 'rev-parse', '--git-path', full).trim(); } catch { continue; }
+      if (!existsSync(resolve(root, at))) continue;
+      let said = 'it names no commit';
+      try { git(root, 'rev-parse', '--verify', `${full}^{commit}`); } catch (e) { said = errorText(e); }
+      throw Object.assign(new Error(`the base branch ${name} is there but git cannot read it (${said}): repair the ref, or pass --base <ref>`), { ours: true });
+    }
+    throw new Error('no base branch found: pass --base <ref>');
+  }
   let current = null;
   try { current = git(root, 'symbolic-ref', '--quiet', '--short', 'HEAD').trim(); } catch { /* detached */ }
   const here = base === undefined && ref === current;
@@ -508,6 +535,100 @@ function commandKey(command, cwd) {
   const hash = (text) => createHash('sha1').update(text).digest('hex').slice(0, 12);
   return { here: hash(`${folder}\0${repoOf(folder) ?? ''}\0${command}`), old: hash(command) };
 }
+// Where the session started in a repository (plan 2.7, "the session's diff"): `head:<sha>:<root>`, the commit HEAD was
+// at on the first call that wrote or could write there, before that call ran (the hook runs first). The Stop hook judges
+// not-this answers on the diff from it, so a commit made on the branch before the session never counts against an
+// answer. '' when the repository had no commit yet.
+const HEAD_KEY = /^head:([0-9a-f]*):(.+)$/su;
+function headOf(seen, root) {
+  for (const k of Object.keys(seen)) { const m = k.match(HEAD_KEY); if (m && m[2] === root) return m[1]; }
+  return null;
+}
+// With it, what the working tree already held then, so changes made before the session are not counted as its own:
+// `base:<JSON [root, snapshot, untracked, count, why]>`. snapshot: `git stash create` (a commit of the tracked files as
+// they were; it writes git objects nothing refers to, which gc removes, and no ref or stash entry), run on a copy of the
+// index in the temp folder, because stash create rewrites the index it reads even with GIT_OPTIONAL_LOCKS=0; HEAD when
+// nothing was changed, '' for a repository with no commit and nothing added, null when it could not be taken, with
+// why saying what stopped it. untracked: the files git did not track
+// then (not ignored), which the stop does not count as the session's; null when there were more than PRE_MAX, with
+// count saying how many: the start is then only partly known and no not-this is compared there.
+const PRE_MAX = 2000;
+// The hash of the shared index a split index uses, from its `link` extension, or null when it has none (git's index
+// format: a 12-byte header, the entries, then extensions of a 4-byte name and a 4-byte length, before the hash at the
+// end). Entries are read as git writes them: v2 and v3 padded to 8 bytes with the path's NUL, v3's extended flags,
+// v4's paths with a varint of bytes to drop from the one before and no padding. size: the hash's length. Throws when
+// the bytes do not follow that shape.
+function sharedIndexOf(bytes, size) {
+  if (bytes.toString('latin1', 0, 4) !== 'DIRC') throw new Error('no DIRC header');
+  const version = bytes.readUInt32BE(4);
+  if (version < 2 || version > 4) throw new Error(`index version ${version}`);
+  const entries = bytes.readUInt32BE(8);
+  const stop = bytes.length - size;
+  let p = 12;
+  for (let i = 0; i < entries; i++) {
+    const start = p;
+    if (p + 40 + size + 2 > stop) throw new Error(`entry ${i + 1} of ${entries} runs past the end`);
+    const flags = bytes.readUInt16BE(p + 40 + size);
+    p += 40 + size + 2;
+    if (flags & 0x4000) { if (version < 3) throw new Error(`entry ${i + 1} has extended flags in a version ${version} index`); p += 2; }
+    if (version === 4) {
+      let c = bytes[p++];
+      while (c & 0x80) { if (p >= stop) throw new Error(`entry ${i + 1}'s path runs past the end`); c = bytes[p++]; }
+    }
+    const nul = bytes.indexOf(0, p);
+    if (nul < 0 || nul >= stop) throw new Error(`entry ${i + 1}'s path runs past the end`);
+    p = version === 4 ? nul + 1 : start + ((nul - start + 8) & ~7);
+  }
+  while (p + 8 <= stop) {
+    const name = bytes.toString('latin1', p, p + 4);
+    const length = bytes.readUInt32BE(p + 4);
+    if (p + 8 + length > stop) throw new Error(`extension ${JSON.stringify(name)} runs past the end`);
+    if (name === 'link') {
+      const hash = bytes.subarray(p + 8, p + 8 + size);
+      return hash.some((b) => b !== 0) ? hash.toString('hex') : null;
+    }
+    p += 8 + length;
+  }
+  if (p !== stop) throw new Error('the extensions do not end where the hash begins');
+  return null;
+}
+function baseOf(seen, root) {
+  for (const k of Object.keys(seen)) {
+    if (!k.startsWith('base:')) continue;
+    let v = null;
+    try { v = JSON.parse(k.slice('base:'.length)); } catch { v = null; }
+    if (Array.isArray(v) && v[0] === root) return { snapshot: typeof v[1] === 'string' ? v[1] : null, untracked: Array.isArray(v[2]) ? v[2] : null, count: Number(v[3]) || 0, why: typeof v[4] === 'string' ? v[4] : 'git stash create failed' };
+  }
+  return null;
+}
+function markHead(seen, root, now) {
+  if (!root || headOf(seen, root) !== null) return;
+  let sha = '';
+  try { sha = git(root, 'rev-parse', '--verify', '-q', 'HEAD').trim(); } catch { sha = ''; }
+  seen[`head:${sha}:${root}`] = now;
+  let snapshot = null;
+  let why = null;
+  if (!sha) {
+    try { snapshot = git(root, 'ls-files', '-z') ? null : ''; } catch (e) { why = `git ls-files failed (${errorText(e)})`; }
+    if (snapshot === null) why ??= 'the repository had no commit yet and files were already added';
+  } else {
+    let copy = null;
+    try {
+      const at = git(root, 'rev-parse', '--git-path', 'index').trim();
+      copy = mkdtempSync(join(tmpdir(), 'readfirst-index-'));
+      const index = join(copy, 'index');
+      // No index to copy: stash create on an empty one would take every file for deleted.
+      if (!existsSync(resolve(root, at))) throw new Error(`no index file at ${at}`);
+      copyFileSync(resolve(root, at), index);
+      snapshot = execFileSync('git', ['-C', root, 'stash', 'create'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: gitEnv({ GIT_INDEX_FILE: index }) }).trim() || sha;
+    } catch (e) { snapshot = null; why = `git stash create failed (${errorText(e)})`; }
+    if (copy) try { rmSync(copy, { recursive: true, force: true }); } catch { /* the temp folder is cleaned by the system */ }
+  }
+  let untracked = null;
+  let count = 0;
+  try { const all = git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean); count = all.length; untracked = count > PRE_MAX ? null : all; } catch { untracked = null; }
+  seen[`base:${JSON.stringify([root, snapshot, untracked, count, why])}`] = now;
+}
 function lastCall(seen) {
   let best = null;
   for (const [k, at] of Object.entries(seen)) if (k.startsWith('call:') && (!best || at > best[1])) best = [k, at];
@@ -593,7 +714,11 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const save = () => { try { addSeen(stateDir, event.session_id, before, seen); return true; } catch { return false; } };
     const sig = callSig(tool, targets);
     const prev = lastCall(seen);
-    if (prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]) seen[`resent:${sig}:${now}`] = now;
+    // The same call made again right after the gate refused it, with nothing in between: what the refusal asked to be
+    // made again goes through (the files it had no time for, below). Kept as resent:, except a retry for files it had
+    // no time for, which is what that refusal asked for, not a sign its notes went unread (review of readfirst#208).
+    const resentNow = Boolean(prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]);
+    const markResent = () => { if (resentNow) seen[`resent:${sig}:${now}`] = now; };
     seen[`call:${sig}`] = now;
     if (tool === 'Bash' && FIND_RUN.test(String(event.tool_input?.command ?? ''))) {
       const root = repoOf(cwd);
@@ -623,6 +748,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // f's items. An answer readfirst cannot read or check is refused with what is wrong, and nothing of it is kept.
     const given = gate && tool === 'Bash' ? readSafely(() => answersIn(command, cwd, seen)) : null;
     if (given?.problems.length) {
+      markResent();
       const saved = save();
       const reason = `readfirst: nothing of this answer is kept:\n- ${given.problems.join('\n- ')}\nGive it again as one quoted argument: ${ANSWER_HOW}`;
       return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...(saved ? { permissionDecision: 'deny', permissionDecisionReason: reason } : { additionalContext: reason }) } });
@@ -644,7 +770,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // Asked once per command and folder (commandKey): the same text run in another folder or repository is asked again.
     const unknownKey = unplaced.length ? `unknown:${keysOnce().here}` : null;
     const askUnknown = Boolean(unknownKey) && !before[unknownKey] && !before[`unknown:${keys.old}`];
-    if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) if (!seen[`start:${r}`]) seen[`start:${r}`] = now; }
+    if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) { if (!seen[`start:${r}`]) seen[`start:${r}`] = now; markHead(seen, r, now); } }
     // Said once per command: made again, it goes through without the line.
     // Five repositories are named for a write and the rest counted with where they are (below its folder, or the ones
     // this session used): hundreds made a line no one reads (2026-11-13). All of them get the start mark above.
@@ -659,12 +785,15 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
+      markHead(seen, root, now);
+      markResent();
       if (!(gate && askUnknown)) Object.assign(seen, reads);
       const saved = save();
       if (!unknownLine) return null;
       if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: unknownLine } });
       return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: unknownLine } });
     }
+    { const roots = new Map(); for (const abs of targets) markHead(seen, rootOf(abs, roots), now); }
     const deadline = Date.now() + budget;
     const edited = new Map(targets.flatMap((abs) => { const e = editTexts(tool, event.tool_input, abs); return e ? [[abs, e]] : []; }));
     const { notes, late, items } = notesFor(targets, seen, now, { deadline, stateDir, edited, gate });
@@ -687,10 +816,15 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const askFind = fresh.length > 0 && !askedAt;
     const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
-    if (gate && (asks.length || askFind || askUnknown)) seen[`denied:${sig}`] = now;
-    if (!(gate && (asks.length || late.length || askFind || askUnknown))) Object.assign(seen, reads);
+    // Files it had no time for refuse the call once: made again at once it goes through, the files named and still
+    // marked for the stop. Until 2026-11-14 it was refused each time the lookup ran out of time again, so in a
+    // repository too slow for the budget the agent was told to make the same call forever (test/retry-goes-through.test.mjs).
+    const askLate = late.length > 0 && !resentNow;
+    if (!(late.length && !asks.length && !askFind && !askUnknown)) markResent();
+    if (gate && (asks.length || askLate || askFind || askUnknown)) seen[`denied:${sig}`] = now;
+    if (!(gate && (asks.length || askLate || askFind || askUnknown))) Object.assign(seen, reads);
     const saved = save();
-    const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
+    const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate && askLate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
     if (!notes.length && !waiting.length && !lateLine && !findLine && !unknownLine && !askLine) return null;
     // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies for items not answered
     // and, once per call, for files it had no time for, new code written before `readfirst find` and writes it cannot
@@ -698,7 +832,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const text = [...notes, ...(askLine ? [askLine] : []), ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...(unknownLine ? [unknownLine] : []), ...waiting].join('\n\n');
     // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
     // the notes as context instead.
-    if (gate && (asks.length || lateLine || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    if (gate && (asks.length || askLate || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch (e) {
     // Never fails closed (the call goes through), but what failed is kept (failed:<tool>:<error>) for the Stop hook and
@@ -718,7 +852,15 @@ const clip = (text) => {
   return s.length <= CLIP ? s : `${s.slice(0, CLIP)}… (${s.length} characters, ${s.length - CLIP} left out)`; // cut: says how many it left out
 };
 // An error in one line, short enough for a state key and a report line.
-const errorText = (e) => `${e?.name ?? 'Error'}: ${String(e?.message ?? e)}`.replace(/\s+/gu, ' ').slice(0, 160); // cut: the error's first 160 characters; the rest is in no state
+// git's error: and fatal: lines are kept whole, with the command (the reason a stop gives: cut mid-word, "fatal: index
+// file corru" said nothing; review of readfirst#207), and so is a sentence readfirst throws itself (`ours`). Another
+// error is cut at a word, with "…".
+const errorText = (e) => {
+  const text = `${e?.name ?? 'Error'}: ${String(e?.message ?? e)}`.replace(/\s+/gu, ' ');
+  if (e?.gitErrors?.length || e?.ours || text.length <= 160) return text;
+  // cut: the first 160 characters of an error that is not git's, to the last whole word, marked with "…"; the rest is in no state.
+  return `${text.slice(0, 160).replace(/\s+\S*$/u, '')}…`;
+};
 
 // The branch a repository is on, or the commit when none is checked out; '' when git cannot say. `known` keeps the
 // answers of one call.
@@ -944,7 +1086,7 @@ function trustedRuns(root, firstSeen) {
   let since;
   let here;
   let current;
-  try { ({ ref, since, here, current } = changedFiles(root)); } catch { return { runs: new Set(), why: 'there is no base branch (main or master) to take trusted commands from' }; }
+  try { ({ ref, since, here, current } = changedFiles(root)); } catch (e) { return { runs: new Set(), why: /^no base branch/u.test(e.message) ? 'there is no base branch (main or master) to take trusted commands from' : `${e.message}; no trusted commands to take from it` }; }
   // Only when the base is the branch the session commits to (main itself, or origin/main while on main): a feature
   // branch's merge-base holds no commit of the session.
   const ownBase = here || (current && ref === `origin/${current}`);
@@ -979,13 +1121,15 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   // Edited files by repository: absolute paths by the repository that holds them, older relative ones by the session's.
   const byRoot = new Map();
   const firstSeen = new Map(); // the earliest time a file of each repository was marked
+  const lost = []; // marked files whose repository git does not find now
+  const unlooked = new Map(); // by repository: files let through with no time to look them up, never looked up since
   const here = repoOf(event.cwd ?? process.cwd());
   for (const recorded of Object.keys(seen)) {
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -995,21 +1139,52 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     const raw = tag ? tag[2] : recorded;
     const key = isAbsolute(raw) ? physical(raw) : raw;
     const root = isAbsolute(key) ? repoOf(existsSync(dirname(key)) ? dirname(key) : here ?? '/') : here;
-    if (!root) continue;
+    // The hook marks only files inside a repository, so a marked file whose repository git no longer finds (a .git file
+    // pointing at a gitdir that is gone, a moved folder) is a file whose checks cannot run: said below, never dropped
+    // (review of readfirst#207).
+    if (!root) { if (isAbsolute(key)) lost.push(key); continue; }
     const path = isAbsolute(key) ? relative(root, key).replace(/\\/gu, '/') : key;
     if (path.startsWith('..')) continue;
     if (!byRoot.has(root)) byRoot.set(root, []);
     if (!byRoot.get(root).includes(path)) byRoot.get(root).push(path);
     firstSeen.set(root, Math.min(firstSeen.get(root) ?? Infinity, seen[recorded]));
+    // A file the hook had no time to look up and never looked up later (no notes shown, no `readfirst read`): with the
+    // gate on (a refusal was made), its rules and risks were asked nowhere, so the stop names them (review of
+    // readfirst#208: in a repository always too slow for the budget the gate's questions were off with no word).
+    if (tag?.[1] === 'touched' && isAbsolute(key) && seen[key] === undefined && !Object.keys(seen).some((k) => /^(?:shown|read):/u.test(k) && k.endsWith(`:${key}`))) {
+      if (!unlooked.has(root)) unlooked.set(root, []);
+      if (!unlooked.get(root).includes(path)) unlooked.get(root).push(path);
+    }
   }
+  const gated = Object.keys(seen).some((k) => k.startsWith('denied:'));
+  // Every item asked or answered in this session, by any file.
+  const asked = new Set(Object.keys(seen).filter((k) => /^(?:ask|answer):/u.test(k)).map((k) => { try { return JSON.parse(k.slice(k.indexOf(':') + 1))[0]; } catch { return null; } }));
   const passed = [];
   const blocks = [];
   // Checks that did not run block once for a state of the files: the mark says so to the next stop.
   const said = (key) => Boolean(seen[key]);
   const say = (key) => { try { addSeen(stateDir, event.session_id, {}, { [key]: Date.now() }); } catch { /* blocks again next time */ } };
   const tally = { asked: 0, acted: 0, notActed: [] };
+  const found = [];
+  const notes = [];
+  const unchecked = [];
+  if (lost.length) {
+    // Named with git's own words for the first folder, refused once for these files and that kind of error, as a
+    // stopFor that throws is.
+    const dirs = [...new Set(lost.map((f) => (existsSync(dirname(f)) ? dirname(f) : f)))].sort();
+    let why = 'git finds no repository there';
+    try { git(dirs[0], 'rev-parse', '--show-toplevel'); } catch (e) { why = errorText(e); }
+    const kind = why.replace(/(['"`]).*?\1/gu, '$1…$1').replace(/\d+/gu, 'N');
+    const key = `unchecked:${createHash('sha1').update(`${[...lost].sort().join('\0')}\0${kind}`).digest('hex').slice(0, 12)}`;
+    const line = `readfirst: the stop could not check ${lost.sort().map((f) => `\`${f}\``).join(', ')}: git finds no repository holding ${lost.length === 1 ? 'it' : 'them'} now (${why}), so the checks the map lists for ${lost.length === 1 ? 'it' : 'them'} did not run and no answer was compared with the change. Fix what stopped it, or say why it cannot be fixed, before you finish.`;
+    for (const d of dirs) unchecked.push(`${d}: ${why}`);
+    if (said(key)) notes.push(line); else { say(key); blocks.push(line); }
+  }
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
-    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say });
+    const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root), start: baseOf(seen, root), unlooked: gated ? unlooked.get(root) ?? [] : [], asked });
+    if (r?.note) notes.push(r.note);
+    if (r?.unchecked) unchecked.push(r.unchecked);
+    if (r?.found) found.push(...r.found);
     if (r?.pass) passed.push(r.pass);
     if (r?.block) blocks.push(r.block);
     if (r?.tally) { tally.asked += r.tally.asked; tally.acted += r.tally.acted; tally.notActed.push(...r.tally.notActed); }
@@ -1022,36 +1197,53 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     say(unsureKey);
     blocks.push(`readfirst: ${unsure.length} answer(s) of this session are still unsure:\n- ${unsure.map((a) => `\`${a.item}\`: ${a.because}`).join('\n- ')}\nAnswer each again with keeps, not-this or done (${ANSWER_HOW}) once you know, or say why it stays unsure.`);
   }
-  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length, misread: Object.keys(seen).filter((k) => k.startsWith('misread:')).length, failed: Object.keys(seen).filter((k) => k.startsWith('failed:')).map((k) => k.slice('failed:'.length)), unsure: unsure.length };
+  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length, misread: Object.keys(seen).filter((k) => k.startsWith('misread:')).length, failed: Object.keys(seen).filter((k) => k.startsWith('failed:')).map((k) => k.slice('failed:'.length)), unsure: unsure.length, untrue: found.length, items: itemTally(seen, found), unchecked: unchecked.length };
   const line = actedLine(record);
   if (line) { try { appendFileSync(join(stateDir, ACTED_LOG), `${JSON.stringify(record)}\n`); } catch { /* the line is still said */ } }
-  if (blocks.length) return JSON.stringify({ decision: 'block', reason: [...blocks, ...(line ? [line] : [])].join('\n\n') });
-  if (passed.length || line) return JSON.stringify({ systemMessage: [...passed, ...(line ? [line] : [])].join('\n') });
+  if (blocks.length) return JSON.stringify({ decision: 'block', reason: [...blocks, ...notes, ...(line ? [line] : [])].join('\n\n') });
+  if (passed.length || notes.length || line) return JSON.stringify({ systemMessage: [...passed, ...notes, ...(line ? [line] : [])].join('\n') });
   return null;
 }
 
 // The Stop hook's last line (step 4): what the map asked for the files edited, what was done, what was not, and how
 // often a refused edit was made again at once. Every item not done is named.
-export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0, noFind = 0, misread = 0, failed = [], unsure = 0 }) {
-  if (!asked && !resent && !noFind && !misread && !failed.length && !unsure) return null; // notes shown and nothing asked: the stop stays quiet, as before
-  const unsureLine = unsure ? `; ${unsure} answer(s) left unsure` : '';
+export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0, noFind = 0, misread = 0, failed = [], unsure = 0, untrue = 0, unchecked = 0 }) {
+  if (!asked && !resent && !noFind && !misread && !failed.length && !unsure && !untrue && !unchecked) return null; // notes shown and nothing asked: the stop stays quiet, as before
+  const unsureLine = `${unsure ? `; ${unsure} answer(s) left unsure` : ''}${untrue ? `; ${untrue} answer(s) the change does not bear out` : ''}`;
   const not = notActed.length ? `, not done: ${notActed.join('; ')}` : '';
   const again = resent ? `; ${resent} refused edit(s) made again at once with nothing in between, so their notes were likely not read` : '';
   const nofind = noFind ? `; ${noFind} edit(s) added new functions without \`readfirst find\` first` : '';
   const misreadLine = misread ? `; readfirst hit an error reading ${misread} command(s), each counted once per folder it ran in, refused once as writes it could not place` : '';
   // One failed: key per tool and error, so the same error on many calls is one.
   const failedLine = failed.length ? `; the hook failed and let calls through unchecked, with ${failed.length} different error(s) (${failed.join('; ')})` : '';
-  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}${misreadLine}${failedLine}${unsureLine}.`;
+  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}${misreadLine}${failedLine}${unsureLine}${unchecked ? `; the stop could not check ${unchecked} repository(ies), so their checks did not run` : ''}.`;
 }
 
+// The last line of each session in ACTED_LOG, or null when there is none (no session recorded, or no such file).
+function actedSessions(stateDir = tmpdir()) {
+  let text = '';
+  try { text = readFileSync(join(stateDir, ACTED_LOG), 'utf8'); } catch { return null; }
+  const last = new Map();
+  for (const l of text.split('\n')) { try { const r = JSON.parse(l); if (r && typeof r.session === 'string') last.set(r.session, r); } catch { /* a line cut short */ } }
+  return [...last.values()];
+}
 // `readfirst hook --report`: the Stop hook's lines of every session kept in ACTED_LOG (the last one of each session),
 // added up, with every item not done and how often.
 export function hookReport({ stateDir = tmpdir() } = {}) {
-  let text = '';
-  try { text = readFileSync(join(stateDir, ACTED_LOG), 'utf8'); } catch { return 'readfirst hook --report: no session has been recorded yet (the Stop hook writes one line per session).'; }
-  const last = new Map();
-  for (const l of text.split('\n')) { try { const r = JSON.parse(l); if (r && typeof r.session === 'string') last.set(r.session, r); } catch { /* a line cut short */ } }
-  const rows = [...last.values()];
+  const rows = actedSessions(stateDir);
+  if (!rows) return 'readfirst hook --report: no session has been recorded yet (the Stop hook writes one line per session).';
+  // The gate's items over every session (plan 2.8): how often each was asked, each kind of answer, and how many the
+  // Stop hook found the change did not bear out; most asked first, every one named.
+  const items = new Map();
+  for (const r of rows) {
+    for (const [id, n] of Object.entries(r.items && typeof r.items === 'object' ? r.items : {})) {
+      const t = items.get(id) ?? { sessions: 0, asked: 0, false: 0, ...Object.fromEntries(ANSWER_KINDS.map((k) => [k, 0])) };
+      t.sessions++;
+      for (const k of ['asked', 'false', ...ANSWER_KINDS]) t[k] += Number(n?.[k]) || 0;
+      items.set(id, t);
+    }
+  }
+  const itemRows = [...items].sort((a, b) => b[1].asked - a[1].asked || a[0].localeCompare(b[0])).map(([id, t]) => `- \`${id}\`: asked ${t.asked} time(s) in ${t.sessions} session(s); ${ANSWER_KINDS.map((k) => `${k} ${t[k]}`).join(', ')}; not borne out ${t.false}`);
   const sum = (k) => rows.reduce((n, r) => n + (Number(r[k]) || 0), 0);
   const counts = new Map();
   for (const r of rows) for (const x of r.notActed ?? []) counts.set(x, (counts.get(x) ?? 0) + 1);
@@ -1067,15 +1259,57 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
     `- commands readfirst hit an error reading, each counted once per folder it ran in (refused once as writes it could not place): ${sum('misread')}, in ${rows.filter((r) => r.misread > 0).length} session(s)`,
     `- errors the hook let calls through unchecked on: ${failures.size} different, in ${rows.filter((r) => Array.isArray(r.failed) && r.failed.length).length} session(s)`,
     `- answers left unsure at the stop: ${sum('unsure')}, in ${rows.filter((r) => r.unsure > 0).length} session(s)`,
+    `- answers the change did not bear out at the stop: ${sum('untrue')}, in ${rows.filter((r) => r.untrue > 0).length} session(s)`,
+    `- repositories the stop could not check (its checks did not run): ${sum('unchecked')}, in ${rows.filter((r) => r.unchecked > 0).length} session(s)`,
+    ...(itemRows.length ? ['Items the gate asked, most asked first:', ...itemRows] : []),
     ...(failures.size ? ['Hook errors, in most sessions first:', ...[...failures].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
     ...(counts.size ? ['Not done, most often first:', ...[...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
   ].join('\n');
 }
 
 // The Stop hook for one repository: its map's checks for the files edited there that are still changed.
-function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {} } = {}) {
+// answers: the session's answers to the gate (givenAnswers), compared with the change at the end; `found` in the result
+// names the items whose last answer the change does not bear out.
+// head: the commit the session started from there (headOf), null when the state does not say; start: what the working
+// tree held then (baseOf), null when the state does not say.
+function stopFor(root, edited, timeout, named, since, { said = () => false, say = () => {}, answers = [], head = null, start = null, unlooked = [], asked = new Set() } = {}) {
   try {
-    if (!existsSync(join(root, MAP_PATH))) return null;
+    if (!existsSync(join(root, MAP_PATH))) {
+      // No map here means nothing to check, unless the commit has one that is not in the working tree (a sparse
+      // checkout that leaves .readfirst/ out, or a map deleted in the session): then the checks could not run, said
+      // like any stop that could not check (review of readfirst#207).
+      let committed = false;
+      try { git(root, 'cat-file', '-e', `HEAD:${MAP_PATH}`); committed = true; } catch { committed = false; }
+      if (!committed) return null;
+      throw Object.assign(new Error(`${MAP_PATH} is in the commit checked out but not in the working tree (a sparse checkout that leaves it out, or a map deleted in the session)`), { ours: true });
+    }
+    // git 2.43 reads a cut or damaged index without a word: `git status` exits 0 with files listed as deleted and
+    // untracked (review of readfirst#207), so every answer below would rest on it. The index ends with the hash of all
+    // before it (SHA-1 or SHA-256, as the repository's objects); one that does not match is a stop that could not
+    // check. An all-zero end is an index written with index.skipHash, which keeps no hash to compare.
+    {
+      const at = resolve(root, git(root, 'rev-parse', '--git-path', 'index').trim());
+      if (existsSync(at)) {
+        const algo = git(root, 'rev-parse', '--show-object-format').trim() === 'sha256' ? 'sha256' : 'sha1';
+        const size = algo === 'sha256' ? 32 : 20;
+        const bytes = readFileSync(at);
+        const end = bytes.subarray(Math.max(0, bytes.length - size));
+        if (bytes.length <= size || (end.some((b) => b !== 0) && !createHash(algo).update(bytes.subarray(0, bytes.length - size)).digest().equals(end))) throw Object.assign(new Error(`the index file (${relative(root, at) || at}) does not match the hash at its end: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`), { ours: true });
+        // A split index keeps most entries in a sharedindex.<hash> file, named by the hash at its end, and git reads a
+        // damaged one without a word too (review of readfirst#207). The one the index uses is named in its `link`
+        // extension: that one is checked, as git reads it, never an old one left in the folder (that would refuse a
+        // stop for a file nothing reads).
+        let link = null;
+        try { link = sharedIndexOf(bytes, size); } catch (e) { throw Object.assign(new Error(`the index file (${relative(root, at) || at}) could not be read to its extensions (${e.message}), so whether it uses a shared index, and that file's state, are not known`), { ours: true }); }
+        const shared = dirname(resolve(root, git(root, 'rev-parse', '--git-path', 'sharedindex.x').trim()));
+        const names = link ? [`sharedindex.${link}`].filter((f) => existsSync(join(shared, f))) : [];
+        for (const f of names) {
+          const b = readFileSync(join(shared, f));
+          const tail = b.subarray(Math.max(0, b.length - size));
+          if (b.length <= size || tail.toString('hex') !== f.slice('sharedindex.'.length) || !createHash(algo).update(b.subarray(0, b.length - size)).digest().equals(tail)) throw Object.assign(new Error(`the shared index file ${relative(root, join(shared, f)) || f} does not match the hash at its end and in its name: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`), { ours: true });
+        }
+      }
+    }
     const at = named ? ` in ${basename(root)}` : '';
     const dirty = new Set(git(root, 'status', '--porcelain', '-z', '--no-renames', '--untracked-files=all').split('\0').filter(Boolean).map((l) => l.slice(3)));
     // Files changed since the session first wrote here that no tool call named (a script, a generator, a build): a check
@@ -1111,19 +1345,139 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     let broken = [];
     try { map = readMapFile(root); broken = mapProblems(map, files, { placement: false }); } catch (e) { broken = [e.message]; }
     let list = null;
-    if (map) try { list = readList({ map, files, imports: edgesWith(files, targets, readText(root)), targets }); } catch { list = null; }
+    const imports = edgesWith(files, targets, readText(root));
+    if (map) try { list = readList({ map, files, imports, targets }); } catch { list = null; }
     const brokenLine = broken.length ? `readfirst${at}: ${brokenMapLine(broken)}${list ? '' : ' The checks for the files you edited were not run.'} Fix it before you finish.` : null;
     if (!list) return brokenLine ? { block: brokenLine } : null;
+    // The rules and risks of files the gate let through with no time to look them up, asked nowhere in the session:
+    // named, once for that set (`unasked:<root>:<hash of the ids>`). An answer cannot be given for an item never asked,
+    // so the agent is sent to the notes.
+    let unaskedSaid = null;
+    const lateHere = unlooked.filter((p) => targets.includes(p)).sort();
+    if (lateHere.length) {
+      const open = noteItems(readList({ map, files, imports: edgesWith(files, lateHere, readText(root)), targets: lateHere })).filter((i) => !asked.has(i.id));
+      const key = open.length ? `unasked:${root}:${createHash('sha1').update(open.map((i) => i.id).sort().join('\0')).digest('hex').slice(0, 12)}` : null;
+      if (key && !said(key)) {
+        say(key);
+        const one = lateHere.length === 1;
+        unaskedSaid = `readfirst${at}: the gate had no time to look up ${lateHere.join(', ')}, so ${one ? 'its' : 'their'} rules and risks were never asked:\n- ${open.map((i) => `\`${i.id}\`: ${i.text}`).join('\n- ')}\nRead ${one ? 'its' : 'their'} notes (\`npx readfirst read ${lateHere.join(' ')}\`) and say how the change keeps each, before you finish.`;
+      }
+    }
+    // Answers the change does not bear out (plan 2.7), by each item's last answer: a not-this whose item the final diff
+    // (judged again, as `readfirst diff` judges it) touches by a name outside its symbols; below, a done whose item's
+    // checks did not all pass here. Said once for the same items, like every refusal of the stop.
+    const last = lastAnswers(answers);
+    const items = new Map([...list.rules.map((r) => [itemId('rule', r.id, r.rule), r]), ...list.risks.map((r) => [itemId('risk', r.group, r.text), r])]);
+    const untrue = [];
+    const notThis = [...items.keys()].filter((id) => last.get(id)?.answer === 'not-this');
+    // Judged on the session's own diff: from the commit the repository was at before its first call (`head:`), to the
+    // working tree, with files git does not track yet counted whole. A state from an older readfirst has no such commit:
+    // nothing is compared, and the stop says so.
+    // A starting commit no longer under HEAD (a branch switch, a rebase, a commit gone) would put another branch's
+    // changes in the diff, and a diff git cannot make would say nothing at all: both say so instead (review of
+    // readfirst#204).
+    // The diff starts from what the working tree held at the start (`base:`, baseOf): changes already made then, and
+    // files git did not track then, are not the session's. A start only partly known (more untracked files than
+    // PRE_MAX, or no snapshot) compares nothing and says so.
+    const notCompared = (why) => `readfirst${at}: ${notThis.length} not-this answer(s) were not compared with the change: ${why}.`;
+    let noStart = notThis.length && (head === null || !start) ? notCompared("this session's starting commit was not recorded (a state from an older readfirst)") : null;
+    if (notThis.length && head && !noStart) {
+      // cut: head is a commit sha shortened for the message, not a list.
+      try { git(root, 'merge-base', '--is-ancestor', head, 'HEAD'); } catch { noStart = notCompared(`this session started at ${head.slice(0, 12)}, which is not under the commit checked out now (a branch switch or a rebase)`); }
+    }
+    if (notThis.length && !noStart && start.snapshot === null) noStart = notCompared(`the working tree at the session's start could not be recorded (${start.why})`);
+    if (notThis.length && !noStart && start.untracked === null) noStart = notCompared(start.count > PRE_MAX ? `the session started with ${start.count} untracked files, more than the ${PRE_MAX} readfirst records, so its starting point is only partly known` : 'the files git did not track at the session\'s start could not be listed');
+    if (notThis.length && !noStart) {
+      let changes = null;
+      try {
+        // A repository with no commit yet started from the empty tree, asked of git: its name differs between SHA-1 and
+        // SHA-256 repositories (review of readfirst#204: a fixed SHA-1 name failed in a SHA-256 one).
+        const from = start.snapshot || execFileSync('git', ['-C', root, 'hash-object', '-t', 'tree', '--stdin'], { encoding: 'utf8', input: '', stdio: ['pipe', 'pipe', 'pipe'], env: gitEnv() }).trim();
+        changes = parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', from));
+        const before = new Set(start.untracked);
+        for (const f of git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean)) if (!changes.has(f) && !before.has(f)) changes.set(f, { lines: new Set(), text: [], whole: true });
+        // readfirst keeps no copy of an untracked file from the start, so what the session changed in one is not judged:
+        // said, never left out silently. One the session then added to git shows in the diff as new from its first line
+        // (review of readfirst#204), so it leaves the diff too.
+        const unkept = [...new Set([...targets, ...changes.keys()])].filter((f) => before.has(f)).sort();
+        for (const f of unkept) changes.delete(f);
+        if (unkept.length) noStart = `readfirst${at}: ${unkept.map((f) => `\`${f}\``).join(', ')} ${unkept.length === 1 ? 'was' : 'were'} not tracked by git when the session began; anything changed there since was not compared with its ${notThis.length} not-this answer(s).`;
+        // Other people's commits reach the branch by more than merges: a pull that fast-forwards, a rebase, a
+        // cherry-pick, a `merge --squash` then commit (review of readfirst#204: each refused a right not-this). git's
+        // HEAD reflog says how HEAD moved since the start, read back to the last entry at the starting commit: a
+        // `commit:`, `commit (amend):` or `commit (initial):` is the session's own (but not one with git's squash
+        // message); every other move (pull, merge, rebase, cherry-pick, reset, checkout...) brought what changed between
+        // its old and new commit, and those files leave the diff and are named as not compared, with the moves. Never by
+        // dates: a clock is a guess. A reflog that does not reach back to the start (reflogs off, expired) compares no
+        // not-this and says so.
+        // No starting commit, no move to read (and rev-parse HEAD fails in a repository with no commit).
+        const at0 = head ? git(root, 'rev-parse', '--verify', '-q', 'HEAD').trim() : '';
+        if (head && at0 !== head) {
+          const log = git(root, 'reflog', 'show', '--format=%H%x09%gs', 'HEAD').split('\n').filter(Boolean).map((l) => ({ sha: l.slice(0, l.indexOf('\t')), what: l.slice(l.indexOf('\t') + 1) }));
+          const back = log.findIndex((e) => e.sha === head);
+          if (back < 0) {
+            changes = null;
+            // cut: the commit shas are shortened for the message.
+            noStart = notCompared(`HEAD moved since the session began (${head.slice(0, 12)} to ${at0.slice(0, 12)}), and git's HEAD reflog does not reach back to the start, so the session's own commits cannot be told from what came in (reflog unavailable)`);
+          } else {
+            const brought = new Set();
+            const moves = new Set();
+            for (let i = 0; i < back; i++) {
+              const { what } = log[i];
+              const squash = /^commit[^:]*: Squashed commit of the following/u.test(what);
+              if (/^commit(?: \((?:amend|initial)\))?: /u.test(what) && !squash) continue;
+              // A move made by `git update-ref` with no -m leaves an empty message: named as such, never as a blank.
+              moves.add(squash ? 'merge --squash' : what.slice(0, what.indexOf(':') < 0 ? what.length : what.indexOf(':')).trim() || 'no reflog message');
+              for (const f of git(root, 'diff', '--name-only', '-z', '--no-renames', log[i + 1].sha, log[i].sha).split('\0').filter(Boolean)) brought.add(f);
+            }
+            const broughtHere = [...brought].filter((f) => changes.has(f)).sort();
+            for (const f of broughtHere) changes.delete(f);
+            if (broughtHere.length) noStart = [noStart, `readfirst${at}: ${broughtHere.map((f) => `\`${f}\``).join(', ')} ${broughtHere.length === 1 ? 'was' : 'were'} changed since the session began by moves of HEAD it did not commit itself (${[...moves].join('; ')}); what changed there was not compared with its ${notThis.length} not-this answer(s).`].filter(Boolean).join('\n');
+          }
+        }
+      } catch (e) { changes = null; noStart = notCompared(`the session's diff could not be read (${errorText(e)})`); }
+      if (changes) try {
+        judge(list, { changes, read: readText(root), files, imports });
+        for (const it of noteItems(list)) {
+          if (!notThis.includes(it.id)) continue;
+          const given = new Set(last.get(it.id).symbols);
+          const outside = it.by.filter((s) => !given.has(s));
+          if (outside.length) untrue.push({ id: it.id, line: `\`${it.id}\` was answered not-this (${[...given].map((s) => `\`${s}\``).join(', ')}), but the change touches it by ${outside.map((s) => `\`${s}\``).join(', ')}` });
+        }
+      } catch (e) { noStart = [noStart, notCompared(`the session's diff could not be judged (${errorText(e)})`)].filter(Boolean).join('\n'); }
+    }
+    const answerLine = () => {
+      if (!untrue.length) return null;
+      const key = `untrue:${root}:${createHash('sha1').update(untrue.map((u) => u.id).sort().join('\0')).digest('hex').slice(0, 12)}`;
+      if (said(key)) return null;
+      say(key);
+      return `readfirst${at}: ${untrue.length} answer(s) of this session the change does not bear out:\n- ${untrue.map((u) => u.line).join('\n- ')}\nAnswer them again (${ANSWER_HOW}), or say why, before you finish.`;
+    };
     // Files left behind: what the map says changes together with an edited file, against everything changed so far,
     // the session's own commits included: they make a file count as edited, so its partner in the same commits counts
     // as changed too (a pair committed together was reported as left behind until 0.27.1).
     const all = [...new Set([...dirty, ...changed, ...committedAfter])];
     const missing = list.together.filter((t) => !all.some(matcher(t.also)));
-    if (!list.checks.length && !missing.length) return brokenLine ? { block: brokenLine } : null;
+    if (!list.checks.length && !missing.length) {
+      const answersSaid = answerLine();
+      const found = untrue.map((u) => u.id);
+      if (!brokenLine && !answersSaid && !unaskedSaid) return found.length || noStart ? { found, note: noStart } : null;
+      return { block: [brokenLine, answersSaid, unaskedSaid].filter(Boolean).join('\n'), found, note: noStart };
+    }
     const trusted = trustedRuns(root, since);
     const skipped = list.checks.filter((c) => !trusted.runs.has(c.run)).map((c) => c.run);
     const result = verifyChecks(root, list.checks.filter((c) => trusted.runs.has(c.run)), { timeout });
     const failed = result.filter((c) => c.status !== 'pass');
+    // A done whose item has checks (a rule's own, a risk's group's) that did not all pass in this run.
+    const passed = new Set(result.filter((c) => c.status === 'pass').map((c) => c.run));
+    for (const [id, row] of items) {
+      if (last.get(id)?.answer !== 'done') continue;
+      const own = id.startsWith('rule:') ? (map.rules ?? []).find((r) => r.id === row.id)?.checks : (map.groups ?? []).find((g) => g.id === row.group)?.checks;
+      const open = (own ?? []).map((c) => c.run).filter((r) => !passed.has(r));
+      if (open.length) untrue.push({ id, line: `\`${id}\` was answered done, but ${open.map((r) => `\`${r}\` ${result.find((c) => c.run === r)?.status ?? 'did not run'}`).join(', ')}` });
+    }
+    const answersSaid = answerLine();
+    const found = untrue.map((u) => u.id);
     const notRun = skipped.length ? ` Not run, because ${trusted.why}: ${skipped.map((r) => `\`${r}\``).join(', ')}; run \`npx readfirst verify\` to run them on purpose.` : '';
     const byCommand = unnamed.filter((f) => targets.includes(f));
     const fromCommands = byCommand.length ? ` Changed in this session by commands readfirst could not read, so checked too: ${byCommand.join(', ')}.` : '';
@@ -1136,16 +1490,27 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
       acted: result.length - failed.length + list.together.length - missing.length,
       notActed: [...failed.map((c) => `\`${c.run}\` ${c.status}`), ...skipped.map((r) => `\`${r}\` not run`), ...missing.map((t) => `${t.also.join(', ')} not changed with ${t.for.join(', ')}`)],
     };
-    if (!failed.length && !missing.length && !brokenLine && !blockNotRun) return { tally, pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}${fromCommands}` };
-    return { tally, block: [
+    if (!failed.length && !missing.length && !brokenLine && !blockNotRun && !answersSaid && !unaskedSaid) return { tally, found, note: noStart, pass: `readfirst verify${at}: ${result.length} check(s) passed for ${targets.length} edited file(s).${notRun}${fromCommands}` };
+    return { tally, found, note: noStart, block: [
       ...(brokenLine ? [brokenLine] : []),
+      ...(answersSaid ? [answersSaid] : []),
+      ...(unaskedSaid ? [unaskedSaid] : []),
       ...(failed.length ? [`readfirst verify${at}: ${failed.length} of ${result.length} check(s) the map lists for the files you edited failed. Fix them before you finish.${notRun}${fromCommands}`] : []),
       ...(blockNotRun && !failed.length ? [`readfirst verify${at}: ${skipped.length} check(s) the map lists for the files you edited did not run (${result.length} ran and passed).${notRun} Run it, or say why they need not run, before you finish.${fromCommands}`] : []),
       ...missing.map((t) => `readfirst${at}: ${t.for.join(', ')} changed, but none of ${t.also.join(', ')} did. The map says they change together: ${t.why}. Change it too, or say why it does not apply, before you finish.`),
       ...failed.map((c) => `\n--- ${c.run} (${c.status}${c.code != null ? `, exit ${c.code}` : ''})${c.why ? ` covers ${c.why}` : ''}; last lines:\n${c.output ?? ''}${c.hint ? `\nIt looks like ${c.hint}.` : ''}`),
     ].join('\n') };
-  } catch {
-    return null;
+  } catch (e) {
+    // The stop could not check this repository (a broken index, a git that fails): until this said nothing at all, and
+    // the checks were skipped silently. It is said, refused once for the repository and the kind of error (quoted
+    // values and numbers left out, as for failed:), and counted in the session's line.
+    const why = errorText(e);
+    const kind = why.replace(/(['"`]).*?\1/gu, '$1…$1').replace(/\d+/gu, 'N');
+    const key = `unchecked:${root}:${createHash('sha1').update(kind).digest('hex').slice(0, 12)}`;
+    const line = `readfirst${named ? ` in ${basename(root)}` : ''}: the stop could not check this repository (${why}), so the checks the map lists for the files you edited did not run and no answer was compared with the change. Fix what stopped it, or say why it cannot be fixed, before you finish.`;
+    if (said(key)) return { unchecked: why, note: line };
+    say(key);
+    return { unchecked: why, block: line };
   }
 }
 
@@ -1513,6 +1878,10 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       if (Number.isFinite(oldest)) history = parseLog(git(root, 'log', '--no-merges', `--since=${new Date((oldest - 1) * 1000).toISOString()}`, '--format=%x01%H %ct', '--name-only', 'HEAD'));
     } catch { /* the map is not committed yet, or no history: nothing is stale */ }
     const report = audit({ map: settled, problems, files, imports: importEdges(files, readText(root)), read: readText(root), blame, history, commit, held: parseHeld(readText(root)(HELD_PATH)), broke });
+    // The rules and risks of this map that most sessions answered not-this at the gate (plan 2.8), from the Stop hook's
+    // lines on this machine (ACTED_LOG in the temp folder; read, never written): each is wider than what it is about.
+    const ofMap = new Map([...(settled.rules ?? []).map((r) => [itemId('rule', r.id, r.rule), `rule ${r.id}: ${r.rule}`]), ...(settled.groups ?? []).flatMap((g) => (g.risks ?? []).map((r) => [itemId('risk', g.id, r.text), `risk in group ${g.id}: ${r.text}`]))]);
+    report.wide = wideItems((actedSessions() ?? []).map((r) => r.items)).filter((w) => ofMap.has(w.id)).map((w) => ({ ...w, text: ofMap.get(w.id) }));
     io.out(args.json ? `${JSON.stringify(report, null, 2)}\n` : auditText(report));
     return 0;
   }

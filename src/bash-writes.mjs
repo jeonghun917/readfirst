@@ -46,7 +46,8 @@ export function shellWord(word, vars = new Map()) {
       // placeholder is put back only in what shellWrites returns (put back here, each level of `$(echo $(echo ...`
       // held all the levels below it: 3,000 of them ran out of memory, 2026-11-14).
       const inner = s.slice(i + 2, e - 1);
-      const under = end < 0 ? undefined : mktempUnder(BODIES.get(Number(inner.match(/^\x01(\d+)$/u)?.[1]))?.text ?? inner, vars);
+      const placed = inner.startsWith(PLACE) && /^\d+$/u.test(inner.slice(PLACE.length)) ? BODIES.get(Number(inner.slice(PLACE.length))) : undefined;
+      const under = end < 0 ? undefined : mktempUnder(placed?.text ?? inner, vars);
       // One that never closes is shown with … for the rest.
       const part = end < 0 ? `${s.slice(i, e).trimEnd()} …)` : s.slice(i, e);
       return [hole(s.slice(i, e), under === undefined ? 'it is the output of a command, known only when it runs' : 'a new name mktemp makes when it runs', part, under ?? undefined), e];
@@ -260,6 +261,13 @@ const OPERATOR = String.raw`&>>|&>|<<<|<<-|<<|<>|<&|<|>>|>\||>&|>`;
 // segments reads the text without them (eachCommand), so text in a document is never a command.
 // Until 2026-11-14 one regex found them: `$((1<<x))` took the lines up to one starting with x for a body, `<<< EOF` was
 // a here-document, and a line only starting with the tag (`END of the doc`) ended one, so a cd after it was followed.
+// It also joins the lines a backslash continues, in the same walk, as bash does: a backslash and a newline are taken
+// out where the shell reads code, in "...", $( ) and backticks, and in the body of a here-document whose tag is not
+// quoted; not inside '...', in a comment (it ends at the newline) or in the body under a quoted tag. `\\` and a newline
+// is an escaped backslash and a line end. Until then every reader joined them first, with a regex over the whole text:
+// `# note \` ran on into the next command, which was lost, a body under <<'E' lost its tag line after a line ending in
+// \, and `\\` or a CR before the newline joined lines bash keeps apart (review of #202).
+const joinRun = (t) => t.replace(/\\(\\|\n)/gu, (m, x) => (x === '\n' ? '' : m));
 function hereDocs(s) {
   // The text is kept as parts with its length and where its last line starts (lineAt), so nothing is copied per
   // here-document.
@@ -269,16 +277,16 @@ function hereDocs(s) {
   const put = (chunk) => { parts.push(chunk); const k = chunk.lastIndexOf('\n'); if (k >= 0) lineAt = len + k + 1; len += chunk.length; };
   const docs = [];
   let pending = [];
-  const stack = []; // 'dq' inside "...", 'sub' in $( ) or ( ), 'bt' in backticks
+  const stack = []; // 'dq' inside "...", 'dsub' in $( ), 'sub' in ( ), 'bt' in backticks
   let wordStart = true;
   for (let i = 0; i < s.length;) {
     const c = s[i];
     const mode = stack.at(-1);
-    if (c === '\\') { put(s.slice(i, i + 2)); i += 2; wordStart = false; continue; }
+    if (c === '\\') { if (s[i + 1] === '\n') { i += 2; continue; } put(s.slice(i, i + 2)); i += 2; wordStart = false; continue; }
     // Arithmetic is copied whole: a << in it is a shift.
     if ((s.startsWith('$((', i) || s.startsWith('$[', i) || (mode !== 'dq' && s.startsWith('((', i))) && arithEnd(s, i) >= 0) {
       const e = arithEnd(s, i);
-      put(s.slice(i, e));
+      put(joinRun(s.slice(i, e)));
       i = e;
       wordStart = false;
       continue;
@@ -286,11 +294,16 @@ function hereDocs(s) {
     if (mode === 'dq') {
       if (c === '"') stack.pop();
       else if (c === '`') stack.push('bt');
-      else if (c === '$' && s[i + 1] === '(') { stack.push('sub'); put('$('); i += 2; wordStart = true; continue; }
+      else if (c === '$' && s[i + 1] === '(') { stack.push('dsub'); put('$('); i += 2; wordStart = true; continue; }
       put(c);
       i++;
       continue;
     }
+    // A $( ) is part of the word it stands in ('dsub'): after its ) the word goes on, so a # there starts no comment
+    // (`"$(echo z)"#'a` is one word; read as a comment, the ' in it opened no quote, and a here-document after
+    // `$(true)#<<E` was not found, review of #203). After the ) of a ( ) subshell a word starts.
+    if (c === '$' && s[i + 1] === '(') { stack.push('dsub'); put('$('); i += 2; wordStart = true; continue; }
+    if (c === ')' && mode === 'dsub') { stack.pop(); put(c); i++; wordStart = false; continue; }
     if (c === "'") {
       const k = s.indexOf("'", i + 1);
       if (k >= 0) { put(s.slice(i, k + 1)); i = k + 1; wordStart = false; continue; }
@@ -313,7 +326,8 @@ function hereDocs(s) {
         if (s[k] === '\\') k += 2;
         else if (s[k] === "'" || s[k] === '"') { const q = s.indexOf(s[k], k + 1); k = q < 0 ? s.length : q + 1; } else k++;
       }
-      const word = s.slice(j, k);
+      // A backslash and a newline in the tag are taken out too (`<<E\` + newline + `X` is the tag EX, not quoted).
+      const word = joinRun(s.slice(j, k));
       if (word) {
         pending.push({ at: len, line: lineAt, quote: /['"\\]/u.test(word), tag: word.replace(/\\(.)/gu, '$1').replace(/['"]/gu, ''), dash });
         put(' ');
@@ -328,8 +342,21 @@ function hereDocs(s) {
         const lines = [];
         while (at < s.length) {
           const e = s.indexOf('\n', at);
-          const line = s.slice(at, e < 0 ? s.length : e);
+          let piece = s.slice(at, e < 0 ? s.length : e);
           at = e < 0 ? s.length : e + 1;
+          // Under a tag not quoted, a line ending in an odd count of backslashes goes on in the next, before the tag
+          // is looked for (`a\` + newline + `E` is the line aE, as bash reads it); under a quoted tag it stays as it is.
+          // Kept as pieces and joined once: one line of many continued ones is not copied for each.
+          const pieces = [];
+          const odd = (t) => { let n = 0; while (n < t.length && t[t.length - 1 - n] === '\\') n++; return n % 2 === 1; };
+          while (!p.quote && at < s.length && odd(piece)) {
+            pieces.push(piece.slice(0, -1));
+            const f = s.indexOf('\n', at);
+            piece = s.slice(at, f < 0 ? s.length : f);
+            at = f < 0 ? s.length : f + 1;
+          }
+          pieces.push(piece);
+          const line = pieces.join('');
           if ((p.dash ? line.replace(/^\t+/u, '') : line) === p.tag) break;
           lines.push(line);
         }
@@ -639,7 +666,7 @@ function blank(s) {
 }
 
 // Command substitutions taken out of some shell text (2026-11-14): each $( ), backtick, <( ) and >( ) that closes is
-// replaced by a placeholder that keeps its place, `$(\x01N)`, `` `\x01N` ``, or `/dev/fd/\x01N` for <( ) and >( )
+// replaced by a placeholder that keeps its place, `$(@N)`, `` `@N` ``, or `/dev/fd/@N` for <( ) and >( ) (@: PLACE)
 // (a file name the shell makes, never one in a repository), and its text, with its own substitutions taken out the same
 // way, is kept as body N. The command around it is then split, and its words read, with nothing inside a substitution
 // to mislead them; each body is read on its own as the commands of a subshell (shellWrites). One sweep, no recursion:
@@ -647,10 +674,36 @@ function blank(s) {
 // BODIES: N -> { text: the body with its substitutions taken out, root, from, to: where it stands in the text given,
 // at, past: where the whole substitution, its brackets too, stands }. Kept while a shellWrites, bashReads or
 // commandWords runs (`liftDepth`), and dropped with the tables when the outermost one returns (`liftDone`).
-const PLACE = '\x01';
+// A private-use character the text does not hold (U+E000 to U+F8FF), or null when it holds every one of them. A command
+// can hold any character, so a fixed mark read what the user wrote as its own: \x01 and a number in a redirect, a cd or
+// a value (`echo hi > \x010`) was read as body 0, and shellWrites threw when there was none (review of #206, 2026-11-14).
+const freeMark = (text) => {
+  const used = new Set(text.match(/[\uE000-\uF8FF]/gu) ?? []);
+  for (let c = 0xe000; c <= 0xf8ff; c++) if (!used.has(String.fromCharCode(c))) return String.fromCharCode(c);
+  return null;
+};
+// The mark of a placeholder (PLACE, and PLACED: it and its number), chosen when the outermost reader starts
+// (`liftBegin`) from the command it reads: the texts read inside it (bodies, `bash -c` strings, here-documents) are
+// parts of that command.
+let PLACE = '\uE000';
+let PLACED = new RegExp(`${PLACE}(\\d+)`, 'gu');
+// Where a here-document opens, in the text writesOf walks once for their states: another character the text does not
+// hold (not PLACE), followed by the document's number (not a blank: segmentsAndOps trims blanks). null when none is
+// free: then each here-document is read on its own walk.
+const docMark = (text) => freeMark(text + PLACE);
 const BODIES = new Map();
 let nextBody = 0;
 let liftDepth = 0;
+// A reader starts: false when the outermost holds every private-use character, and no mark is free (it reads nothing
+// then, and says why). Each call is ended by liftDone, whatever it returns.
+const liftBegin = (text) => {
+  if (liftDepth++ > 0) return true;
+  const mark = freeMark(String(text ?? ''));
+  if (!mark) return false;
+  if (mark !== PLACE) { PLACE = mark; PLACED = new RegExp(`${PLACE}(\\d+)`, 'gu'); }
+  return true;
+};
+const NO_MARK = 'it holds every private-use character (U+E000 to U+F8FF), and readfirst marks the places of its substitutions with one the command does not hold';
 function lift(s) {
   const { spans } = table(s);
   if (!spans.some((x) => LIFTED.has(x.kind) && !x.unclosed)) return s;
@@ -689,12 +742,12 @@ function lift(s) {
 }
 // A text with its placeholders put back: what the shell text said there (for a word not known, as the hook names it).
 // A root may itself hold placeholders (a `bash -c` string taken from a command already lifted): put back again until
-// none is left that BODIES knows. `/dev/fd/\x01N` is put back whole, with its <( or >( and ): it was put back as
+// none is left that BODIES knows. `/dev/fd/@N` is put back whole, with its <( or >( and ): it was put back as
 // `/dev/fd/` and the body (`tee >(cat > f)` named the word `tee /dev/fd/cat > f`, 2026-11-14).
 const unlift = (t) => {
   for (let before = null; t.includes(PLACE) && t !== before;) {
     before = t;
-    t = t.replace(/(\/dev\/fd\/)?\x01(\d+)/gu, (m, fd, n) => { const b = BODIES.get(Number(n)); return !b ? m : fd ? b.root.slice(b.at, b.past) : b.root.slice(b.from, b.to); });
+    t = t.replace(new RegExp(`(/dev/fd/)?${PLACE}(\\d+)`, 'gu'), (m, fd, n) => { const b = BODIES.get(Number(n)); return !b ? m : fd ? b.root.slice(b.at, b.past) : b.root.slice(b.from, b.to); });
   }
   return t;
 };
@@ -712,7 +765,7 @@ function spaced(s) {
 }
 const liftDone = () => { if (--liftDepth === 0) { BODIES.clear(); nextBody = 0; tables = new Map(); } };
 // The bodies a text holds: their numbers, in order.
-const bodiesIn = (t) => (t.includes(PLACE) ? [...t.matchAll(/\x01(\d+)/gu)].map((m) => Number(m[1])) : []);
+const bodiesIn = (t) => (t.includes(PLACE) ? [...t.matchAll(PLACED)].map((m) => Number(m[1])) : []);
 // Command segments split at && || ; | and newlines outside quotes: node -e "a; fs.writeFileSync(...)" is one segment
 // (split inside the quotes, the write call never reached its -e argument, 2026-11-08).
 // An unquoted `#` at the start of a word begins a comment to the end of the line: `cp a b # c d` copies to b.
@@ -960,9 +1013,11 @@ const CHAINED = /^(?:&&|\|\||\|&?)$/u;
 function eachCommand(text, state, visit, tail = () => {}) {
   // Here-documents first, then comments, in one place for every walk (hereDocs): a body's lines are no commands, and a
   // ' in a body (`it's`) would otherwise open a quote for the comment reader. Both are no change on text without them.
-  // Each is skipped where it has nothing to find (no << or no #): stateAt walks the text before each here-document
-  // again, and reading it twice more made a command of 2,000 here-documents half as slow again (2026-11-14).
-  const docless = text.includes('<<') ? hereDocs(text).text : text;
+  // Each is skipped where it has nothing to find (no << or no #). (stateAt walked the text before each here-document
+  // again, and reading it twice more made a command of 2,000 here-documents half as slow again, 2026-11-14; writesOf
+  // now finds their states in one walk.)
+  // hereDocs also joins the lines a backslash continues (the one place that does): it runs when there is either.
+  const docless = text.includes('<<') || text.includes('\\\n') ? hereDocs(text).text : text;
   // Then the substitutions are taken out (lift): a ; or | in a $( ) splits nothing here, and the caller reads the bodies.
   // A (( that is two subshells is written `( (` (spaced): split at the ; inside it, `((echo > e` alone looks like
   // arithmetic that never closes, so opening() kept it as the arithmetic command `((echo` and its write and cd were
@@ -976,9 +1031,12 @@ function eachCommand(text, state, visit, tail = () => {}) {
   // the first arm. Until 2026-11-13 the arm was not read: `a)` stood where the command name should be, so a cd in an
   // arm was not followed and a write after `esac` was named in the folder from before it. The words before a head
   // (`{`, `if`, `time`: caseHead) are read on their own first, so each opens what it opens.
+  // Read by an index, the heads a case arm begins with put in front of it (`front`): shift() moves the whole list each
+  // time, and 64,000 comment lines took seconds (2026-11-14).
   const queue = segmentsAndOps(shell).flatMap((s) => caseHead(s.text, s.op) ?? [s]);
-  while (queue.length) {
-    const seg = queue.shift();
+  const front = [];
+  for (let qi = 0; front.length || qi < queue.length;) {
+    const seg = front.length ? front.shift() : queue[qi++];
     const { op } = seg;
     let { text } = seg;
     // An arm starts after `case W in` and after each `;;` (which leaves an empty segment): its `pattern)` is taken off,
@@ -995,7 +1053,7 @@ function eachCommand(text, state, visit, tail = () => {}) {
         branchAgain(state, top, top.fall);
         top.fall = false;
         const nested = caseHead(text.slice(pattern[0].length), op);
-        if (nested) { queue.unshift(...nested); continue; }
+        if (nested) { front.unshift(...nested); continue; }
         text = text.slice(pattern[0].length);
       }
     }
@@ -1185,8 +1243,10 @@ export function bashWrites(command, cwd = process.cwd()) {
 // it is in, why, and the folder it is known to be under. A command starts with the variables `vars` gives (the hook:
 // its environment); a here-document or a `bash -c` string is read with those of the shell around it that it sees.
 export function shellWrites(command, cwd = process.cwd(), options = {}) {
-  liftDepth++;
-  try { return writesOf(command, cwd, options); } finally { liftDone(); }
+  try {
+    if (!liftBegin(command)) return { files: [], unknown: [{ part: 'the command', word: '', why: NO_MARK, prefix: '' }], repos: [] };
+    return writesOf(command, cwd, options);
+  } finally { liftDone(); }
 }
 function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   const found = new Set();
@@ -1290,16 +1350,19 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
   // the hook showed another repository's notes for a relative path after a cd).
-  // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`). Both
-  // characters go, as bash takes them out, here and in bashReads and commandWords: they were read as a space, so in
-  // `echo a\\` + newline + `#b > f` the word a#b became a comment and the write was lost (review of #202, 2026-11-14).
+  // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`): hereDocs
+  // takes both characters out where bash does (not in '...', a comment or a body under a quoted tag). They were read as
+  // a space first, so in `echo a\\` + newline + `#b > f` the word a#b became a comment and the write was lost (review of
+  // #202, 2026-11-14), and then taken out everywhere first, so `# note \\` took the next line into the comment.
   // hereDocs gives each here-document with where it opens in the text without bodies (`at`) and where its line starts.
-  const { text: bare, docs } = hereDocs(String(command ?? '').replace(/\\\r?\n/gu, ''));
-  for (const { at: opens, line, quote, body } of docs) {
-    Object.assign(state, stateAt(bare.slice(0, opens)));
+  const { text: bare, docs } = hereDocs(String(command ?? ''));
+  // The state where each here-document stands comes from one walk of the text (below), each document read when the
+  // walk reaches it. Until 2026-11-14 the text before each one was walked again (stateAt), so n of them took time by
+  // the square: 4,000 `cat <<E` took 13 s, near the hook's 15 (readfirst review).
+  // hw: the words before it of the command it feeds, as dq gives them; at: where the runner stands in them.
+  const isRunner = (w) => RUNNER.test(w.split('/').pop());
+  const readDoc = ({ quote, body }, hw, at = hw.findIndex(isRunner)) => {
     // Only the command the here-document feeds: in `node x.mjs; cat > f <<E` it goes to cat (2026-11-08).
-    const hw = words(segments(lift(withoutComments(bare.slice(line, opens)))).at(-1) ?? '').map(dq);
-    const at = hw.findIndex((w) => RUNNER.test(w.split('/').pop()));
     // The script's arguments: words after the runner that are not options, the script itself ('-') or a redirect.
     const args = at < 0 ? [] : hw.slice(at + 1).filter((w) => w !== '-' && !w.startsWith('-') && !/^[<>|&]/u.test(w));
     // A shell fed a here-document runs its body as commands: read them as commands. With a quoted tag (<<'E') the
@@ -1311,6 +1374,68 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // as a subshell where the command stands (`cat <<E` with `$(echo > f)` in its body makes f; nothing was named
     // until 2026-11-14). A shell fed the body reads them with its commands (above).
     if (!quote && !fed) { const subs = docSubstitutions(body); if (subs.length) inner(subs.join('\n'), state.vars); }
+  };
+  if (docs.length) {
+    // The text with a mark where each here-document opens (` N `, N its number: hereDocs left a space there),
+    // walked once as stateAt walks it. In a command's own words the words before the mark are the command the document
+    // feeds, and the state is the one before that command with its words before its first mark followed; a mark inside
+    // a $( ) the command holds (lifted) gets the state before the command, as the text cut there gave (its $( ) not
+    // closed), and the words before it in its line's command. A mark the walk does not reach is read as before.
+    // Each command's words are read once, left to right, for all its marks: each mark read its words again from the
+    // command's start (or its line's), so n here-documents on one line or in one $( ) took time by the square (review
+    // of #206). The same goes for the bodies a word holds: one stack, no recursion.
+    const mark = docMark(bare);
+    const done = new Set();
+    if (mark) {
+      const marked = [];
+      let from = 0;
+      docs.forEach((d, k) => { marked.push(bare.slice(from, d.at), ` ${mark}${k} `); from = d.at + 1; });
+      marked.push(bare.slice(from));
+      const st = start();
+      const notMark = (w) => !w.startsWith(mark);
+      // A command's words (ws) read from i on: hw and run as readDoc takes them. A body is its lines not read yet.
+      const frame = (ws) => ({ ws, i: 0, hw: [], run: -1 });
+      const take = (text, ws, how) => {
+        // A mark in a $( ) the command holds is in its body (lifted): the text has its place.
+        if (done.size === docs.length || (!text.includes(mark) && !text.includes(PLACE))) return;
+        const here = snapshot(st);
+        const opens = ws.findIndex((w) => !notMark(w));
+        if (opens >= 0) follow(here, opening(ws.slice(0, opens)), { maybe: how?.maybe, body: how?.body });
+        Object.assign(state, here);
+        const work = [frame(ws)];
+        while (work.length) {
+          const f = work.at(-1);
+          if (f.lines) {
+            if (f.li >= f.lines.length) { work.pop(); continue; }
+            const line = f.lines[f.li++];
+            // A line's commands, where a mark or a body that may hold one stands.
+            if (!line.includes(mark) && !line.includes(PLACE)) continue;
+            const segs = segments(line);
+            for (let s = segs.length - 1; s >= 0; s--) work.push(frame(words(segs[s])));
+            continue;
+          }
+          if (f.i >= f.ws.length) { work.pop(); continue; }
+          const w = f.ws[f.i++];
+          if (!notMark(w)) {
+            const k = Number(w.slice(mark.length));
+            if (!done.has(k) && docs[k]) { done.add(k); readDoc(docs[k], f.hw, f.run); }
+            continue;
+          }
+          f.hw.push(dq(w));
+          if (f.run < 0 && isRunner(f.hw.at(-1))) f.run = f.hw.length - 1;
+          // The bodies the word holds, read before the words after it (the first on top).
+          const inside = bodiesIn(w).map((n) => BODIES.get(n)?.text).filter((t) => t?.includes(mark) || t?.includes(PLACE));
+          for (let s = inside.length - 1; s >= 0; s--) work.push({ lines: inside[s].split('\n'), li: 0 });
+        }
+      };
+      eachCommand(marked.join(''), st, (p, raw, how) => { take(p.body, raw, how); follow(st, opening(raw.filter(notMark)), how); }, (t) => take(t, words(t)));
+    }
+    // Not reached (a mark the walk dropped, or no mark free): the text before it is walked, as before 2026-11-14.
+    docs.forEach((d, k) => {
+      if (done.has(k)) return;
+      Object.assign(state, stateAt(bare.slice(0, d.at)));
+      readDoc(d, words(segments(lift(withoutComments(bare.slice(d.line, d.at)))).at(-1) ?? '').map(dq));
+    });
   }
   const shell = withoutComments(bare);
   Object.assign(state, start()); // the segments below follow the cds and assignments again themselves
@@ -1466,9 +1591,9 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
   // eachCommand takes here-documents and then comments out: a `readfirst read` in a document's body is no read (it
   // counted until 2026-11-14, so a note that only quoted the command let the gate through). It takes the bodies of
   // substitutions out too (lift): a `readfirst read` inside a $( ) is not seen (its output goes to the command around it).
-  const shell = String(command ?? '').replace(/\\\r?\n/gu, '');
-  liftDepth++;
-  try { eachCommand(shell, state, (p, raw, how, op) => {
+  const shell = String(command ?? ''); // eachCommand joins the continued lines (hereDocs)
+  // No mark free (liftBegin): no read is counted.
+  try { if (!liftBegin(shell)) return out; eachCommand(shell, state, (p, raw, how, op) => {
     const opened = opening(raw);
     const ws = unwrap(opened).map((w) => shellWord(w, state.vars).text);
     const at = ws.findIndex((w) => /^(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)$/u.test(w));
@@ -1543,16 +1668,17 @@ function expands(word) {
 export function commandWords(command, cwd = process.cwd(), { vars = new Map() } = {}) {
   const out = [];
   const state = { base: cwd, why: null, vars: copyVars(vars) };
-  const shell = withoutComments(hereDocs(String(command ?? '').replace(/\\\r?\n/gu, '')).text);
+  const shell = withoutComments(hereDocs(String(command ?? '')).text);
   // A quote that never closes or a backslash at the very end: bash refuses the command or hands over another word, and
   // `words` drops the character, so it is looked for in the whole text (each word known: false).
   const b = blank(shell);
   let refused = false;
   for (let i = 0; i < b.length && !refused; i++) { if (b[i] === '\\') { refused = i + 1 >= b.length; i++; } else refused = b[i] === "'" || b[i] === '"'; }
   // The commands are those of the text lift gives, as in shellWrites: a ; or | inside a $( ) splits nothing, and the
-  // commands inside it are not this shell's. Each word is handed back as written (unlift).
-  liftDepth++;
+  // commands inside it are not this shell's. Each word is handed back as written (unlift). No mark free (liftBegin): no
+  // command is handed back.
   try {
+    if (!liftBegin(command)) return out;
     eachCommand(shell, state, (p, raw, how, op) => {
       const opened = opening(raw);
       // <( ) and >( ) hand over a /dev/fd path (lift leaves `/dev/fd/` and its placeholder): no word of such a command

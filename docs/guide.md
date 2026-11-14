@@ -209,6 +209,13 @@ call made again without an answer is refused again, with the items still open. A
 the Stop hook stops once to name every item still unsure. Once the session has been asked 4 items or more, an answer
 is refused when it would leave more than half of them with `unsure` as their last answer. The `readfirst answer` command itself only prints what it was
 given; it writes nothing.
+At the stop, each item's last answer is checked against what the session changed: a `not-this` whose item the
+session's diff (from what the working tree held when the session first wrote there: changes already made then, and
+files git did not track then, are not the session's) touches by a name outside
+its `symbols`, and a `done` whose item's checks did not pass, are named, and the stop is
+refused once for them. To know what the working tree held, the hook runs `git stash create` on a copy of the index
+when a session first writes in a repository: it adds git objects nothing refers to (`git gc` removes them), and no
+stash entry, ref or change to your index or files.
 Notes count as seen on the branch they were seen on, and a `readfirst read` that Claude Code ran in Bash counts too,
 when its whole output came back: one sent to `/dev/null`, a file or a pipe (`| head`), or cut by `--limit`, does not.
 Notes already seen are not shown again; their items are still asked until answered.
@@ -246,9 +253,12 @@ to cover all the checks together.
 Whether the notes were acted on: the Stop hook ends with one line for the session, what the map asked for the files
 you edited (checks to run, files that change together), what was done, every item that was not, and how many edits the
 gate refused were made again at once with no other edit or command in between (their notes were likely not read), and
-how many answers were left unsure. It
+how many answers were left unsure or not borne out. It
 keeps that line in `readfirst-acted.jsonl` in the temp folder; `npx readfirst hook --report` adds up every session kept
-there and names each item not done, most often first. Nothing leaves the machine.
+there and names each item not done, most often first, and each rule and risk the gate asked: how often, each kind of
+answer, and how many answers the stop did not find borne out. `npx readfirst audit` names the rules and risks that
+3 sessions or more answered and more than half of them last answered `not-this`: each is wider than what it is about
+(a session the gate asked and that gave no answer is not counted). Nothing leaves the machine.
 
 ### See the map
 

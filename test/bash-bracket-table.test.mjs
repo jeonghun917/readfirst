@@ -105,6 +105,41 @@ const AGAINST_BASH = [
   'case $(echo x >f5) in x) ;; esac', 'case x in $(echo >f6)) echo;; esac', 'for i in $(echo > f7); do :; done', '[[ $(echo > f8) ]]', 'if $(echo > f9); then :; fi',
   'while $(echo > f10; false); do :; done', 'time $(echo > f11)', '! $(echo > f12)', 'g() { echo $(echo > f13); }; g', 'cat <<E $(echo > f14)\nhi\nE',
 ];
+// lift marks where it took a substitution out with a character and the body's number. The mark was \x01, and a command
+// can hold any character: \x01 and a number in a redirect, a cd or a value was read as a body, and shellWrites threw
+// when there was none (`echo hi > \x010`: "Cannot read properties of undefined", review of #206, 2026-11-14), or read
+// the body that had that number. The mark is now one the command does not hold. Each command runs in an empty folder
+// holding d and \x011.
+test('\\x01 and a number in a command are text, not a body lift took out, and bash agrees', { skip: spawnSync('bash', ['-c', 'true']).status !== 0 && 'bash is not installed here, so the commands cannot be run' }, () => {
+  for (const c of ['echo hi > \x010', 'cd \x011; echo > e', 'S=\x011; echo > $S/h', 'echo > \x0199999', 'echo $(echo a) > \x010', 'cat <(echo > f1) > \x012',
+    'echo hi > 0', 'echo $(echo > 1) > 0']) {
+    const dir = mkdtempSync(join(tmpdir(), 'readfirst-place-'));
+    mkdirSync(join(dir, 'd'));
+    mkdirSync(join(dir, '\x011'));
+    spawnSync('bash', ['-c', c], { cwd: dir, stdio: 'ignore', timeout: 5000, env: {} });
+    const named = shellWrites(c, dir).files.map((f) => f.slice(dir.length + 1)).sort();
+    const list = () => readdirSync(dir).flatMap((x) => (['d', '\x011'].includes(x) ? readdirSync(join(dir, x)).map((y) => `${x}/${y}`) : [x])).sort();
+    let made = list();
+    for (let t = 0; t < 100 && /[<>]\(/u.test(c) && named.some((x) => !made.includes(x)); t++) { pause(10); made = list(); }
+    assert.deepEqual(named, made, JSON.stringify(c));
+  }
+  assert.deepEqual(commandWords('readfirst answer \x010 $(echo a)', '/r').map((x) => x.words.map((w) => w.text)), [['readfirst', 'answer', '\x010', '\0$(echo a)\0']]);
+  assert.deepEqual(bashReads('npx readfirst read \x010', '/r').map((r) => r.files), [['/r/\x010']]);
+});
+
+// A command that holds every private-use character leaves no mark free: nothing is read, and shellWrites says why
+// rather than naming nothing as if nothing were written. The next command is read as before.
+test('a command holding every private-use character is not read, and says so', () => {
+  const all = Array.from({ length: 0xf8ff - 0xe000 + 1 }, (_, i) => String.fromCharCode(0xe000 + i)).join('');
+  const r = shellWrites(`echo ${all}; echo $(cd /a) > f`, '/r');
+  assert.deepEqual(r.files, []);
+  assert.deepEqual(r.unknown.map((u) => [u.part, u.prefix]), [['the command', '']]);
+  assert.match(r.unknown[0].why, /private-use/u);
+  assert.deepEqual(bashReads(`echo ${all}; npx readfirst read a.js`, '/r'), []);
+  assert.deepEqual(commandWords(`echo ${all}`, '/r'), []);
+  assert.deepEqual(writes('echo $(cd /a) > f'), ['/r/f']);
+});
+
 // Not run against bash: `>((1>0))` runs (1>0), which makes 0, after bash returns, so 0 was there in 11 of 40 runs.
 test('a >( ) holding a subshell: its write is named, not `((1`', () => {
   assert.deepEqual(writes('>((1>0))'), ['/r/0']);
@@ -141,6 +176,17 @@ const SHAPES = {
   "unclosed ' then $((": "(n) => \"echo 'x \" + '$((1)) '.repeat(n)",
   "unclosed ' then quotes": "(n) => \"echo 'x \" + '\"a\" '.repeat(n)",
   'unclosed (( then ((': "(n) => 'echo ' + '(( '.repeat(n)",
+  // Lines: eachCommand took each from the front of its list with shift(), which moves the rest each time (32,000
+  // comment lines took 0.5 to 0.9 s a reader, 2026-11-14).
+  'comment lines ending in a backslash': "(n) => '# c \\\\\\n'.repeat(n) + 'echo > f'",
+  'command lines': "(n) => 'echo a\\n'.repeat(n)",
+  // The text before each here-document was walked again for it (13 s at 4,000), and then the words before each one in
+  // its command or its line were read again for it (review of #206).
+  'here-documents': "(n) => 'cat <<E\\nhello\\nE\\n'.repeat(n)",
+  'here-documents in one $( )': "(n) => 'x=$(' + 'cat <<E\\nhello\\nE\\n'.repeat(n) + ')'",
+  'here-documents on one line': "(n) => 'cat ' + Array.from({ length: n }, (_, i) => '<<E' + i).join(' ') + '\\n' + Array.from({ length: n }, (_, i) => 'b\\nE' + i + '\\n').join('')",
+  // Each one inside the $( ) of the one before: the bodies are read from one stack, 32,000 deep, no call per level.
+  'here-documents nested in $( )': "(n) => 'x=' + '$(cat <<E\\n'.repeat(n) + 'a\\n' + 'E\\n)'.repeat(n)",
 };
 const SIZES = [2000, 8000, 32000];
 const TIMED = `const { parentPort } = require('node:worker_threads');
@@ -173,6 +219,84 @@ const TIMED = `const { parentPort } = require('node:worker_threads');
   }
   parentPort.postMessage(null);
 })();`;
+
+// A count of steps, which no load on the machine changes (2026-11-14): eachCommand took each command off the front of
+// its list with shift(), which moves the rest of the list each time, so a command of n lines cost about n*n/2 moves
+// (at 32,000 lines 0.5 to 0.9 s a reader; the slope test below sits near its limit there). Each element shift() moves is
+// counted while the three readers read 4,000 lines: they now read by an index.
+test('the commands of a long text are taken one after another, not moved along the list', () => {
+  const n = 4000;
+  const text = 'echo a\n'.repeat(n);
+  const shift = Array.prototype.shift;
+  let moved = 0;
+  Array.prototype.shift = function counted() { moved += Math.max(0, this.length - 1); return shift.call(this); };
+  try {
+    shellWrites(text, '/r');
+    commandWords(text, '/r');
+    bashReads(text, '/r');
+  } finally {
+    Array.prototype.shift = shift;
+  }
+  assert.ok(moved < 10 * n, `shift() moved ${moved} elements for ${n} lines (about ${n * n * 1.5} when each command is taken off the front)`);
+});
+
+// The state at each here-document (2026-11-14, readfirst review): shellWrites walked all the text before each one again
+// (stateAt), so n here-documents cost about n*n/2 commands walked: 4,000 `cat <<E` took 13 s, near the hook's 15.
+// eachCommand lists the commands of a text once per walk (segmentsAndOps, then flatMap): the lengths of those lists are
+// counted while shellWrites reads 2,000 here-documents. One walk reads each command a few times, not once per document.
+test('the state at each here-document comes from one walk, not one per document', () => {
+  const n = 2000;
+  const text = 'cat <<E\nhello\nE\n'.repeat(n);
+  const flatMap = Array.prototype.flatMap;
+  let listed = 0;
+  Array.prototype.flatMap = function counted(...a) { listed += this.length; return flatMap.apply(this, a); };
+  try {
+    shellWrites(text, '/r');
+  } finally {
+    Array.prototype.flatMap = flatMap;
+  }
+  assert.ok(listed < 10 * n, `${listed} commands listed for ${n} here-documents (about ${n * n} when the text before each is walked again)`);
+});
+
+// Then each here-document read the words before it again from the start of its command, or of its line inside a $( )
+// (review of #206): n of them on one line or in one $( ) still took time by the square (2,000 on one line: 642 ms, main
+// 95). The characters every slice() gives are counted while shellWrites reads each shape: one read takes a few per
+// character of the text. Each here-document reading its command again gives hundreds (main gives 360 to 4,100 at 1,000
+// and 2,000, as each document's text before it was cut out and walked).
+test('the words before each here-document are read once for its command, on one line or in one $( )', () => {
+  const n = 2000;
+  const docs = 'cat <<E\nhello\nE\n'.repeat(n);
+  const shapes = {
+    'one per line': docs,
+    'in one $( )': `x=$(${docs})`,
+    'on one line': `cat ${Array.from({ length: n }, (_, i) => `<<E${i}`).join(' ')}\n${Array.from({ length: n }, (_, i) => `b\nE${i}\n`).join('')}`,
+  };
+  const slice = String.prototype.slice;
+  for (const [name, text] of Object.entries(shapes)) {
+    let chars = 0;
+    String.prototype.slice = function counted(...a) { const r = slice.apply(this, a); chars += r.length; return r; };
+    try {
+      shellWrites(text, '/r');
+    } finally {
+      String.prototype.slice = slice;
+    }
+    assert.ok(chars < 20 * text.length, `${name}: slice() gave ${chars} characters for a text of ${text.length}`);
+  }
+});
+
+// The mark where each here-document opens is a character the text does not hold (review of #206): a fixed one read a
+// number the user wrote after it as a here-document, and the state of the command it stood in went to the real one.
+test('a here-document mark is never a character of the command', () => {
+  const named = (c) => shellWrites(c, '/r').files;
+  for (let c = 0xe000; c < 0xe004; c++) {
+    const ch = String.fromCharCode(c);
+    assert.deepEqual(named(`echo "${ch}0"; cd s; cat <<E\n$(echo > u1)\nE`), ['/r/s/u1'], `U+${c.toString(16)} in the command`);
+  }
+  // Every private-use character in the text but one: lift's mark takes that one, none is left for here-documents, and
+  // each is read on a walk of its own, as before. (With every one, nothing is read: the test after the bash one.)
+  const allButOne = Array.from({ length: 0xf8ff - 0xe000 }, (_, i) => String.fromCharCode(0xe000 + i)).join('');
+  assert.deepEqual(named(`echo "${allButOne}0"; cd s; cat <<E\n$(echo > u1)\nE`), ['/r/s/u1']);
+});
 
 test('linear time in the length of unclosed chains and of nesting', async () => {
   const done = [];
