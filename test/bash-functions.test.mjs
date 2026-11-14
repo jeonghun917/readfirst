@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { test } from 'node:test';
-import { shellWrites } from '../src/bash-writes.mjs';
+import { bashReads, commandWords, shellWrites } from '../src/bash-writes.mjs';
 
 const hasBash = spawnSync('bash', ['-c', 'true'], { env: {} }).status === 0;
 // The files bash makes running the script in a new folder that holds the empty folders a and s, relative to it (as in
@@ -69,6 +69,22 @@ test('a function is read where it is called, with the state and the arguments th
     ['f(){ echo {>x; }', ['x']],
     ['f () { cd a; }; f; echo > h', ['?f']],
     ['f ()\n{\n cd a\n}\necho > h', null],
+    // Review of 71dbf3d: a wrapper (env, nohup, timeout, nice) runs a program of that name, never the function; time,
+    // !, an assignment before it, \f and 'f' call it. Only -f unsets a function: -v and -n take variables, and -fv is an
+    // error that unsets nothing.
+    ['f() { cd a; }; env f; echo > h', null],
+    ['f() { cd a; }; nohup f; echo > h', null],
+    ['f() { cd a; }; timeout 1 f; echo > h', null],
+    ['f() { cd a; }; nice f; echo > h', null],
+    ['f() { cd a; }; time f; echo > h', ['?f']],
+    ['f() { cd a; }; ! f; echo > h', ['?f']],
+    ['f() { cd a; }; X=1 f; echo > h', ['h']],
+    ['f() { cd a; }; \\f; echo > h', ['?f']],
+    ["f() { cd a; }; 'f'; echo > h", ['?f']],
+    ['f() { cd a; }; unset -v f; f; echo > h', ['?f']],
+    ['f() { cd a; }; unset -n f; f; echo > h', ['?f']],
+    ['f() { cd a; }; unset -fv f; f; echo > h', ['?f']],
+    ['f() { cd a; }; unset f; f; echo > h', ['?f']],
     // As before.
     ['f() { echo > g1; }; f', null],
     ['f() { g() { echo > g5; }; }; f; g', null],
@@ -123,6 +139,21 @@ test('a chain of calls puts each body in front of the list without moving the re
     Array.prototype.shift = shift;
   }
   assert.ok(moved < 10 * n, `${moved} elements moved for ${n} calls`);
+});
+
+// Review of 71dbf3d: mayCd called itself once per function a function calls, so a chain of 8,000 ran out of stack in
+// every reader (main too), and each call past the budget asked it again, so 8,000 functions each calling the next twice
+// took 10.8 s. Each reader reads both shapes at 20,000 functions within 10 s.
+test('long chains of functions are read by every reader without running out of stack or time', () => {
+  const chain = (n, twice) => { let t = 'f0() { echo > leaf; }\n'; for (let i = 1; i <= n; i++) t += `f${i}() { f${i - 1};${twice ? ` f${i - 1};` : ''} }\n`; return `${t}f${n}; echo > h`; };
+  for (const twice of [false, true]) {
+    const text = chain(20000, twice);
+    for (const read of [shellWrites, bashReads, commandWords]) {
+      const t = performance.now();
+      assert.doesNotThrow(() => read(text, '/r'), `${read.name}, ${twice ? 'calling twice' : 'once'}`);
+      assert.ok(performance.now() - t < 10000, `${read.name}, ${twice ? 'calling twice' : 'once'}: ${performance.now() - t} ms`);
+    }
+  }
 });
 
 // A call tree that doubles at each level reads 2^n bodies: the bodies read for one command stop at a budget, and each

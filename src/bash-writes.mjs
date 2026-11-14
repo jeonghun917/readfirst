@@ -954,12 +954,21 @@ function caseHead(text, op) {
 // may; or it was defined twice, or is not known. Until 2026-11-13 every call made the folder not known, though most
 // functions only run commands (`run() { npm test; }; run; echo > log`).
 const CD_LIKE = /^(?:cd|pushd|popd|source|\.|eval|exec|builtin|command)$/u;
-function mayCd(state, name, seen = new Set()) {
-  const info = state.fnInfo?.get(name);
-  if (!info || info.cd) return true;
-  seen.add(name);
-  // A command named by a variable (`"$@"`, `$cmd`) is kept with its unknown part between \0s (shellWord): it may be cd.
-  return [...info.cmds].some((c) => CD_LIKE.test(c) || c.startsWith('$') || c.includes(HOLE) || (state.fns?.has(c) && !seen.has(c) && mayCd(state, c, seen)));
+// The functions it calls are followed from one list, not by a call per function: a chain of 8,000 ran out of stack in
+// every reader (review of #217).
+function mayCd(state, name) {
+  const seen = new Set([name]);
+  const todo = [name];
+  while (todo.length) {
+    const info = state.fnInfo?.get(todo.pop());
+    if (!info || info.cd) return true;
+    for (const c of info.cmds) {
+      // A command named by a variable (`"$@"`, `$cmd`) is kept with its unknown part between \0s (shellWord): it may be cd.
+      if (CD_LIKE.test(c) || c.startsWith('$') || c.includes(HOLE)) return true;
+      if (state.fns?.has(c) && !seen.has(c)) { seen.add(c); todo.push(c); }
+    }
+  }
+  return false;
 }
 // A function definition at the start of some words (`f()`, `f ()`, `f ( )`, `f(){`, `function f`, `function f ()`):
 // its name and the words after the `()`, or null. Until 2026-11-13 `f ( )` was not one: `f ( ) { cd /a; }; f` was
@@ -985,6 +994,18 @@ function bodyText(text, name) {
   const m = blank(text).match(new RegExp(`(?:^|[\\s;&|({])(?:function\\s+)?${name}(?:\\s*\\(\\s*\\))?`, 'u'));
   return m ? text.slice(m.index + m[0].length) : '';
 }
+// The name a command calls as a function: its first word after NAME=value words, `time` (and -p) and `!`, which run it
+// in this shell. Not after env, nohup, sudo, timeout, nice, command and the other wrappers (unwrap): they run a program
+// of that name, never the function (`env f` was read as a call of f, review of #217).
+function callee(raw) {
+  let ws = opening(raw);
+  for (;;) {
+    while (ws.length && ASSIGN.test(ws[0])) ws = ws.slice(1);
+    if (ws[0] === 'time') { ws = ws.slice(1); while (ws[0] === '-p') ws = ws.slice(1); continue; }
+    if (ws[0] === '!') { ws = ws.slice(1); continue; }
+    return unquote(ws[0] ?? '');
+  }
+}
 // How many ( some shell text opens more than it closes, outside quotes.
 const parenDepth = (text) => { const b = blank(text); return (b.match(/\(/gu) ?? []).length - (b.match(/\)/gu) ?? []).length; };
 // Whether a segment opens a block (if, a loop, case: 1), closes one (-1) or neither (0), by its first command word
@@ -999,22 +1020,25 @@ const blockStep = (text) => {
 // `time`, a function's `()`, a `)` that closes, or the end of a block (`fi }`); anywhere else they are arguments.
 // Until 2026-11-13 every word that began with } or ended with { was counted: `echo {` in a function's body made it
 // one deeper, so the { } group after the function was taken for its body and its cd was not followed.
+// Read by an index: it runs on every segment of writesOf's walks now (for { } groups), and shift() on a segment of
+// 32,000 words took time by the square (review of #217).
 function braces(ws) {
-  const q = [...ws];
+  let q = ws;
+  let i = 0;
   let depth = 0;
   let at = true;
   const opens = q[0] === '{';
-  while (q.length) {
-    let w = q.shift();
+  while (i < q.length) {
+    let w = q[i++];
     if (at) {
       w = w.replace(/^\(+/u, '');
       if (!w) continue;
       if (w === '{') { depth++; continue; }
       if (/^\}(?:$|[)<>])/u.test(w)) { depth--; at = /^\}\)*$/u.test(w); continue; }
       if (KEYWORDS.test(w) || CLOSES.test(w)) continue;
-      if (w === 'time') { while (q[0] === '-p') q.shift(); continue; }
-      const def = definition([w, ...q]);
-      if (def) { q.splice(0, q.length, ...def.rest); continue; }
+      if (w === 'time') { while (q[i] === '-p') i++; continue; }
+      const def = definition([w, ...q.slice(i, i + 3)]);
+      if (def) { q = [...def.rest, ...q.slice(i + 3)]; i = 0; continue; }
     }
     // After a word that closes more ( than it opens (`/a)`), a command may start; after any other word an argument.
     const b = blank(w);
@@ -1186,7 +1210,7 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     if (!subBefore && (before === '&&' || before === '||') && !state.chain) state.chain = { ...snapshot({ ...state, blocks: [], chain: null }), depth: state.blocks?.length ?? 0 };
     const rest = p.closes > 0 && p.tail?.trim() ? [')', ...words(p.tail)] : [];
     // A { } group opening: the state before it, for its end (taken before howItRuns, which may count it as a body's).
-    const grouped = !(state.fnDepth > 0 || state.fnAwait || rec || definition(opening(raw))) ? braces(rest.length ? [...raw, ...rest] : raw).depth : 0;
+    const grouped = /[{}]/u.test(text) && !(state.fnDepth > 0 || state.fnAwait || rec || definition(opening(raw))) ? braces(rest.length ? [...raw, ...rest] : raw).depth : 0;
     // Only the folder and the variables: a whole snapshot copies every function, and a chain of 32,000 calls (each body
     // a group) ran out of memory.
     for (let k = 0; k < grouped; k++) groups.push({ at: { base: state.base, why: state.why, vars: copyVars(state.vars), dirs: [...(state.dirs ?? [])] }, piped: before === '|' || before === '|&' });
@@ -1214,9 +1238,9 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     }
     // A call of a function whose body was kept: read next, where it is called.
     let call = null;
-    if (calls && !how.body) {
-      const ws = unwrap(opening(raw));
-      const name = unquote(ws[0] ?? '');
+    if (calls && !how.body && state.fns?.size) {
+      const name = callee(raw);
+      const ws = opening(raw).slice(opening(raw).findIndex((w) => unquote(w) === name));
       const info = state.fns?.has(name) ? state.fnInfo?.get(name) : null;
       if (info?.segs) {
         if (active.get(name)) how.unread = `${name} calls itself, and its body is read once for the call it is in`;
@@ -1271,9 +1295,10 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
 
 // called: the command calls a function whose body eachCommand reads next, where it is called (writesOf's walks);
 // inCall: the command is in such a body.
-function follow(state, ws, { pipe = false, maybe = false, body = false, called = false, inCall = false } = {}) {
+// unread: a call of a function whose body eachCommand does not read (it calls itself, or past the budget).
+function follow(state, ws, { pipe = false, maybe = false, body = false, called = false, inCall = false, unread = null } = {}) {
   // A pipeline's stage runs in a subshell: what it sets or where it goes does not stay.
-  if (pipe) return follow(snapshot(state), ws, { body, called, inCall });
+  if (pipe) return follow(snapshot(state), ws, { body, called, inCall, unread });
   state.fns ??= new Set();
   state.fnInfo ??= new Map();
   // time, command and builtin run what follows in this shell: `command cd /a`, `builtin cd /a` and `time { cd /a; }`
@@ -1339,7 +1364,9 @@ function follow(state, ws, { pipe = false, maybe = false, body = false, called =
   }
   if (state.fns.has(cmd)) {
     loseAll(`${cmd}, a function this command defines, may change it`);
-    if (state.base != null && mayCd(state, cmd)) { state.base = null; state.why = { part: cmd, why: `${cmd}, a function this command defines, may cd`, prefix: '' }; }
+    // A call whose body is not read may cd, as far as anyone here can tell: asking mayCd for each walked the functions
+    // behind it again, so 4,000 functions each calling the next twice took time by the square.
+    if (state.base != null && (unread || mayCd(state, cmd))) { state.base = null; state.why = { part: cmd, why: `${cmd}, a function this command defines, may cd`, prefix: '' }; }
     return false;
   }
   // The file source and `.` read may cd, as may what eval runs.
@@ -1406,10 +1433,13 @@ function follow(state, ws, { pipe = false, maybe = false, body = false, called =
     else if (cmd === 'read') ws.slice(1).filter((w) => NAME.test(w)).forEach((n) => unset(n, `${n} is read when the command runs`));
     // unset -f NAME takes a function away (its call then runs no body: a call of it after was read as one, review of
     // #217); plain `unset NAME` takes the variable, or, with no such variable, the function.
+    // -v and -n take only variables, and -f with either is an error that unsets nothing.
     else if (cmd === 'unset') {
-      const fns = ws.slice(1).some((w) => /^-[a-z]*f/u.test(w));
-      for (const n of ws.slice(1).filter((w) => NAME.test(w))) {
-        if (fns || (!state.vars.has(n) && state.fns.has(n))) { state.fns.delete(n); state.fnInfo.delete(n); } else unset(n, `${n} is unset`);
+      const opts = ws.slice(1).filter((w) => w.startsWith('-')).join('');
+      const fns = opts.includes('f');
+      const vars = /[vn]/u.test(opts);
+      for (const n of fns && vars ? [] : ws.slice(1).filter((w) => NAME.test(w))) {
+        if (fns || (!vars && !state.vars.has(n) && state.fns.has(n))) { state.fns.delete(n); state.fnInfo.delete(n); } else unset(n, `${n} is unset`);
       }
     }
     return false;
@@ -1487,7 +1517,10 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     return abs.endsWith('/') ? abs : dirname(abs);
   };
   const dq = (w) => { const r = shellWord(w, state.vars); for (const u of r.unknown) holes.set(u.text, u); return r.text; };
-  const missing = (u) => { if (!unknown.some((k) => k.part === u.part && k.word === u.word)) unknown.push(u); };
+  // Each part and word once, looked up by key: searched through the list, every call past the budget of function bodies
+  // (each one not known) took time by the number already there (8,000 functions each calling the next twice: 10.8 s).
+  const listed = new Set();
+  const missing = (u) => { const key = `${u.part}\0${u.word}`; if (!listed.has(key)) { listed.add(key); unknown.push(u); } };
   // repos: the checkouts the command makes (git worktree add, clone, init), as a folder or the known start of one;
   // madeAt: those whose folder is known in full.
   const repos = new Set();
