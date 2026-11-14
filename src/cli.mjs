@@ -502,9 +502,11 @@ export function editTexts(tool, input, abs) {
 // hook's checks, and looked up on the next call that writes them; with --gate the call is refused so it is made again.
 // A call that writes nothing readfirst can name (a script, a build) still marks when the session started in that
 // repository, so the Stop hook checks the files changed after it.
-export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = false, budget = 10_000 } = {}) {
+// readers: the shell readers, which a test may replace with one that throws.
+export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = false, budget = 10_000, readers = { shellWrites, bashReads } } = {}) {
+  let event = null;
   try {
-    const event = JSON.parse(input);
+    event = JSON.parse(input);
     const cwd = event.cwd ?? process.cwd();
     const tool = event.tool_name ?? '';
     const file = event.tool_input?.file_path;
@@ -513,7 +515,13 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // Not OLDPWD: the hook's own is not the folder the Bash shell was in before (review of 2026-11-13); the command's cd
     // sets it, and before that it is not known.
     const env = new Map(Object.entries(process.env).filter(([k]) => k !== 'OLDPWD').map(([k, v]) => [k, { value: v, exported: true }]));
-    const written = tool === 'Bash' ? shellWrites(event.tool_input?.command, cwd, { vars: env }) : null;
+    // A reader that throws on a command is a write readfirst cannot place: refused once with --gate like any unknown
+    // write (until 2026-11-13 the throw reached the catch below and the command went through with no word), and kept as
+    // misread:<hash of the command> for the Stop hook and `hook --report`.
+    let misread = null;
+    const readSafely = (read) => { try { return read(); } catch (e) { misread ??= errorText(e); return null; } };
+    const command = String(event.tool_input?.command ?? '');
+    let written = tool === 'Bash' ? readSafely(() => readers.shellWrites(event.tool_input?.command, cwd, { vars: env })) : null;
     const targets = [...new Set((/^(?:Edit|Write|MultiEdit)$/u.test(tool) && file ? [isAbsolute(file) ? file : resolve(cwd, file)]
       : written ? written.files : []).map(physical))];
     const seen = readSeen(stateDir, event.session_id) ?? {};
@@ -538,7 +546,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     if (tool === 'Bash') {
       const known = new Map();
       const branches = new Map();
-      for (const r of bashReads(event.tool_input?.command, cwd, { vars: env })) {
+      for (const r of readSafely(() => readers.bashReads(event.tool_input?.command, cwd, { vars: env })) ?? []) {
         if (!r.seen) continue;
         for (const abs of r.files.map(physical)) {
           const root = rootOf(abs, known);
@@ -551,6 +559,11 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // be outside every repository (couldLandIn). With --gate the call is refused once with them
     // (`unknown:<the command's hash>`) and goes through when made again. Each repository they could land in gets the
     // session's start mark, so the Stop hook checks the files that change there.
+    if (misread) {
+      const whole = { part: 'the whole command', word: command, why: `readfirst hit an error reading it (${misread})`, prefix: '' };
+      written = { files: written?.files ?? [], unknown: [...(written?.unknown ?? []), whole], repos: written?.repos ?? [] };
+      seen[`misread:${createHash('sha1').update(command).digest('hex').slice(0, 12)}`] = now;
+    }
     const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos, Date.now() + budget / 5) : [];
     const unknownKey = unplaced.length ? `unknown:${createHash('sha1').update(String(event.tool_input.command)).digest('hex').slice(0, 12)}` : null;
     const askUnknown = Boolean(unknownKey) && !before[unknownKey];
@@ -565,7 +578,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       if (u.looked) return `could be in a repository below ${u.prefix}${u.roots.length ? ` (${some} and more: readfirst stopped looking at ${u.looked})` : ` (readfirst stopped looking at ${u.looked})`}`;
       return u.roots.length ? `could be in ${some}` : 'could be in any repository: none is known to this session';
     };
-    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${u.word}\` (${u.part}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
+    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${clip(u.word)}\` (${clip(u.part)}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
@@ -602,10 +615,25 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // the notes as context instead.
     if (gate && (notes.length || lateLine || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
-  } catch {
+  } catch (e) {
+    // Never fails closed (the call goes through), but what failed is kept (failed:<tool>:<error>) for the Stop hook and
+    // `hook --report`: until 2026-11-13 a bug here looked the same as nothing to say.
+    // Quoted values and numbers are left out of the key (`open '/a/b'`, `reading 'x'`), so one kind of error is one key
+    // and the state does not grow by a line for each call it fails on.
+    const kind = errorText(e).replace(/(['"`]).*?\1/gu, '$1…$1').replace(/\d+/gu, 'N');
+    try { if (event?.session_id) addSeen(stateDir, event.session_id, {}, { [`failed:${event.tool_name ?? ''}:${kind}`]: now }); } catch { /* nothing more to do */ }
     return null;
   }
 }
+// A command or a word of one in the hook's line: the first CLIP characters and, on the same line, how many were left
+// out (a command readfirst could not read was quoted whole: 64,404 characters in one refusal, 2026-11-13).
+const CLIP = 200;
+const clip = (text) => {
+  const s = String(text);
+  return s.length <= CLIP ? s : `${s.slice(0, CLIP)}… (${s.length} characters, ${s.length - CLIP} left out)`; // cut: says how many it left out
+};
+// An error in one line, short enough for a state key and a report line.
+const errorText = (e) => `${e?.name ?? 'Error'}: ${String(e?.message ?? e)}`.replace(/\s+/gu, ' ').slice(0, 160); // cut: the error's first 160 characters; the rest is in no state
 
 // The branch a repository is on, or the commit when none is checked out; '' when git cannot say. `known` keeps the
 // answers of one call.
@@ -852,8 +880,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -882,7 +910,7 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     if (r?.block) blocks.push(r.block);
     if (r?.tally) { tally.asked += r.tally.asked; tally.acted += r.tally.acted; tally.notActed.push(...r.tally.notActed); }
   }
-  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length };
+  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length, misread: Object.keys(seen).filter((k) => k.startsWith('misread:')).length, failed: Object.keys(seen).filter((k) => k.startsWith('failed:')).map((k) => k.slice('failed:'.length)) };
   const line = actedLine(record);
   if (line) { try { appendFileSync(join(stateDir, ACTED_LOG), `${JSON.stringify(record)}\n`); } catch { /* the line is still said */ } }
   if (blocks.length) return JSON.stringify({ decision: 'block', reason: [...blocks, ...(line ? [line] : [])].join('\n\n') });
@@ -892,12 +920,15 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
 
 // The Stop hook's last line (step 4): what the map asked for the files edited, what was done, what was not, and how
 // often a refused edit was made again at once. Every item not done is named.
-export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0, noFind = 0 }) {
-  if (!asked && !resent && !noFind) return null; // notes shown and nothing asked: the stop stays quiet, as before
+export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0, noFind = 0, misread = 0, failed = [] }) {
+  if (!asked && !resent && !noFind && !misread && !failed.length) return null; // notes shown and nothing asked: the stop stays quiet, as before
   const not = notActed.length ? `, not done: ${notActed.join('; ')}` : '';
   const again = resent ? `; ${resent} refused edit(s) made again at once with nothing in between, so their notes were likely not read` : '';
   const nofind = noFind ? `; ${noFind} edit(s) added new functions without \`readfirst find\` first` : '';
-  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}.`;
+  const misreadLine = misread ? `; readfirst hit an error reading ${misread} command(s), refused once as writes it could not place` : '';
+  // One failed: key per tool and error, so the same error on many calls is one.
+  const failedLine = failed.length ? `; the hook failed and let calls through unchecked, with ${failed.length} different error(s) (${failed.join('; ')})` : '';
+  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}${misreadLine}${failedLine}.`;
 }
 
 // `readfirst hook --report`: the Stop hook's lines of every session kept in ACTED_LOG (the last one of each session),
@@ -911,6 +942,8 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
   const sum = (k) => rows.reduce((n, r) => n + (Number(r[k]) || 0), 0);
   const counts = new Map();
   for (const r of rows) for (const x of r.notActed ?? []) counts.set(x, (counts.get(x) ?? 0) + 1);
+  const failures = new Map();
+  for (const r of rows) for (const x of Array.isArray(r.failed) ? r.failed : []) failures.set(x, (failures.get(x) ?? 0) + 1);
   const asked = sum('asked');
   return [
     `readfirst hook --report: ${rows.length} session(s)`,
@@ -918,6 +951,9 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
     `- asked ${asked}, done ${sum('acted')}, not done ${asked - sum('acted')}`,
     `- refused edits made again at once with nothing in between: ${sum('resent')}, in ${rows.filter((r) => r.resent > 0).length} session(s)`,
     `- edits that added new functions without \`readfirst find\` first: ${sum('noFind')}, in ${rows.filter((r) => r.noFind > 0).length} session(s)`,
+    `- commands readfirst hit an error reading (refused once as writes it could not place): ${sum('misread')}, in ${rows.filter((r) => r.misread > 0).length} session(s)`,
+    `- errors the hook let calls through unchecked on: ${failures.size} different, in ${rows.filter((r) => Array.isArray(r.failed) && r.failed.length).length} session(s)`,
+    ...(failures.size ? ['Hook errors, in most sessions first:', ...[...failures].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
     ...(counts.size ? ['Not done, most often first:', ...[...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
   ].join('\n');
 }
