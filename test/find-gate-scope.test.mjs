@@ -96,6 +96,27 @@ test('a method an exported object literal defines is exported', () => {
   assert.deepEqual(added('test/m.js', 'function helperFn() {}\nmodule.exports = { run() { return helperFn(1); } };\n'), ['run'], 'a call inside a method exports nothing');
 });
 
+// Review of ce2de88: only the first level of an exported literal was read.
+test('a literal nested in a value place of an exported literal is read too, never a computed key', () => {
+  assert.deepEqual(added('test/n.js', 'module.exports = { aaa: { bbbMethod() {} } };\n'), ['bbbMethod']);
+  assert.deepEqual(added('test/o.js', 'function makeUser() {}\nmodule.exports = [{ deep: [makeUser] }];\n'), ['makeUser']);
+  assert.deepEqual(added('test/p.js', 'function makeUser() {}\nfunction keyed() {}\nmodule.exports = { [keyed]: { inner: makeUser } };\n'), ['makeUser'], 'keyed is a key');
+});
+
+test('a deeply nested exported literal is read in linear time, with no stack to run out of', () => {
+  const deep = (n) => `function makeUser() {}\nmodule.exports = ${'{ a: '.repeat(n)}makeUser${' }'.repeat(n)};\n`;
+  const time = (n) => {
+    let best = Infinity;
+    for (let k = 0; k < 3; k++) { const t0 = performance.now(); assert.deepEqual(added('test/deep.js', deep(n)), ['makeUser']); best = Math.min(best, performance.now() - t0); }
+    return best;
+  };
+  time(500);
+  const small = time(2000);
+  const large = time(8000);
+  // Four times the depth: about four times the time when linear, sixteen when it grows by the square.
+  assert.ok(large / small < 8, `2000 deep: ${small.toFixed(1)} ms, 8000 deep: ${large.toFixed(1)} ms`);
+});
+
 test('a local of an unnamed default function is not asked about', { todo: 'declarations reads the body of `export default function () {}` as the top level' }, () => {
   assert.deepEqual(added('src/d.js', 'export default function () {\n  const computeTotal = () => 1;\n}\n'), []);
 });

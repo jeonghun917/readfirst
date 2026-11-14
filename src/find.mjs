@@ -114,17 +114,24 @@ function laterExports(rows) {
   const valueNames = (i) => {
     if (t[i]?.k === 'word' && (ends(i + 1) || t[i + 1].line > t[i].line)) { out.add(t[i].v); return; }
     if (!is(i, '{') && !is(i, '[')) return;
-    // One level inside the literal: a word is a value when it stands alone between separators, and is not a key.
-    for (let j = i + 1, depth = 1; j < t.length && depth; j++) {
-      if (opens(j)) { depth++; continue; }
-      if (closes(j)) { depth--; continue; }
-      if (depth !== 1 || t[j].k !== 'word') continue;
+    // The literal is walked once with a stack of what each open bracket is (review of ce2de88: only its first level
+    // was read): an object or array literal in a value place ('obj', 'arr') is read on, anything else (a method's
+    // parameters or body, a call, a computed key) is 'skip'. In an object, a [ at a key's place is a computed key; in an
+    // array every element is a value. No call per level, so a deep literal costs no stack and no square.
+    const stack = [is(i, '{') ? 'obj' : 'arr'];
+    for (let j = i + 1; j < t.length && stack.length; j++) {
+      const top = stack[stack.length - 1];
       const before = t[j - 1]?.v;
+      const valued = ['{', '[', ',', ':', '...'].includes(before) && (top === 'arr' || [':', '...'].includes(before));
+      if (opens(j)) { stack.push(top !== 'skip' && valued && (is(j, '{') || is(j, '[')) ? (is(j, '{') ? 'obj' : 'arr') : 'skip'); continue; }
+      if (closes(j)) { stack.pop(); continue; }
+      if (top === 'skip' || t[j].k !== 'word') continue;
       const after = t[j + 1]?.v;
+      // A word is a value when it stands alone between separators, and is not a key.
       if (['{', '[', ',', ':', '...'].includes(before) && [',', '}', ']'].includes(after)) out.add(t[j].v);
       // A method the literal defines (`makeUser() {}`, `async a() {}`, `get total() {}`, `*gen() {}`; review of
       // c9694c5): its name, at a key's place, before its parameters.
-      else if (after === '(' && ['{', ',', 'async', 'get', 'set', '*'].includes(before) && is(i, '{')) out.add(t[j].v);
+      else if (top === 'obj' && after === '(' && ['{', ',', 'async', 'get', 'set', '*'].includes(before)) out.add(t[j].v);
     }
   };
   for (let i = 0; i < t.length; i++) {
