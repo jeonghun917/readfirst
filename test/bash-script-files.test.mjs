@@ -29,6 +29,15 @@ const FILES = {
   // A write in a template's ${ } or an f-string's { } is code (missed until the review of #222).
   'tpl.mjs': "import fs from 'node:fs';\nconst s = `${fs.writeFileSync('tpl.txt', 'x')}`;\n",
   'fstr.py': "x = f'{open(\"infstr.txt\", \"w\")}'\n",
+  // Writes into a temporary folder are left out; a write into the folder the script runs in next to them is still
+  // named (review of #222: the gate refused 44 of this repository's 75 test files).
+  'tmp.mjs': "import { mkdtempSync, writeFileSync } from 'node:fs';\nimport { tmpdir } from 'node:os';\nimport { join } from 'node:path';\nconst root = mkdtempSync(join(tmpdir(), 'rf-t-'));\nconst event = join(root, '..', 'rf-ev.json');\nwriteFileSync(join(root, 'a.txt'), 'x');\nwriteFileSync(`${root}/b.txt`, 'x');\nwriteFileSync(event, 'x');\n",
+  'mix.mjs': "import { mkdtempSync, writeFileSync } from 'node:fs';\nimport { tmpdir } from 'node:os';\nimport { join } from 'node:path';\nconst root = mkdtempSync(join(tmpdir(), 'rf-m-'));\nwriteFileSync(join(root, 'a.txt'), 'x');\nwriteFileSync('repo.txt', 'x');\n",
+  'tmp.py': "import tempfile, os\nfrom pathlib import Path\nd = tempfile.mkdtemp()\nopen(os.path.join(d, 'a'), 'w').write('x')\n(Path(d) / 'b').write_text('x')\nwith tempfile.TemporaryDirectory() as t:\n    open(f'{t}/c', 'w').write('x')\n",
+  'mix.py': "import tempfile, os\nd = tempfile.mkdtemp()\nopen(os.path.join(d, 'a'), 'w').write('x')\nopen('repo2.txt', 'w').write('x')\n",
+  // open's mode decides: a second argument or mode= that writes; one with brackets in its target is still found.
+  'kw.py': "open('kw.txt', mode='w').write('x')\nopen(os.path.join('a', 'r.txt')) if False else None\n",
+  'nested.py': "import os\nopen(os.path.join(os.getcwd(), 'n.txt'), 'w').write('x')\n",
   in: 'x\n',
 };
 const setUp = () => {
@@ -39,7 +48,8 @@ const setUp = () => {
 };
 // The files bash makes, besides the ones the folder starts with (and python's cache).
 const bashMade = (script, dir) => {
-  spawnSync('bash', ['-c', script], { cwd: dir, env: { PATH: process.env.PATH }, stdio: 'ignore', timeout: 10000 });
+  // TMPDIR: the test process's own folder (test/setup.mjs removes it), where the scripts' temporary folders go.
+  spawnSync('bash', ['-c', script], { cwd: dir, env: { PATH: process.env.PATH, TMPDIR: tmpdir() }, stdio: 'ignore', timeout: 10000 });
   const out = [];
   const walk = (d) => { for (const e of readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) { if (e.name !== '__pycache__') walk(join(d, e.name)); } else if (!(e.name in FILES)) out.push(relative(dir, join(d, e.name))); } };
   walk(dir);
@@ -52,6 +62,7 @@ test('the files a python or node script writes are named, and bash agrees', { sk
   for (const script of [
     'python3 w.py', 'python3 -B w.py', 'python3 -W ignore w.py', 'python3 argv.py pa1', 'cd a && python3 ../w.py',
     'node w.mjs', 'node --no-warnings w.mjs', 'node argv.mjs na1', 'P=w.mjs; node $P', 'node tpl.mjs', 'python3 fstr.py',
+    'node mix.mjs', 'python3 mix.py', 'python3 kw.py',
   ]) {
     const dir = setUp();
     const made = bashMade(script, dir);
@@ -64,7 +75,7 @@ test('a script that only reads, holds writes as data, or runs no file is quiet, 
   for (const script of [
     'python3 read.py', 'python3 data.py', 'node read.mjs', 'node data.mjs', 'python3 -c "print(1)"', 'python3 -m json.tool in',
     'python3 nothere.py', 'python3 - <<E\nprint(1)\nE', 'node -e "1"', 'node --input-type module -e "1"', 'node nothere.mjs',
-    'node --check w.mjs',
+    'node --check w.mjs', 'node tmp.mjs', 'python3 tmp.py',
   ]) {
     const dir = setUp();
     assert.deepEqual(bashMade(script, dir), [], `bash makes nothing: ${script}`);
@@ -73,7 +84,7 @@ test('a script that only reads, holds writes as data, or runs no file is quiet, 
 });
 
 test('a script that writes where it is known only when it runs is given as not known', { skip: !hasBoth && 'python3 or node is not installed' }, () => {
-  for (const script of ['python3 dyn.py', 'node dyn.mjs']) {
+  for (const script of ['python3 dyn.py', 'node dyn.mjs', 'python3 nested.py']) {
     const dir = setUp();
     assert.ok(bashMade(script, dir).length > 0, `bash makes a file: ${script}`);
     const r = shellWrites(script, dir);

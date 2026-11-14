@@ -342,6 +342,75 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
   return [...out].filter((p) => p && !p.includes('$') && !p.includes('{'));
 }
 
+// A script's text with each write into a temporary folder taken out (its call name made spaces, so neither
+// CODE_WRITES nor codeTargets sees it), for runScript: a test file writes into the folders mkdtemp makes, and each
+// such write was not known, so the gate refused `node --test test/x.test.mjs` once in 44 of this repository's 75 test
+// files (review of #222). Temporary: an expression holding a call that makes or names one (TEMP_SOURCE: mkdtemp,
+// mkdtempSync, tmpdir, os.tmpdir, tempfile's mkdtemp, mkstemp, gettempdir, TemporaryDirectory, NamedTemporaryFile, or
+// a `mktemp` it runs), or a name the file assigns such an expression once (`const root = mkdtempSync(…)`, `d =
+// tempfile.mkdtemp()`, `with tempfile.TemporaryDirectory() as d`). A write is into one when its target is such a name
+// or expression, or starts from one through join, resolve, path.join, os.path.join, a template or f-string that opens
+// with it, `+`, or Python's `/` (`Path(d) / 'x'`). Every other write stays as it was: one into the repository next to
+// one into a temporary folder is still read. inCode: whether an index of the text is code (lex), so a bracket or a
+// comma inside a string does not end an argument. Its own scan: code.mjs's closeOf walks tokens, not the text.
+const TEMP_SOURCE = /\b(?:mkdtempSync|mkdtemp|mkstemp|gettempdir|TemporaryDirectory|NamedTemporaryFile|tmpdir)\s*\(|\bmktemp\b/u;
+const WRITE_NAMES = /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|createWriteStream|open|File\.write)\s*\(|\.(?:write_text|write_bytes)\s*\(/gu;
+export function withoutTempWrites(code, inCode = () => true) {
+  const temp = new Set();
+  const assignments = [...code.matchAll(/(?:^|[\s;{(,])(?:const |let |var )?([A-Za-z_$][\w$]*)\s*=(?!=)\s*([^;\n]*)/gmu)].filter((m) => inCode(m.index + m[0].indexOf(m[1])));
+  for (const m of assignments) if (TEMP_SOURCE.test(m[2])) temp.add(m[1]);
+  for (const m of code.matchAll(/\b(?:TemporaryDirectory|mkdtemp)\([^)\n]*\)\s+as\s+([A-Za-z_]\w*)/gu)) temp.add(m[1]);
+  const startsFrom = (set) => {
+    const names = [...set].map((n) => n.replace(/\$/gu, '\\$')).join('|');
+    return new RegExp(String.raw`^\s*(?:(?:path\.|os\.path\.)?(?:join|resolve)\(\s*|Path\(\s*|\x60\$\{\s*|f?['"]\{\s*|\(\s*)*(?:${names ? String.raw`(?:${names})\b` : '(?!)'}|[^,]*${TEMP_SOURCE.source})`, 'u');
+  };
+  // One step further: a name assigned an expression that starts from one of those (`const event = join(root, …)`).
+  const first = startsFrom(temp);
+  for (const m of assignments) if (first.test(m[2])) temp.add(m[1]);
+  const fromTemp = startsFrom(temp);
+  // The arguments of the call whose ( is at i, split at its commas at depth 0, in code.
+  const argsOf = (i) => {
+    const got = [];
+    let depth = 0;
+    let from = i + 1;
+    for (let j = i + 1; j < code.length; j++) {
+      if (!inCode(j)) continue;
+      const c = code[j];
+      if ('([{'.includes(c)) depth++;
+      else if (')]}'.includes(c)) { if (depth === 0) { got.push(code.slice(from, j)); return got; } depth--; } else if (c === ',' && depth === 0) { got.push(code.slice(from, j)); from = j + 1; }
+    }
+    got.push(code.slice(from));
+    return got;
+  };
+  // What `.write_text(` is called on: the expression before the dot, back to where it starts.
+  const receiver = (dot) => {
+    let depth = 0;
+    let j = dot - 1;
+    for (; j >= 0; j--) {
+      if (!inCode(j)) continue;
+      const c = code[j];
+      if (')]'.includes(c)) depth++;
+      else if ('(['.includes(c)) { if (depth === 0) break; depth--; } else if (depth === 0 && /[\s=,;:]/u.test(c)) break;
+    }
+    return code.slice(j + 1, dot);
+  };
+  const out = code.split('');
+  const others = [];
+  for (const m of code.matchAll(WRITE_NAMES)) {
+    if (!inCode(m.index)) continue;
+    const open = m.index + m[0].length - 1;
+    const args = m[0].startsWith('.') ? [] : argsOf(open);
+    // open writes only with a mode that writes, its second argument or mode=: open(p) and open(p, 'r') read.
+    if (/^open/u.test(m[0])) {
+      const mode = args.find((a) => /^\s*mode\s*=/u.test(a)) ?? (args[1] !== undefined && !/^\s*\w+\s*=/u.test(args[1]) ? args[1] : undefined);
+      if (!mode || !/['"][^'"]*[wax+]/u.test(mode)) continue;
+    }
+    const target = m[0].startsWith('.') ? receiver(m.index) : args[0];
+    if (fromTemp.test(target)) { for (let k = m.index; k < open; k++) out[k] = ' '; } else others.push(target.trim());
+  }
+  return { code: out.join(''), others };
+}
+
 // Words of one command segment, quotes kept together; good enough for the shapes above, not a shell parser.
 // A command's words without its redirects: `< x`, `2>/dev/null`, `>&2` and the word after a bare operator. The
 // targets of > and >> are taken from the segment itself; the rest are not files this command's arguments name.
@@ -1490,11 +1559,30 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const marks = read?.marks ?? lex(code.split('\n'), /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js').map((r) => r.mark).join('\n');
     if (read) read.marks = marks;
     const inCode = (i) => marks[i] === 'c' || marks[i] === 'p';
-    if (![...code.matchAll(CODE_WRITES_ALL)].some((m) => inCode(m.index))) return;
+    if (fallback) {
+      if (![...code.matchAll(CODE_WRITES_ALL)].some((m) => inCode(m.index))) return;
+      let open = false;
+      const targets = codeTargets(code, { args, exists: here, glob, unresolved: () => { open = true; }, fallback, inCode });
+      targets.forEach(add);
+      if (open && !targets.length) missing({ part, word: part, why, prefix: '' });
+      return;
+    }
+    // A script file: its writes into a temporary folder are left out (withoutTempWrites). Each other write call it
+    // finds by its brackets (CODE_WRITES' open( misses `open(os.path.join(a, b), 'w')`) names its target when that is
+    // a literal or a name assigned one, and is not known otherwise, as is a write codeTargets cannot place.
+    const t = withoutTempWrites(code, inCode);
     let open = false;
-    const targets = codeTargets(code, { args, exists: here, glob, unresolved: () => { open = true; }, fallback, inCode });
-    targets.forEach(add);
-    if (fallback ? open && !targets.length : open || !targets.length) missing({ part, word: part, why, prefix: '' });
+    codeTargets(t.code, { args, glob, unresolved: () => { open = true; }, fallback: false, inCode }).forEach(add);
+    const lit = new RegExp(String.raw`^${LIT}$`, 'u');
+    for (const target of t.others) {
+      const l = target.match(lit);
+      const id = target.match(/^[A-Za-z_$][\w$]*$/u)?.[0];
+      const assigned = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[\s;(,])(?:const |let |var )?${id.replace(/\$/gu, '\\$')}\s*=\s*${LIT}\s*(?:;|$)`, 'gmu'))].map((m) => m[2]) : [];
+      if (l) add(l[2]);
+      else if (assigned.length) assigned.forEach(add);
+      else if (!(ARGV.test(target) && args.length)) open = true;
+    }
+    if (open) missing({ part, word: part, why, prefix: '' });
   };
   // A script file python, node, ruby, perl, deno or bun runs (w: its path as dq gives it; rest: its arguments): its
   // text is read as code from -c or -e is (codeTargets: the targets of its write calls, the script's own arguments
