@@ -239,6 +239,9 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
 // withoutRedirects() drops them with their target, all from this one list: until 2026-11-13 redirects() took a > only
 // after a space or a digit, so `echo hi>file`, `ls>out` and `cat a>b` wrote nothing readfirst could see.
 const OPERATOR = String.raw`&>>|&>|<<<|<<-|<<|<>|<&|<|>>|>\||>&|>`;
+// A here-document with the line it starts on: (head before <<, its quote, its tag, the rest of that line, its body).
+// Its body is no command of the shell around it (shellWrites reads it as code or data; commandWords leaves it out).
+const HERE_DOC = /([^\n]*?)<<-?\s*(['"]?)(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\3(?=\s|$)/gu;
 const REDIRECT = new RegExp(String.raw`^\d*(?:${OPERATOR})`, 'u');
 const OPERATOR_AT = new RegExp(OPERATOR, 'uy');
 function withoutRedirects(ws) {
@@ -973,7 +976,7 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   let kept = ''; // the shell text up to this here-document, earlier bodies taken out
   let last = 0;
   // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`).
-  const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' ')).replace(/([^\n]*?)<<-?\s*(['"]?)(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\3(?=\s|$)/gu, (all, head, quote, tag, rest, body, offset, text) => {
+  const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' ')).replace(HERE_DOC, (all, head, quote, tag, rest, body, offset, text) => {
     kept += `${text.slice(last, offset)}${head}`;
     last = offset + all.length;
     Object.assign(state, stateAt(kept));
@@ -1164,6 +1167,59 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
       const abs = files.filter((f) => !f.includes(HOLE) && !/[*?]/u.test(f)).map((f) => (isAbsolute(f) ? f : from == null ? null : resolve(from, f))).filter(Boolean);
       if (abs.length) out.push({ files: abs, seen: !thrown && !limit, why: thrown ? 'its output was sent elsewhere' : limit ? '--limit cut the list' : null });
     }
+  });
+  return out;
+}
+
+// Each command of some shell text with its words as the shell hands them to it (after NAME=value words and wrappers,
+// `unwrap`, and without redirects and their targets, `withoutRedirects`), for a caller that takes an argument's text
+// from the command line, as `readfirst answer '<json>'` will: [{ words: [{ text, known }], op, pipe }]. `text` is the
+// word with quotes and backslash escapes undone (shellWord: `'it'\''s'` is it's, `"a\"b"` is a"b); `known` is false
+// when any part of it is set only when the command runs (a variable from outside it, a $( ), backticks), and then
+// `text` holds that part between \0s and must not be taken as the argument. `op` is the operator after the command and
+// `pipe` whether its output goes to the next one. The commands are walked with eachCommand and follow, as bashWrites
+// and bashReads walk them, so a variable the command set earlier is known (`J='[]'; readfirst answer "$J"`). A
+// here-document or a pipe into the command is no word of it. A word the shell may expand by what is on disk or in the
+// home folder (`expands`) is not known either: unquoted JSON such as [{"a":1}] is a glob, and {"a":1,"b":2} brace
+// expansion (bash passes `a:1 b:2`).
+// Whether the shell may hand a word over other than as written: an unquoted, unescaped * ? [ or { (a glob, brace
+// expansion), a ~ at its start, <( or >( (process substitution: a /dev/fd path), an unquoted $ (the value is split at
+// spaces and globbed: `V="a b"; x $V` is two words; quoted, "$V" is one), a quote that never closes (bash refuses the
+// command) or a backslash at its end. The review of 2026-11-14 found each given as known.
+function expands(word) {
+  const b = blank(word);
+  // A ~ at the start, and in a word shaped like an assignment, after its = or a : (`a=~/x`, `PATH=~:~`: bash expands
+  // those in arguments too; `--r=~/x` and `a:~` it leaves).
+  if (b.startsWith('~') || (/^[A-Za-z_]\w*=/u.test(b) && /^[A-Za-z_]\w*=~|:~/u.test(b))) return true;
+  for (let i = 0; i < b.length; i++) {
+    if (b[i] === '\\') { if (i + 1 >= b.length) return true; i++; continue; }
+    if ('*?[{$\'"'.includes(b[i]) || (/[<>]/u.test(b[i]) && b[i + 1] === '(')) return true;
+  }
+  return false;
+}
+// A here-document's body is left out (HERE_DOC): its lines are data or another program's code, not commands of this
+// shell (`cat > notes.md <<E` with `readfirst answer '[]'` in it is no answer). `body` is true for a function's
+// definition and the commands of its body: they run when the function is called, not where they are written.
+export function commandWords(command, cwd = process.cwd(), { vars = new Map() } = {}) {
+  const out = [];
+  const state = { base: cwd, why: null, vars: copyVars(vars) };
+  const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' ')).replace(HERE_DOC, (all, head, quote, tag, rest) => `${head} ${rest}`);
+  // A quote that never closes or a backslash at the very end: bash refuses the command or hands over another word, and
+  // `words` drops the character, so it is looked for in the whole text (each word known: false).
+  const b = blank(shell);
+  let refused = false;
+  for (let i = 0; i < b.length && !refused; i++) { if (b[i] === '\\') { refused = i + 1 >= b.length; i++; } else refused = b[i] === "'" || b[i] === '"'; }
+  eachCommand(shell, state, (p, raw, how, op) => {
+    const opened = opening(raw);
+    // <( ) and >( ) hand over a /dev/fd path, and `words` splits them: no word of such a command is known.
+    const substituted = raw.some((w, k) => /^[<>]\(/u.test(w) || (/^[<>]$/u.test(w) && (raw[k + 1] ?? '').startsWith('(')));
+    const words = withoutRedirects(unwrap(opened)).map((w) => {
+      const { unknown, text } = shellWord(w, state.vars);
+      return { text, known: !refused && !substituted && !unknown.length && !expands(w) };
+    });
+    const body = how.body || Boolean(definition(opened));
+    follow(state, opened, how);
+    if (words.length) out.push({ words, op, pipe: how.pipe, body });
   });
   return out;
 }

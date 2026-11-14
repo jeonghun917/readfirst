@@ -1,0 +1,22 @@
+{
+  "missed": [
+    "fi2>&1[[ x ]]\n",
+    "$[1>0]>f3[[ x ]]<<<x",
+    "$[1>0]\n > f2[[ x ]]| cat;",
+    "  > f2[[ x ]]"
+  ],
+  "fake": [
+    "$((cd d);>> f2>f3fithen $[)",
+    ">((1>0))",
+    ">(echo 1); ",
+    ">((1>0))> f2",
+    "1cd d$((echo 1)>f1 $((1>0))(echo 1); ) ",
+    ">(echo 1)"
+  ],
+  "runtime": [
+    { "list": "fake", "command": " > f2if ]$(( 1 ))$((1>0))&&>f1", "why": "the command before && is not found, so >f1 never runs: known only when it runs" },
+    { "list": "fake", "command": "$((1>0))>f3>{ $[(echo 1)cd dcd d]", "why": "the $[ ] fails as arithmetic when it runs, and bash then runs nothing of the command" },
+    { "list": "fake", "command": ">f1|| > f2$((1>0))> f2", "why": ">f1 succeeds, so the command after || never runs: known only when it runs" },
+    { "list": "fake", "command": "((1>0))||((1>0)) > f2>f1echo", "why": "((1>0)) is true, so the command after || never runs: known only when it runs" }
+  ]
+}
