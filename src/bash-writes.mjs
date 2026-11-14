@@ -1188,7 +1188,9 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
 // command) or a backslash at its end. The review of 2026-11-14 found each given as known.
 function expands(word) {
   const b = blank(word);
-  if (b.startsWith('~')) return true;
+  // A ~ at the start, and in a word shaped like an assignment, after its = or a : (`a=~/x`, `PATH=~:~`: bash expands
+  // those in arguments too; `--r=~/x` and `a:~` it leaves).
+  if (b.startsWith('~') || (/^[A-Za-z_]\w*=/u.test(b) && /^[A-Za-z_]\w*=~|:~/u.test(b))) return true;
   for (let i = 0; i < b.length; i++) {
     if (b[i] === '\\') { if (i + 1 >= b.length) return true; i++; continue; }
     if ('*?[{$\'"'.includes(b[i]) || (/[<>]/u.test(b[i]) && b[i + 1] === '(')) return true;

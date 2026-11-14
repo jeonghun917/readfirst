@@ -47,7 +47,10 @@ test('a word the shell may expand by what is on disk is not known: unquoted JSON
   for (const args of ['[{"a":1}]', '{"a":1,"b":2}', '~/a.json', 'a*.json', 'a?.json']) {
     assert.ok(answerArgs(`readfirst answer ${args}`).every((w) => !w.known), args);
   }
-  for (const args of [`'[{"a":1}]'`, `"{\\"a\\":1,\\"b\\":2}"`, String.raw`\~/a.json`, `'a*.json'`, '"${J}"']) {
+  // A ~ after the = of a word shaped like an assignment, or after a : in it, is the home folder too (bash expands both).
+  assert.deepEqual(bashArgs('a=~/x x=y~ a:~'), [`a=${process.env.HOME}/x`, 'x=y~', 'a:~']);
+  for (const args of ['a=~/x', 'PATH=~:~']) assert.ok(answerArgs(`readfirst answer ${args}`).every((w) => !w.known), args);
+  for (const args of [`'[{"a":1}]'`, `"{\\"a\\":1,\\"b\\":2}"`, String.raw`\~/a.json`, `'a*.json'`, '"${J}"', 'x=y~', String.raw`a=\~/x`]) {
     assert.ok(answerArgs(`J=x; readfirst answer ${args}`).every((w) => w.known), args);
   }
 });
