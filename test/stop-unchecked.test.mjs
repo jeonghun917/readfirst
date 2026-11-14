@@ -78,7 +78,8 @@ for (const [what, damage] of [['cut to 38%', (b) => b.subarray(0, Math.floor(b.l
     const said = String(out?.reason ?? out?.systemMessage ?? '');
     assert.doesNotMatch(said, /check\(s\) passed/u);
     assert.equal(out?.decision, 'block');
-    assert.match(said, /the stop could not check this repository \(Error: the index file \(\.git\/index\) does not match the hash at its end: it is cut or damaged/u);
+    // readfirst's own sentence, whole (it was cut at 160 characters, mid-sentence).
+    assert.match(said, /the stop could not check this repository \(Error: the index file \(\.git\/index\) does not match the hash at its end: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted\)/u);
   });
 }
 

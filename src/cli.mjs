@@ -272,7 +272,7 @@ function changedFiles(root, base) {
       if (!existsSync(resolve(root, at))) continue;
       let said = 'it names no commit';
       try { git(root, 'rev-parse', '--verify', `${full}^{commit}`); } catch (e) { said = errorText(e); }
-      throw new Error(`the base branch ${name} is there but git cannot read it (${said}): repair the ref, or pass --base <ref>`);
+      throw Object.assign(new Error(`the base branch ${name} is there but git cannot read it (${said}): repair the ref, or pass --base <ref>`), { ours: true });
     }
     throw new Error('no base branch found: pass --base <ref>');
   }
@@ -803,10 +803,11 @@ const clip = (text) => {
 };
 // An error in one line, short enough for a state key and a report line.
 // git's error: and fatal: lines are kept whole, with the command (the reason a stop gives: cut mid-word, "fatal: index
-// file corru" said nothing; review of readfirst#207). Another error is cut at a word, with "…".
+// file corru" said nothing; review of readfirst#207), and so is a sentence readfirst throws itself (`ours`). Another
+// error is cut at a word, with "…".
 const errorText = (e) => {
   const text = `${e?.name ?? 'Error'}: ${String(e?.message ?? e)}`.replace(/\s+/gu, ' ');
-  if (e?.gitErrors?.length || text.length <= 160) return text;
+  if (e?.gitErrors?.length || e?.ours || text.length <= 160) return text;
   // cut: the first 160 characters of an error that is not git's, to the last whole word, marked with "…"; the rest is in no state.
   return `${text.slice(0, 160).replace(/\s+\S*$/u, '')}…`;
 };
@@ -1219,7 +1220,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
       let committed = false;
       try { git(root, 'cat-file', '-e', `HEAD:${MAP_PATH}`); committed = true; } catch { committed = false; }
       if (!committed) return null;
-      throw new Error(`${MAP_PATH} is in the commit checked out but not in the working tree (a sparse checkout that leaves it out, or a map deleted in the session)`);
+      throw Object.assign(new Error(`${MAP_PATH} is in the commit checked out but not in the working tree (a sparse checkout that leaves it out, or a map deleted in the session)`), { ours: true });
     }
     // git 2.43 reads a cut or damaged index without a word: `git status` exits 0 with files listed as deleted and
     // untracked (review of readfirst#207), so every answer below would rest on it. The index ends with the hash of all
@@ -1232,7 +1233,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
         const size = algo === 'sha256' ? 32 : 20;
         const bytes = readFileSync(at);
         const end = bytes.subarray(Math.max(0, bytes.length - size));
-        if (bytes.length <= size || (end.some((b) => b !== 0) && !createHash(algo).update(bytes.subarray(0, bytes.length - size)).digest().equals(end))) throw new Error(`the index file (${relative(root, at) || at}) does not match the hash at its end: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`);
+        if (bytes.length <= size || (end.some((b) => b !== 0) && !createHash(algo).update(bytes.subarray(0, bytes.length - size)).digest().equals(end))) throw Object.assign(new Error(`the index file (${relative(root, at) || at}) does not match the hash at its end: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`), { ours: true });
       }
     }
     const at = named ? ` in ${basename(root)}` : '';
