@@ -18,6 +18,8 @@ const REGEX_KEYWORD = /(?:^|[^\w$.])(?:return|typeof|case|in|of|do|else|void|del
 let counting = false;
 let steps = 0;
 export function countSteps(on) { const n = steps; counting = on; steps = 0; return n; }
+// One step of a reader built on this one's tokens (src/scopes.mjs), counted with this reader's own.
+export function countStep() { if (counting) steps++; }
 // One pass. lang is 'js' (JavaScript and TypeScript) or 'py'. Per line:
 // - code: the line at the same length, with the insides of strings, template text, comments and regular expressions
 //   as spaces. Names inside a template's `${ }` stay (they are code); the `${` and its `}` are spaces.
@@ -142,12 +144,12 @@ const NEEDS_MORE = new Set(['=>', '=', '(', '[', '{', ',', '+', '-', '*', '/', '
 const NEEDS_MORE_WORD = new Set(['extends', 'implements', 'as', 'satisfies', 'keyof', 'typeof', 'infer', 'in', 'of', 'instanceof', 'is', 'new']);
 const CONTINUES = new Set(['?', ':', '.', '?.', '>', ',', '(', '[', ')', ']', '}', '{', '&&', '||', '??', '+', '-', '*', '/', '%', '|', '&', '^', '=', '=>', '==', '===', '!=', '!==', '<=', '>=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**', '**=', '&&=', '||=', '??=']);
 const CONTINUES_WORD = new Set(['extends', 'implements', 'in', 'instanceof']);
-const needsMore = (t) => (t.k === 'punct' ? NEEDS_MORE.has(t.v) : t.k === 'word' && NEEDS_MORE_WORD.has(t.v));
-const continues = (t) => (t.k === 'punct' ? CONTINUES.has(t.v) : t.k === 'word' ? CONTINUES_WORD.has(t.v) : t.v === '`');
+export const needsMore = (t) => (t.k === 'punct' ? NEEDS_MORE.has(t.v) : t.k === 'word' && NEEDS_MORE_WORD.has(t.v));
+export const continues = (t) => (t.k === 'punct' ? CONTINUES.has(t.v) : t.k === 'word' ? CONTINUES_WORD.has(t.v) : t.v === '`');
 // After one of these a brace opens a type, not a body: `): { a: number } {`, `<T extends { id: string }>`.
 const TYPE_BEFORE = new Set([':', '|', '&', ',', '<', '(', '=', '?', '[', '=>', 'extends', 'keyof', 'typeof', 'in', 'is', 'infer', 'readonly']);
 // After one of these a brace in an expression opens an object (or a type), not a block of statements.
-const OBJECT_BEFORE = new Set(['(', '[', ',', '=', ':', '?', '{', '&', '|', '!', '+', '-', '*', '%', '<', '.', '...', '&&', '||', '??', '==', '===', '!=', '!==', 'return', 'case', 'yield', 'await', 'typeof', 'in', 'of', 'as', 'satisfies', 'default', 'export', 'import', 'from', 'type']);
+export const OBJECT_BEFORE = new Set(['(', '[', ',', '=', ':', '?', '{', '&', '|', '!', '+', '-', '*', '%', '<', '.', '...', '&&', '||', '??', '==', '===', '!=', '!==', 'return', 'case', 'yield', 'await', 'typeof', 'in', 'of', 'as', 'satisfies', 'default', 'export', 'import', 'from', 'type']);
 // Words that begin a statement with a parenthesis after them. A class body is known to be one, so any name is a
 // member there (`delete(id) {`, `catch(e) {`); whether a brace opened an object is read from the token before it, so
 // there these words are taken as what they usually are.
@@ -155,8 +157,8 @@ const STATEMENT_HEADS = new Set(['if', 'for', 'while', 'switch', 'catch', 'retur
 const STATEMENT_WORDS = new Set(['export', 'default', 'declare', 'async', 'abstract']);
 const MEMBER_WORDS = new Set(['public', 'private', 'protected', 'static', 'async', 'override', 'readonly', 'abstract', 'declare', 'accessor', 'get', 'set']);
 
-const isWord = (t, v) => t?.k === 'word' && (v === undefined || t.v === v);
-const isPunct = (t, v) => t?.k === 'punct' && t.v === v;
+export const isWord = (t, v) => t?.k === 'word' && (v === undefined || t.v === v);
+export const isPunct = (t, v) => t?.k === 'punct' && t.v === v;
 // The token that closes the bracket opened at token k, or -1.
 export function closeOf(toks, k) {
   let depth = 0;
@@ -296,6 +298,20 @@ function closesFrom(toks, open) {
     else if (')]}'.includes(toks[j].v)) { at.set(opened.pop(), j); if (!opened.length) break; }
   }
   return at;
+}
+// The match of every bracket of a list of tokens, the same matches closeOf gives: closesFrom from each bracket that
+// no other holds, which is passed whole. A bracket never closed holds the rest, which closesFrom has read already.
+export function bracketMatches(toks) {
+  const closes = new Map();
+  for (let j = 0; j < toks.length; j++) {
+    if (counting) steps++;
+    if (toks[j].k !== 'punct' || !'([{'.includes(toks[j].v)) continue;
+    const at = closesFrom(toks, j);
+    for (const [open, close] of at) closes.set(open, close);
+    if (!at.has(j)) break;
+    j = at.get(j);
+  }
+  return closes;
 }
 // The names a destructuring pattern binds, from its bracket at `open`: { key, name } each. key: the property it is
 // taken from (an object's key; null for an array's element and a `...rest`); an inner pattern's names take the key

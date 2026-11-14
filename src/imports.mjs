@@ -118,6 +118,64 @@ function jsResolver(files, tracked, read) {
   };
 }
 
+// The tracked file a relative specifier ('./x', '../y/') names, or undefined.
+function jsRelative(from, spec, tracked) {
+  // A folder named with a trailing slash ('../', './') is the folder: 'src/' + '/index.js' would be 'src//index.js'.
+  const base = posix.normalize(posix.join(posix.dirname(from), spec)).replace(/\/+$/u, '');
+  // TypeScript sources import "./x.js" for the file "./x.ts".
+  const candidates = [...JS_EXT.map((e) => base + e), base.replace(/\.(m|c)?js$/u, '.$1ts'), base.replace(/\.js$/u, '.tsx')].map((c) => c.replace(/^\.\//u, ''));
+  return candidates.find((c) => tracked.has(c));
+}
+
+// Python modules of the repository: dottedTarget('a.b', dir) is the tracked a/b.py or a/b/__init__.py under dir;
+// absoluteFile looks from each source root (roots).
+function pyResolver(files, tracked) {
+  const dottedTarget = (dotted, baseDir) => {
+    const base = posix.join(baseDir, ...dotted.split('.').filter(Boolean));
+    return [`${base}.py`, `${base}/__init__.py`].find((c) => tracked.has(c));
+  };
+  const roots = pythonRoots(files);
+  // An absolute import: from a source root, else, in a Python 2 file, from the importing file's folder (Python 2's
+  // implicit relative import). In Python 3 code, "import logging" next to a logging.py is still the standard library.
+  const absoluteFile = (dotted, from, py2) => {
+    for (const root of roots) { const to = dottedTarget(dotted, root); if (to) return to; }
+    const here = posix.dirname(from);
+    return py2 && here !== '.' ? dottedTarget(dotted, here) : undefined;
+  };
+  return { dottedTarget, absoluteFile, roots };
+}
+
+// What an import names, from the same resolvers importEdges uses, for src/scopes.mjs: files is the repository's file
+// list and read gives a file's text (only package.json and tsconfig/jsconfig files are asked for). js(from, spec) and
+// py(from, dots, dotted) give the tracked file or undefined; pyTop(name) says whether a Python top-level package or
+// module of that name is the repository's own.
+export function importResolver(files, read) {
+  const tracked = new Set(files);
+  const py = pyResolver(files, tracked);
+  let bare = null;
+  const tops = new Set();
+  for (const f of files) {
+    for (const root of py.roots) {
+      if (root && !f.startsWith(`${root}/`)) continue;
+      const m = (root ? f.slice(root.length + 1) : f).match(/^([A-Za-z_]\w*)(?:\.py$|\/)/u);
+      if (m) tops.add(m[1]);
+    }
+  }
+  return {
+    js: (from, spec) => {
+      if (spec.startsWith('.')) return jsRelative(from, spec, tracked);
+      bare ??= jsResolver(files, tracked, read);
+      return bare(from, spec);
+    },
+    py: (from, dots, dotted) => {
+      if (!dots) return py.absoluteFile(dotted, from, false);
+      const root = posix.join(posix.dirname(from), ...Array(dots - 1).fill('..'));
+      return dotted ? py.dottedTarget(dotted, root) : [posix.join(root, '__init__.py')].find((c) => tracked.has(c));
+    },
+    pyTop: (name) => tops.has(name),
+  };
+}
+
 export function importEdges(files, read) {
   const tracked = new Set(files);
   const out = [];
@@ -127,18 +185,7 @@ export function importEdges(files, read) {
     seen.add(`${from}\0${to}`);
     out.push({ from, to, line });
   };
-  const pyModule = (dotted, baseDir) => {
-    const base = posix.join(baseDir, ...dotted.split('.').filter(Boolean));
-    return [`${base}.py`, `${base}/__init__.py`].find((c) => tracked.has(c));
-  };
-  const pyRoots = pythonRoots(files);
-  // An absolute import: from a source root, else, in a Python 2 file, from the importing file's folder (Python 2's
-  // implicit relative import). In Python 3 code, "import logging" next to a logging.py is still the standard library.
-  const pyAbsolute = (dotted, from, py2) => {
-    for (const root of pyRoots) { const to = pyModule(dotted, root); if (to) return to; }
-    const here = posix.dirname(from);
-    return py2 && here !== '.' ? pyModule(dotted, here) : undefined;
-  };
+  const { dottedTarget: pyModule, absoluteFile: pyAbsolute, roots: pyRoots } = pyResolver(files, tracked);
   let bare = null;
   for (const from of [...files].sort()) {
     if (JS.test(from)) {
@@ -152,11 +199,7 @@ export function importEdges(files, read) {
           add(from, bare(from, spec), lineAt(body, m.index));
           continue;
         }
-        // A folder named with a trailing slash ('../', './') is the folder: 'src/' + '/index.js' would be 'src//index.js'.
-        const base = posix.normalize(posix.join(posix.dirname(from), spec)).replace(/\/+$/u, '');
-        // TypeScript sources import "./x.js" for the file "./x.ts".
-        const candidates = [...JS_EXT.map((e) => base + e), base.replace(/\.(m|c)?js$/u, '.$1ts'), base.replace(/\.js$/u, '.tsx')].map((c) => c.replace(/^\.\//u, ''));
-        add(from, candidates.find((c) => tracked.has(c)), lineAt(body, m.index));
+        add(from, jsRelative(from, spec, tracked), lineAt(body, m.index));
       }
     } else if (PY.test(from)) {
       const body = read(from);
