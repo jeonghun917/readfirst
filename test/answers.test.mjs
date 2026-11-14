@@ -1,0 +1,176 @@
+// The gate asks for answers (plan of 2026-11-13, step 2). Until this, `hook --gate` refused the first call on a file
+// with its notes and let the same call through when it was made again, whether the notes had been read or not (ledger
+// gate-resend-passes-without-reading). Now each rule and risk the change touches, or that readfirst cannot judge
+// against it, is asked, and the call is refused until each has an answer: `readfirst answer '<json>'`, read by the
+// hook from the command line, kept only when its call is let through, holding for the session while the change
+// touches the item by no other names. An unsure answer lets the call through and blocks the stop once.
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { test } from 'node:test';
+import { itemId, main, runHook, runStopHook } from '../src/cli.mjs';
+
+const A = 'export function alpha(x) {\n  const one = 1;\n  return x + one;\n}\n\nexport function beta(y) {\n  const two = 2;\n  return y * two;\n}\n';
+const NAMED = '`alpha` must stay pure: the cache keys on its result';
+const BOTH = '`alpha` and `beta` share one cache';
+const PROSE = 'this module is old and fragile; go slowly';
+const RULE = '`beta` never opens a socket';
+const ID = { named: itemId('risk', 'src', NAMED), both: itemId('risk', 'src', BOTH), prose: itemId('risk', 'src', PROSE), rule: 'rule:no-net' };
+let n = 0;
+function session() {
+  const root = mkdtempSync(join(tmpdir(), 'readfirst-answers-'));
+  const files = {
+    'src/a.js': A,
+    '.readfirst/map.json': JSON.stringify({ format: 'readfirst/map@1', groups: [{ id: 'src', title: 'the code', files: ['src/**'], risks: [{ text: NAMED }, { text: BOTH }, { text: PROSE }] }], rules: [{ id: 'no-net', rule: RULE, files: ['src/**'] }] }),
+  };
+  for (const [p, body] of Object.entries(files)) { mkdirSync(dirname(join(root, p)), { recursive: true }); writeFileSync(join(root, p), body); }
+  const git = (...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8' });
+  git('init', '-q', '-b', 'main');
+  git('add', '.');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'start');
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-answers-state-'));
+  const id = `answers-${process.pid}-${++n}`;
+  let now = 1000;
+  const call = (tool, input) => { const out = runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input }), { stateDir, gate: true, now: (now += 1000) }); return out ? JSON.parse(out).hookSpecificOutput : null; };
+  const stop = () => { const out = runStopHook(JSON.stringify({ session_id: id, cwd: root }), { stateDir, timeout: 30 }); return out ? JSON.parse(out) : null; };
+  return { root, call, stop, bash: (command) => call('Bash', { command }) };
+}
+const inBeta = (root) => ({ file_path: join(root, 'src/a.js'), old_string: '  return y * two;', new_string: '  return y * two * 1;' });
+const inAlpha = (root) => ({ file_path: join(root, 'src/a.js'), old_string: '  return x + one;', new_string: '  return x + one + 0;' });
+// The ids a refusal asks, in its order.
+const asked = (out) => [...String(out?.permissionDecisionReason ?? '').matchAll(/^- `((?:rule|risk):[^`]+)`/gmu)].map((m) => m[1]);
+const decision = (out) => (out ? out.permissionDecision ?? 'context' : 'through');
+// One quoted argument, an apostrophe written as '\'' the way a shell needs it.
+const answer = (list) => `npx readfirst answer '${JSON.stringify(list).replace(/'/gu, "'\\''")}'`;
+const keeps = (...ids) => ids.map((item) => ({ item, answer: 'keeps', because: "it's the same arithmetic, no I/O" }));
+
+test('an edit inside beta asks what it touches and what cannot be judged, not the risk about alpha', () => {
+  const s = session();
+  const out = s.call('Edit', inBeta(s.root));
+  assert.equal(out.permissionDecision, 'deny');
+  assert.deepEqual(asked(out).sort(), [ID.both, ID.prose, ID.rule].sort(), 'touched: the rule and the shared cache; not judged: the prose risk');
+  assert.match(out.permissionDecisionReason, /readfirst notes for src\/a\.js/u, 'the notes come with the first refusal');
+  assert.match(out.permissionDecisionReason, /npx readfirst answer '\[\{"item":"<id>","answer":"keeps\|not-this\|done\|unsure"/u, 'it says how to answer');
+});
+
+test('a resend with no answer is refused, listing the same items', () => {
+  const s = session();
+  const first = s.call('Edit', inBeta(s.root));
+  const again = s.call('Edit', inBeta(s.root));
+  assert.equal(again.permissionDecision, 'deny', 'made again with nothing answered');
+  assert.deepEqual(asked(again), asked(first));
+  assert.doesNotMatch(again.permissionDecisionReason, /readfirst notes for/u, 'the notes are not repeated; each item comes with its text');
+  assert.match(again.permissionDecisionReason, new RegExp(`\`${ID.rule}\` \\(touched by \`beta\`\\): Rule no-net: \`beta\` never opens a socket`, 'u'));
+});
+
+test('a partial answer is refused with the rest listed; a full answer passes', () => {
+  const s = session();
+  s.call('Edit', inBeta(s.root));
+  assert.equal(s.bash(answer(keeps(ID.rule))), null, 'the answer itself goes through');
+  const partial = s.call('Edit', inBeta(s.root));
+  assert.equal(partial.permissionDecision, 'deny');
+  assert.deepEqual(asked(partial).sort(), [ID.both, ID.prose].sort(), 'only the items not answered');
+  assert.equal(s.bash(answer([...keeps(ID.both), { item: ID.prose, answer: 'done', because: 'went slowly: one line' }])), null);
+  assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through', 'every item answered');
+});
+
+test('an answer and a write in one command is refused, and a refused call\'s answers are not kept', () => {
+  const s = session();
+  const ids = asked(s.call('Edit', inBeta(s.root)));
+  // The hook runs before the command: when sed writes, the answer has not run.
+  const both = s.bash(`${answer(keeps(...ids))} && sed -i s/two/pair/ src/a.js`);
+  assert.equal(both.permissionDecision, 'deny');
+  assert.ok(asked(both).length >= ids.length, 'the write is asked its items');
+  assert.deepEqual(asked(s.call('Edit', inBeta(s.root))).sort(), ids.sort(), 'the answers of the refused call were not kept');
+  assert.equal(s.bash(answer(keeps(...ids))), null);
+  assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through');
+});
+
+test('an answer from $(cat f), a variable, a here-document or a pipe is not read, and nothing of it is kept', () => {
+  const s = session();
+  const ids = asked(s.call('Edit', inBeta(s.root)));
+  const json = JSON.stringify(keeps(...ids));
+  const quoted = `'${json.replace(/'/gu, "'\\''")}'`;
+  writeFileSync(join(s.root, 'a.json'), json);
+  for (const command of ['npx readfirst answer "$(cat a.json)"', 'npx readfirst answer "$ANSWERS"', `npx readfirst answer <<'E'\n${json}\nE`, 'cat a.json | npx readfirst answer', `npx readfirst answer ${quoted} | tail -1`]) {
+    const out = s.bash(command);
+    assert.equal(out?.permissionDecision, 'deny', command);
+    assert.match(out.permissionDecisionReason, /nothing of this answer is kept:\n- `readfirst answer` is not read: /u, command);
+  }
+  assert.deepEqual(asked(s.call('Edit', inBeta(s.root))).sort(), ids.sort(), 'still asked');
+  // A value the command itself sets is written out in it.
+  assert.equal(s.bash(`J=${quoted}; npx readfirst answer "$J"`), null);
+  assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through');
+});
+
+test('an answer is checked: ids asked, a kind, a because, and a not-this no wider than what the change touched', () => {
+  const s = session();
+  s.call('Edit', inBeta(s.root));
+  const refused = (list, why) => { const out = s.bash(answer(list)); assert.equal(out?.permissionDecision, 'deny', why); return out.permissionDecisionReason; };
+  assert.match(refused(keeps(ID.named), 'not asked'), new RegExp(`\`${ID.named}\` was not asked in this session`, 'u'));
+  assert.match(refused([{ item: ID.rule, answer: 'fine', because: 'x' }], 'a kind'), /"answer" is "fine"; give one of keeps/u);
+  assert.match(refused([{ item: ID.rule, answer: 'keeps' }], 'a because'), /has no "because"/u);
+  assert.match(refused([{ item: ID.rule, answer: 'not-this', because: 'about alpha', symbols: ['alpha'] }], 'wider'), /not-this names `alpha`, which the change did not touch it by \(it touched `beta`\)/u);
+  assert.match(refused([{ item: ID.rule, answer: 'not-this', because: 'x' }], 'no symbols'), /a not-this answer names in "symbols"/u);
+  assert.match(s.bash("npx readfirst answer '[{'").permissionDecisionReason, /not JSON/u);
+  // One bad answer and nothing of the command is kept, the good ones neither.
+  refused([...keeps(ID.rule), { item: ID.prose, answer: 'keeps' }], 'one bad');
+  assert.ok(asked(s.call('Edit', inBeta(s.root))).includes(ID.rule), 'the good answer beside a bad one was not kept');
+  assert.equal(s.bash(answer([{ item: ID.rule, answer: 'not-this', because: 'only the arithmetic of beta', symbols: ['beta'] }, ...keeps(ID.both, ID.prose)])), null);
+  assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through');
+});
+
+test('an answer holds while the change touches the item by the same names; a new symbol asks again', () => {
+  const s = session();
+  s.call('Edit', inBeta(s.root));
+  s.bash(answer(keeps(ID.both, ID.prose, ID.rule)));
+  assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through');
+  // alpha: the shared-cache risk is now touched by `alpha`, which it was not answered for; the risk about alpha is
+  // touched for the first time; the rule about beta is not touched; the prose risk was answered for the session.
+  const out = s.call('Edit', inAlpha(s.root));
+  assert.equal(out.permissionDecision, 'deny');
+  assert.deepEqual(asked(out).sort(), [ID.both, ID.named].sort());
+  s.bash(answer(keeps(ID.both, ID.named)));
+  assert.equal(decision(s.call('Edit', inAlpha(s.root))), 'through');
+  assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through', 'beta still answered');
+});
+
+test('unsure lets the call through and blocks the stop once; past half of the items asked it is no answer', () => {
+  const s = session();
+  const ids = asked(s.call('Edit', inBeta(s.root)));
+  assert.equal(ids.length, 3);
+  const unsure = (...list) => list.map((item) => ({ item, answer: 'unsure', because: 'cannot tell what the cache keys on' }));
+  assert.equal(s.bash(answer([...unsure(ID.rule, ID.both), ...keeps(ID.prose)])), null, 'two of three unsure: taken');
+  assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through', 'an unsure answer lets the edit through');
+  const stopped = s.stop();
+  assert.equal(stopped?.decision, 'block');
+  assert.match(stopped.reason, /2 answer\(s\) of this session are still unsure:\n- `risk:src:[0-9a-f]{8}`: cannot tell what the cache keys on\n- `rule:no-net`: cannot tell/u);
+  assert.notEqual(s.stop()?.decision, 'block', 'once, so a stop cannot loop');
+  // Two unsure of three asked is more than half: an answer with another unsure is refused.
+  const more = s.bash(answer(unsure(ID.prose)));
+  assert.equal(more.permissionDecision, 'deny');
+  assert.match(more.permissionDecisionReason, /2 answers in this session were unsure, more than half of the 3 items asked/u);
+  // Answered again with another kind, they are no longer open.
+  assert.equal(s.bash(answer(keeps(ID.rule, ID.both))), null);
+  assert.equal(s.stop()?.decision, undefined, 'nothing unsure left');
+});
+
+test('without --gate nothing is asked and an answer is not read', () => {
+  const s = session();
+  const plain = (tool, input) => runHook(JSON.stringify({ session_id: `answers-plain-${process.pid}`, cwd: s.root, tool_name: tool, tool_input: input }), { stateDir: mkdtempSync(join(tmpdir(), 'readfirst-answers-plain-')) });
+  assert.equal(JSON.parse(plain('Edit', inBeta(s.root))).hookSpecificOutput.permissionDecision, undefined);
+  assert.equal(plain('Bash', { command: "npx readfirst answer '[{'" }), null);
+});
+
+test('readfirst answer prints what it was given and what is wrong, and writes nothing', () => {
+  let out = '';
+  const io = { out: (t) => { out += t; }, err: () => {} };
+  assert.equal(main(['answer', JSON.stringify([{ item: ID.rule, answer: 'not-this', because: "it's only beta's arithmetic", symbols: ['beta'] }])], io), 0);
+  assert.match(out, /readfirst answer: 1 answer\(s\):\n- rule:no-net: not-this \(beta\), because it's only beta's arithmetic\n/u);
+  out = '';
+  assert.equal(main(['answer', '[{"item":"rule:no-net","answer":"maybe"}]'], io), 1);
+  assert.match(out, /not kept, nothing of it:\n- `rule:no-net`: "answer" is "maybe"; give one of keeps .*\n- `rule:no-net` has no "because"/u);
+  assert.throws(() => main(['answer'], io), /one quoted JSON argument/u);
+});

@@ -34,6 +34,7 @@ import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateM
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
 import { bashReads, shellWrites } from './bash-writes.mjs';
+import { ANSWER_HOW, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, openUnsure, parseAnswer } from './answers.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
 import { definitions, find, findText, meets, words } from './find.mjs';
@@ -67,6 +68,8 @@ const HELP = `readfirst — what to read and check before changing a file
   readfirst scan                 look for known bug shapes: results thrown away, test assertions nobody awaits (no map needed)
   readfirst find <words>...      before writing something new: what in the code may already do it
   readfirst read <file>...       read list for files you are about to change
+  readfirst answer '<json>'      answer the items hook --gate asked: [{"item","answer","because","symbols"}], answer one of
+                                 keeps, not-this, done, unsure (the hook keeps them; this command writes nothing)
   readfirst diff [--base <ref>] [--lang <code>]  read list for files changed since <ref>, each risk and rule judged against
                                  the change, under a verdict (to do, blocked, not checked) in en or ko
   readfirst verify [--base <ref>]  run the checks for the files changed since <ref> (--dry-run lists them;
@@ -362,12 +365,28 @@ export const itemId = (kind, key, text) => (kind === 'rule' ? `rule:${key}` : `r
 // judge's `trigger` on its row: touched (by the names or lines given), not touched, or not judged (it names nothing
 // readfirst can find; there is no change to judge it against: a file a Bash command writes; or noteStates gave the
 // reason in `unjudged`: judging failed, or the edit was too large to place).
+const itemState = (t) => (!t ? 'not judged: no edit to judge it against' : t.unjudged ? `not judged: ${t.unjudged}` : !t.triggered ? `not touched: ${t.why}` : t.about?.length ? `touched by ${t.by.join(', ')}` : 'not judged: it names nothing readfirst can find in the code');
+// The rules and risks of a judged read list as the gate asks them: { id, need, by, state, text }. `need`: touched or
+// not judged (only those are answered); `by`: the names it is touched by, none when it is not judged.
+export function noteItems(list) {
+  const out = new Map();
+  const rows = [...(list.rules ?? []).map((r) => [itemId('rule', r.id, r.rule), r, `Rule ${r.id}: ${r.rule}`]), ...(list.risks ?? []).map((r) => [itemId('risk', r.group, r.text), r, `Risk: ${r.text}`])];
+  for (const [id, row, text] of rows) {
+    const t = row.trigger;
+    const need = !(t && !t.unjudged && !t.triggered);
+    // judge gives a name in backticks (`alpha`), a line as path:line and a file as its path; the answer names them bare.
+    const by = t && !t.unjudged && t.triggered && t.about?.length ? t.by.map((s) => String(s).replace(/^`(.*)`$/su, '$1')) : [];
+    const was = out.get(id);
+    if (was) { was.need ||= need; was.by = [...new Set([...was.by, ...by])].sort(); continue; }
+    out.set(id, { id, need, by: [...new Set(by)].sort(), state: itemState(t), text });
+  }
+  return [...out.values()];
+}
 export function brief(list, { ids = false } = {}) {
   const lines = [];
   const all = (list.targets ?? []).length;
   const forSome = (row) => (all > 1 && row.for && row.for.length < all ? ` [${row.for.join(', ')}]` : '');
-  const state = (t) => (!t ? 'not judged: no edit to judge it against' : t.unjudged ? `not judged: ${t.unjudged}` : !t.triggered ? `not touched: ${t.why}` : t.about?.length ? `touched by ${t.by.join(', ')}` : 'not judged: it names nothing readfirst can find in the code');
-  const tag = (id, row) => (ids ? ` [${id} · ${state(row.trigger)}]` : '');
+  const tag = (id, row) => (ids ? ` [${id} · ${itemState(row.trigger)}]` : '');
   for (const d of list.deprecated ?? []) lines.push(`Being replaced: group ${d.group}${d.use ? `; use ${d.use} instead` : ''} (${d.why}). Do not add to it.${forSome(d)}`);
   for (const t of list.together ?? []) lines.push(`Change together: when this file changes, also change ${t.also.join(' or ')} (${t.why}). verify fails otherwise.${forSome(t)}`);
   for (const c of list.checks) lines.push(`Check to run after the change: ${c.run}${c.why ? ` (${c.why})` : ''}${forSome(c)}`);
@@ -567,6 +586,16 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
         }
       }
     }
+    // With --gate, `readfirst answer '<json>'` answers what the gate asked (src/answers.mjs). Kept as the reads are:
+    // only when this call is let through, from the next call on, so `readfirst answer ... && sed -i ... f` is refused for
+    // f's items. An answer readfirst cannot read or check is refused with what is wrong, and nothing of it is kept.
+    const given = gate && tool === 'Bash' ? readSafely(() => answersIn(command, cwd, seen)) : null;
+    if (given?.problems.length) {
+      const saved = save();
+      const reason = `readfirst: nothing of this answer is kept:\n- ${given.problems.join('\n- ')}\nGive it again as one quoted argument: ${ANSWER_HOW}`;
+      return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...(saved ? { permissionDecision: 'deny', permissionDecisionReason: reason } : { additionalContext: reason }) } });
+    }
+    for (const k of Object.keys(given?.keys ?? {})) reads[k] = now;
     // Writes whose place the command cannot tell before it runs (a variable from outside it, a $( ), a loop variable;
     // shellWrites): named, never dropped (until 2026-11-13 they were left out without a word), unless they are known to
     // be outside every repository (couldLandIn). With --gate the call is refused once with them
@@ -606,7 +635,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     }
     const deadline = Date.now() + budget;
     const edited = new Map(targets.flatMap((abs) => { const e = editTexts(tool, event.tool_input, abs); return e ? [[abs, e]] : []; }));
-    const { notes, late } = notesFor(targets, seen, now, { deadline, stateDir, edited });
+    const { notes, late, items } = notesFor(targets, seen, now, { deadline, stateDir, edited, gate });
+    // The gate asks each item the change touches, or that readfirst cannot judge against it, until it has an answer that
+    // holds (answered: the item touched by no other names than when it was answered). Until the answers, the same call
+    // made again was let through whether the notes had been read or not. An item not touched is one line, not asked.
+    const answers = gate ? givenAnswers(seen) : [];
+    const asks = gate ? items.filter((i) => i.need && !answered(answers, i.id, i.by)) : [];
+    for (const i of asks) seen[`ask:${JSON.stringify([i.id, i.by])}`] = now;
+    const askLine = asks.length ? `readfirst: answer each of these before this change, as one quoted JSON argument, then make the same call again: ${ANSWER_HOW} (answer: ${ANSWER_KINDS_LINE}). An answer holds for this session while the change touches the item by the same names.\n- ${asks.map((i) => `\`${i.id}\` (${i.state})${i.shown ? '' : `: ${i.text}`}`).join('\n- ')}` : null;
     const waiting = pendingNotes(targets, seen, now);
     const known = new Map();
     const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => ({ abs, root: rootOf(abs, known), names: newCode(tool, event.tool_input, abs) }))
@@ -619,17 +655,18 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const askFind = fresh.length > 0 && !askedAt;
     const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
-    if (gate && (notes.length || askFind || askUnknown)) seen[`denied:${sig}`] = now;
-    if (!(gate && (notes.length || late.length || askFind || askUnknown))) Object.assign(seen, reads);
+    if (gate && (asks.length || askFind || askUnknown)) seen[`denied:${sig}`] = now;
+    if (!(gate && (asks.length || late.length || askFind || askUnknown))) Object.assign(seen, reads);
     const saved = save();
     const lateLine = late.length ? `readfirst: no time left in this call (the hook has ${Math.round(budget / 1000)} s) to look up ${late.join(', ')}. ${gate ? 'Make the same call again and readfirst goes on with them;' : 'The next call that writes them gets their notes, and'} the Stop hook checks them all the same; \`npx readfirst read ${late.join(' ')}\` gives them now.` : null;
-    if (!notes.length && !waiting.length && !lateLine && !findLine && !unknownLine) return null;
-    // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies only for the notes and,
-    // once per call, for new code written before `readfirst find` and for writes it cannot place.
-    const text = [...notes, ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...(unknownLine ? [unknownLine] : []), ...waiting].join('\n\n');
+    if (!notes.length && !waiting.length && !lateLine && !findLine && !unknownLine && !askLine) return null;
+    // Waiting map edits are a word to pass on, never a reason to refuse an edit: --gate denies for items not answered
+    // and, once per call, for files it had no time for, new code written before `readfirst find` and writes it cannot
+    // place. Notes with nothing to answer (every item not touched) go through as context.
+    const text = [...notes, ...(askLine ? [askLine] : []), ...(lateLine ? [lateLine] : []), ...(findLine ? [findLine] : []), ...(unknownLine ? [unknownLine] : []), ...waiting].join('\n\n');
     // A gate whose state cannot be saved would refuse the same call forever (a full or read-only temp folder): it passes
     // the notes as context instead.
-    if (gate && (notes.length || lateLine || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
+    if (gate && (asks.length || lateLine || askFind || askUnknown) && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst: read this before changing these files, then make the same call again.\n\n${text}` } });
     return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: text } });
   } catch (e) {
     // Never fails closed (the call goes through), but what failed is kept (failed:<tool>:<error>) for the Stop hook and
@@ -784,10 +821,14 @@ function hookContext(root, stateDir) {
 // for is marked `touched:` (the Stop hook checks it) and returned in `late`.
 // edited: absolute path -> { before, after } for the files an Edit, MultiEdit or Write is about to change (editTexts):
 // their notes are judged against that change (judge in src/trigger.mjs) and each says whether it is touched.
-function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = new Map() } = {}) {
+// gate: the files already shown are judged too (their notes are not shown again) and `items` gives each rule and risk
+// of every file with the repository it is in and whether its notes were shown in this call (noteItems): the gate asks
+// what a change touches every time, not once per file.
+function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = new Map(), gate = false } = {}) {
   const known = new Map();
   const branches = new Map();
   const byRoot = new Map();
+  const again = new Map();
   for (const abs of targets) {
     const root = rootOf(abs, known);
     if (!root) continue;
@@ -802,13 +843,22 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = 
     // Stop hook check it (without it, the read let the edit through and the stop never checked the file).
     // A bare path with no `shown:` mark at all was written by an older readfirst, which kept no branch: it still counts.
     const legacy = fresh(key) && !Object.keys(seen).some((k) => k.startsWith('shown:') && k.endsWith(`:${key}`));
-    if (legacy || fresh(`shown:${branch}:${key}`) || fresh(`read:${branch}:${key}`)) { if (!seen[key]) seen[`touched:${key}`] ??= now; continue; }
+    if (legacy || fresh(`shown:${branch}:${key}`) || fresh(`read:${branch}:${key}`)) {
+      if (!seen[key]) seen[`touched:${key}`] ??= now;
+      if (!gate) continue;
+      if (!again.has(root)) again.set(root, []);
+      if (!again.get(root).includes(path)) again.get(root).push(path);
+      if (!byRoot.has(root)) byRoot.set(root, []);
+      continue;
+    }
     if (!byRoot.has(root)) byRoot.set(root, []);
     if (!byRoot.get(root).includes(path)) byRoot.get(root).push(path);
   }
   const notes = [];
   const late = [];
-  for (const [root, paths] of byRoot) {
+  const items = [];
+  for (const [root, shownNow] of byRoot) {
+    const paths = [...shownNow, ...(again.get(root) ?? []).filter((p) => !shownNow.includes(p))];
     const later = (rest) => { for (const p of rest) { seen[`touched:${join(root, p)}`] = now; late.push(p); } };
     if (Date.now() > deadline) { later(paths); continue; }
     const ctx = hookContext(root, stateDir);
@@ -835,13 +885,16 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = 
     for (const p of unplaced) changes.delete(p);
     const after = (p) => { const e = edited.get(join(root, p)); return e ? e.after : readText(root)(p); };
     noteStates(list, () => { if (changes.size) judge(list, { changes, read: after, files: all, imports: map ? ctx.edges() : [] }); }, unplaced);
+    const shown = done.some((p) => shownNow.includes(p));
+    if (gate) items.push(...noteItems(list).map((i) => ({ ...i, root, shown })));
+    if (!shown) continue;
     const lines = brief(list, { ids: true });
     if (ctx.broken.length) lines.unshift(brokenMapLine(ctx.broken));
     for (const p of done) { seen[join(root, p)] = now; seen[`shown:${branchOf(root, branches)}:${join(root, p)}`] = now; }
     if (!lines.length) continue;
     notes.push(`readfirst notes for ${done.join(', ')}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${lines.join('\n- ')}`);
   }
-  return { notes, late };
+  return { notes, late, items };
 }
 
 // The check commands of the map as the base branch has it. The Stop hook runs a command without anyone asking, so it
@@ -896,8 +949,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -926,7 +979,15 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     if (r?.block) blocks.push(r.block);
     if (r?.tally) { tally.asked += r.tally.asked; tally.acted += r.tally.acted; tally.notActed.push(...r.tally.notActed); }
   }
-  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length, misread: Object.keys(seen).filter((k) => k.startsWith('misread:')).length, failed: Object.keys(seen).filter((k) => k.startsWith('failed:')).map((k) => k.slice('failed:'.length)) };
+  // Answers left unsure with no later answer of another kind block the stop once for that set of items (plan 2.6:
+  // `unsure:<hash of their ids>`), named with what each said.
+  const unsure = openUnsure(seen);
+  const unsureKey = unsure.length ? `unsure:${createHash('sha1').update(unsure.map((a) => a.item).join('\0')).digest('hex').slice(0, 12)}` : null;
+  if (unsureKey && !said(unsureKey)) {
+    say(unsureKey);
+    blocks.push(`readfirst: ${unsure.length} answer(s) of this session are still unsure:\n- ${unsure.map((a) => `\`${a.item}\`: ${a.because}`).join('\n- ')}\nAnswer each again with keeps, not-this or done (${ANSWER_HOW}) once you know, or say why it stays unsure.`);
+  }
+  const record = { session: String(event.session_id ?? 'none'), at: Date.now(), shown: Object.keys(seen).filter((k) => !/^[a-z]+:/u.test(k)).length, ...tally, resent: Object.keys(seen).filter((k) => k.startsWith('resent:')).length, noFind: Object.keys(seen).filter((k) => k.startsWith('nofindwrite:')).length, misread: Object.keys(seen).filter((k) => k.startsWith('misread:')).length, failed: Object.keys(seen).filter((k) => k.startsWith('failed:')).map((k) => k.slice('failed:'.length)), unsure: unsure.length };
   const line = actedLine(record);
   if (line) { try { appendFileSync(join(stateDir, ACTED_LOG), `${JSON.stringify(record)}\n`); } catch { /* the line is still said */ } }
   if (blocks.length) return JSON.stringify({ decision: 'block', reason: [...blocks, ...(line ? [line] : [])].join('\n\n') });
@@ -936,15 +997,16 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
 
 // The Stop hook's last line (step 4): what the map asked for the files edited, what was done, what was not, and how
 // often a refused edit was made again at once. Every item not done is named.
-export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0, noFind = 0, misread = 0, failed = [] }) {
-  if (!asked && !resent && !noFind && !misread && !failed.length) return null; // notes shown and nothing asked: the stop stays quiet, as before
+export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], resent = 0, noFind = 0, misread = 0, failed = [], unsure = 0 }) {
+  if (!asked && !resent && !noFind && !misread && !failed.length && !unsure) return null; // notes shown and nothing asked: the stop stays quiet, as before
+  const unsureLine = unsure ? `; ${unsure} answer(s) left unsure` : '';
   const not = notActed.length ? `, not done: ${notActed.join('; ')}` : '';
   const again = resent ? `; ${resent} refused edit(s) made again at once with nothing in between, so their notes were likely not read` : '';
   const nofind = noFind ? `; ${noFind} edit(s) added new functions without \`readfirst find\` first` : '';
   const misreadLine = misread ? `; readfirst hit an error reading ${misread} command(s), each counted once per folder it ran in, refused once as writes it could not place` : '';
   // One failed: key per tool and error, so the same error on many calls is one.
   const failedLine = failed.length ? `; the hook failed and let calls through unchecked, with ${failed.length} different error(s) (${failed.join('; ')})` : '';
-  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}${misreadLine}${failedLine}.`;
+  return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}${misreadLine}${failedLine}${unsureLine}.`;
 }
 
 // `readfirst hook --report`: the Stop hook's lines of every session kept in ACTED_LOG (the last one of each session),
@@ -969,6 +1031,7 @@ export function hookReport({ stateDir = tmpdir() } = {}) {
     `- edits that added new functions without \`readfirst find\` first: ${sum('noFind')}, in ${rows.filter((r) => r.noFind > 0).length} session(s)`,
     `- commands readfirst hit an error reading, each counted once per folder it ran in (refused once as writes it could not place): ${sum('misread')}, in ${rows.filter((r) => r.misread > 0).length} session(s)`,
     `- errors the hook let calls through unchecked on: ${failures.size} different, in ${rows.filter((r) => Array.isArray(r.failed) && r.failed.length).length} session(s)`,
+    `- answers left unsure at the stop: ${sum('unsure')}, in ${rows.filter((r) => r.unsure > 0).length} session(s)`,
     ...(failures.size ? ['Hook errors, in most sessions first:', ...[...failures].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
     ...(counts.size ? ['Not done, most often first:', ...[...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([x, n]) => `- ${x} (${n})`)] : []),
   ].join('\n');
@@ -1195,6 +1258,16 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       return { code, out, err };
     };
     serveMcp({ handle: mcpHandler({ run, version }), input: process.stdin, output: process.stdout });
+    return 0;
+  }
+  // `readfirst answer '<json>'`: what the gate asked, answered. The PreToolUse hook reads the answer from the command
+  // line before it runs and keeps it (src/answers.mjs); the command itself only says what it was given and what is
+  // wrong with it, and writes nothing. It needs no repository.
+  if (cmd === 'answer') {
+    if (rest.length !== 1) throw new Error(`give the answers as one quoted JSON argument: ${ANSWER_HOW}`);
+    const { answers, problems } = parseAnswer(rest[0]);
+    if (problems.length) { io.out(`readfirst answer: not kept, nothing of it:\n- ${problems.join('\n- ')}\n`); return 1; }
+    io.out(`readfirst answer: ${answers.length} answer(s):\n${answers.map((a) => `- ${a.item}: ${a.answer}${a.symbols.length ? ` (${a.symbols.join(', ')})` : ''}, because ${a.because}`).join('\n')}\nUnder \`readfirst hook --gate\` the hook checks them against what it asked and keeps them when this command is let through; this command writes nothing.\n`);
     return 0;
   }
   const root = args.root ?? git(process.cwd(), 'rev-parse', '--show-toplevel').trim();

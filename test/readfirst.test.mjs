@@ -337,12 +337,18 @@ test('hook: the read list goes to Claude Code as context once per file per sessi
   assert.match(JSON.parse(bash(`sed -i 's/a/b/' src/billing/charge.ts`, 'b1')).hookSpecificOutput.additionalContext, /Risk \[[^\]]+\]: amounts are in cents/u);
   assert.match(JSON.parse(bash(`cd ${root} && echo x >> src/billing/charge.ts`, 'b2')).hookSpecificOutput.additionalContext, /Rule no-double-charge/u);
   assert.equal(bash('grep -n charge src/billing/charge.ts > /tmp/out.txt', 'b3'), null, 'reading into a scratch file is not a write to the repository');
-  // --gate: the first call that touches an unread file is refused with the notes; the same call then goes through.
+  // --gate: the first call that touches an unread file is refused with the notes; made again it is refused until each
+  // rule and risk it asks has an answer (test/answers.test.mjs), and then it goes through.
   const gated = (session) => runHook(ev({ session_id: session }), { stateDir, gate: true });
   const denied = JSON.parse(gated('g1')).hookSpecificOutput;
   assert.equal(denied.permissionDecision, 'deny');
   assert.match(denied.permissionDecisionReason, /Risk \[[^\]]+\]: amounts are in cents/u);
-  assert.equal(gated('g1'), null, 'the second try goes through');
+  assert.equal(JSON.parse(gated('g1')).hookSpecificOutput.permissionDecision, 'deny', 'the second try, nothing answered: refused again');
+  const ids = [...denied.permissionDecisionReason.matchAll(/^- `((?:rule|risk):[^`]+)`/gmu)].map((m) => m[1]);
+  assert.deepEqual(ids.map((i) => i.split(':')[0]), ['rule', 'risk']);
+  const answers = JSON.stringify(ids.map((item) => ({ item, answer: 'keeps', because: 'the edit charges once, in cents' })));
+  assert.equal(runHook(ev({ session_id: 'g1', tool_name: 'Bash', tool_input: { command: `npx readfirst answer '${answers}'` } }), { stateDir, gate: true }), null);
+  assert.equal(gated('g1'), null, 'answered: the try after it goes through');
 
   // install keeps what is there and adds the hook once
   mkdirSync(join(root, '.claude'), { recursive: true });
