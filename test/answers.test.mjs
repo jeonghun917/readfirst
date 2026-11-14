@@ -88,21 +88,24 @@ test('an answer and a write in one command is refused, and a refused call\'s ans
   assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through');
 });
 
-test('an answer from $(cat f), a variable, a here-document or a pipe is not read, and nothing of it is kept', () => {
+test('an answer from $(cat f), a variable (even one the command sets), a here-document or a pipe is not read, and nothing of it is kept', () => {
   const s = session();
   const ids = asked(s.call('Edit', inBeta(s.root)));
   const json = JSON.stringify(keeps(...ids));
   const quoted = `'${json.replace(/'/gu, "'\\''")}'`;
   writeFileSync(join(s.root, 'a.json'), json);
-  for (const command of ['npx readfirst answer "$(cat a.json)"', 'npx readfirst answer "$ANSWERS"', `npx readfirst answer <<'E'\n${json}\nE`, 'cat a.json | npx readfirst answer', `npx readfirst answer ${quoted} | tail -1`]) {
+  // A variable is no answer even when the command sets it: the answer is one literal argument.
+  for (const command of ['npx readfirst answer "$(cat a.json)"', 'npx readfirst answer "$ANSWERS"', `J=${quoted}; npx readfirst answer "$J"`, `J=${quoted}; npx readfirst answer $J`, `npx readfirst answer "\`cat a.json\`"`, `npx readfirst answer <<'E'\n${json}\nE`, 'cat a.json | npx readfirst answer', `npx readfirst answer ${quoted} | tail -1`]) {
     const out = s.bash(command);
     assert.equal(out?.permissionDecision, 'deny', command);
     assert.match(out.permissionDecisionReason, /nothing of this answer is kept:\n- `readfirst answer` is not read: /u, command);
   }
+  assert.match(s.bash(`J=${quoted}; npx readfirst answer "$J"`).permissionDecisionReason, /an answer is one literal argument/u);
   assert.deepEqual(asked(s.call('Edit', inBeta(s.root))).sort(), ids.sort(), 'still asked');
-  // A value the command itself sets is written out in it.
-  assert.equal(s.bash(`J=${quoted}; npx readfirst answer "$J"`), null);
+  // Written out, in single quotes or double quotes with nothing to expand, it is read.
+  assert.equal(s.bash(`npx readfirst answer ${quoted}`), null);
   assert.equal(decision(s.call('Edit', inBeta(s.root))), 'through');
+  assert.equal(s.bash(`npx readfirst answer "${json.replace(/"/gu, '\\"')}"`), null, 'double quotes with escaped quotes inside');
 });
 
 test('an answer is checked: ids asked, a kind, a because, and a not-this no wider than what the change touched', () => {
@@ -155,6 +158,16 @@ test('unsure lets the call through and blocks the stop once; past half of the it
   // Answered again with another kind, they are no longer open.
   assert.equal(s.bash(answer(keeps(ID.rule, ID.both))), null);
   assert.equal(s.stop()?.decision, undefined, 'nothing unsure left');
+});
+
+test('a map that cannot be read: nothing is asked, and the notes say the map could not be read', () => {
+  const s = session();
+  writeFileSync(join(s.root, '.readfirst/map.json'), '{ "format": "readfirst/map@1", "groups": [');
+  const out = s.call('Edit', inBeta(s.root));
+  assert.equal(decision(out), 'context', 'nothing to answer: through, with the notes');
+  assert.match(out.additionalContext, /\.readfirst\/map\.json is broken/u);
+  assert.match(out.additionalContext, /\.readfirst\/map\.json could not be read, so these notes hold none of its rules and risks and the gate asks none of them/u);
+  assert.deepEqual(asked(out), []);
 });
 
 test('without --gate nothing is asked and an answer is not read', () => {

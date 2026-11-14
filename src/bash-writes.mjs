@@ -1317,7 +1317,8 @@ export function commandWords(command, cwd = process.cwd(), { vars = new Map() } 
     const substituted = raw.some((w, k) => /^[<>]\(/u.test(w) || (/^[<>]$/u.test(w) && (raw[k + 1] ?? '').startsWith('(')));
     const words = withoutRedirects(unwrap(opened)).map((w) => {
       const { unknown, text } = shellWord(w, state.vars);
-      return { text, known: !refused && !substituted && !unknown.length && !expands(w) };
+      // raw: the word as written, before quotes and variables are read (`"$J"`, `'[...]'`).
+      return { text, known: !refused && !substituted && !unknown.length && !expands(w), raw: w };
     });
     const body = how.body || Boolean(definition(opened));
     follow(state, opened, how);

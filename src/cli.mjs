@@ -889,6 +889,9 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = 
     if (gate) items.push(...noteItems(list).map((i) => ({ ...i, root, shown })));
     if (!shown) continue;
     const lines = brief(list, { ids: true });
+    // A map that cannot be read at all gives no rules or risks: said, so notes with nothing asked are not taken for a
+    // map with nothing to say (the gate then asks nothing and lets the call through with these notes).
+    if (ctx.broken.length && !map) lines.unshift(`${MAP_PATH} could not be read, so these notes hold none of its rules and risks${gate ? ' and the gate asks none of them' : ''}: fix the map to see them.`);
     if (ctx.broken.length) lines.unshift(brokenMapLine(ctx.broken));
     for (const p of done) { seen[join(root, p)] = now; seen[`shown:${branchOf(root, branches)}:${join(root, p)}`] = now; }
     if (!lines.length) continue;

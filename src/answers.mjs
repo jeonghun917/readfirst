@@ -4,8 +4,8 @@
 // went through when made again, whether its notes were read or not (ledger gate-resend-passes-without-reading).
 //
 // The answer is a literal argument of one command, read from the command line as the shell hands it over
-// (commandWords in src/bash-writes.mjs): `$(cat a.json)`, a variable from outside the command, a here-document or a
-// pipe is no answer, for the reason a hidden read is no read. The hook keeps an answer only when its call is let
+// (commandWords in src/bash-writes.mjs): `$(cat a.json)`, a variable (even one the command sets), a here-document or
+// a pipe is no answer, for the reason a hidden read is no read. The hook keeps an answer only when its call is let
 // through, and it counts from the next call on.
 //
 // The hook state keeps, per session (src/cli.mjs, appended as [key, time] lines):
@@ -43,11 +43,24 @@ export function parseAnswer(text) {
   return { answers: problems.length ? [] : answers, problems };
 }
 
+// Whether a word as written gives its text with nothing taken from elsewhere: no $ (a variable, $( ), $(( ))) and no
+// backtick outside single quotes. A variable the command sets itself is no answer either (the lead's call on readfirst#200,
+// after plan 2.3): the answer is the one quoted argument, written out.
+const literal = (raw) => {
+  for (let i = 0, single = false; i < raw.length; i++) {
+    const c = raw[i];
+    if (single) { if (c === "'") single = false; continue; }
+    if (c === "'") single = true;
+    else if (c === '\\') i++;
+    else if (c === '$' || c === '`') return false;
+  }
+  return true;
+};
 // The word that names readfirst: readfirst, readfirst@<version>, or a path to it (bin/readfirst.mjs, …/bin/readfirst).
 const READFIRST = /^(?:\S*\/)?readfirst(?:@[\w.-]+)?(?:\.mjs)?$/u;
 // Each `readfirst answer` a Bash command runs, as the shell hands its words over: [{ text }] for one read, [{ why }]
 // for one that gives no readable answer. A command inside a function body is not run where it is written and is left
-// out. The words are read without the hook's environment, so only a value the command itself sets is known.
+// out. A word that takes anything from a variable, even one the command sets, is no answer (`literal`).
 export function answerRuns(command, cwd) {
   const out = [];
   if (!/\banswer\b/u.test(String(command ?? ''))) return out;
@@ -60,7 +73,7 @@ export function answerRuns(command, cwd) {
     const arg = w[i + 2];
     if (c.pipe) out.push({ why: 'it is in a pipeline: give the JSON as its one quoted argument, not on standard input' });
     else if (!arg) out.push({ why: 'it has no argument (a here-document or standard input is not read): give the JSON as its one quoted argument' });
-    else if (!arg.known) out.push({ why: 'its argument is not written out in the command ($( ), a file, or a variable the command does not set): give the JSON itself, in single quotes' });
+    else if (!arg.known || !literal(arg.raw ?? '')) out.push({ why: 'its argument is not written out in the command ($( ), a file or a variable): an answer is one literal argument, the JSON itself in single quotes' });
     else if (w.length > i + 3) out.push({ why: `it has ${w.length - i - 2} arguments: give the whole JSON as one quoted argument` });
     else out.push({ text: arg.text });
   }
