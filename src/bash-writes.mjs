@@ -1609,22 +1609,33 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // a literal or a name assigned one, and is not known otherwise, as is a write codeTargets cannot place.
     // A name assigned a literal names it only when each of its assignments is one (`p = 'x'` then `p = f()` is not
     // known); a write whose mode is not a literal (`unsure`) is not known.
-    const t = withoutTempWrites(code, inCode, /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js');
-    let open = false;
-    codeTargets(t.code, { args, glob, unresolved: () => { open = true; }, fallback: false, inCode }).forEach(add);
-    const lit = new RegExp(String.raw`^${LIT}$`, 'u');
-    for (const { target, unsure } of t.others) {
-      if (unsure) { open = true; continue; }
-      const l = target.match(lit);
-      const id = target.match(/^[A-Za-z_$][\w$]*$/u)?.[0];
-      const n = id?.replace(/\$/gu, '\\$');
-      const all = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*(?:[-+*/%|&^]|\*\*|\/\/)?=(?![=>])\s*([^;\n]*)`, 'gmu'))].map((m) => m[1].trim()) : [];
-      const literals = all.map((v) => v.match(lit)?.[2]).filter((v) => v !== undefined);
-      if (l) add(l[2]);
-      else if (all.length && literals.length === all.length) literals.forEach(add);
-      else if (!(ARGV.test(target) && args.length)) open = true;
+    // What a file gives for its arguments, in the folder it runs from, is worked out once per command (`read.given`):
+    // the temporary-folder pass (scopes) took about 35 ms each time, so 60 runs of one 741 KB script took 3.7 s on
+    // Node 20 (CI on be7fbaf), against a test's 3 s.
+    const key = `${state.base}\0${args.join('\0')}`;
+    let result = read?.given?.get(key);
+    if (!result) {
+      const t = read?.temp ?? withoutTempWrites(code, inCode, /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js');
+      if (read) read.temp = t;
+      let open = false;
+      const names = codeTargets(t.code, { args, glob, unresolved: () => { open = true; }, fallback: false, inCode });
+      const lit = new RegExp(String.raw`^${LIT}$`, 'u');
+      for (const { target, unsure } of t.others) {
+        if (unsure) { open = true; continue; }
+        const l = target.match(lit);
+        const id = target.match(/^[A-Za-z_$][\w$]*$/u)?.[0];
+        const n = id?.replace(/\$/gu, '\\$');
+        const all = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*(?:[-+*/%|&^]|\*\*|\/\/)?=(?![=>])\s*([^;\n]*)`, 'gmu'))].map((m) => m[1].trim()) : [];
+        const literals = all.map((v) => v.match(lit)?.[2]).filter((v) => v !== undefined);
+        if (l) names.push(l[2]);
+        else if (all.length && literals.length === all.length) names.push(...literals);
+        else if (!(ARGV.test(target) && args.length)) open = true;
+      }
+      result = { names, open };
+      if (read) (read.given ??= new Map()).set(key, result);
     }
-    if (open) missing({ part, word: part, why, prefix: '' });
+    result.names.forEach(add);
+    if (result.open) missing({ part, word: part, why, prefix: '' });
   };
   // A script file python, node, ruby, perl, deno or bun runs (w: its path as dq gives it; rest: its arguments): its
   // text is read as code from -c or -e is (codeTargets: the targets of its write calls, the script's own arguments
