@@ -42,8 +42,12 @@ export function shellWord(word, vars = new Map()) {
     if (s[i + 1] === '(') {
       const end = closeOf(s, i);
       const e = end < 0 ? s.length : end;
-      const under = end < 0 ? undefined : mktempUnder(s.slice(i + 2, e - 1), vars);
-      // One the command was split inside (at a | or ; in it) is shown with … for the rest.
+      // A $( ) the command around it holds stands as a placeholder (lift): mktemp is looked for in its body, and the
+      // placeholder is put back only in what shellWrites returns (put back here, each level of `$(echo $(echo ...`
+      // held all the levels below it: 3,000 of them ran out of memory, 2026-11-14).
+      const inner = s.slice(i + 2, e - 1);
+      const under = end < 0 ? undefined : mktempUnder(BODIES.get(Number(inner.match(/^\x01(\d+)$/u)?.[1]))?.text ?? inner, vars);
+      // One that never closes is shown with … for the rest.
       const part = end < 0 ? `${s.slice(i, e).trimEnd()} …)` : s.slice(i, e);
       return [hole(s.slice(i, e), under === undefined ? 'it is the output of a command, known only when it runs' : 'a new name mktemp makes when it runs', part, under ?? undefined), e];
     }
@@ -91,7 +95,9 @@ const unquote = (w) => shellWord(w).text;
 // without one: where the command is ('.').
 function mktempUnder(inner, vars) {
   const ws = words(inner.trim());
-  if (unquote(ws[0] ?? '').split('/').pop() !== 'mktemp') return undefined;
+  // A command named by an expansion is not mktemp here (unquote leaves it not known): it is not expanded to find out,
+  // which read each level of `"$("$(...` again from inside the one before and ran out of stack (2026-11-14).
+  if (/[$`]/u.test(ws[0] ?? '') || unquote(ws[0] ?? '').split('/').pop() !== 'mktemp') return undefined;
   const value = (w) => { const r = shellWord(w, vars); return r.unknown.length ? null : r.text; };
   const tmp = () => vars.get('TMPDIR')?.value || tmpdir();
   let dir;
@@ -302,8 +308,37 @@ function options(args, spec) {
 // `S=$(echo b | tr b c)`) runs to the segment's end as one word, so `S=$(echo b` is still read as an assignment, of a
 // value not known; until 2026-11-13 it was not, and S kept its old value.
 // A redirect operator is a word of its own (OPERATOR), with the digits before it when they make a word alone (`2>`).
-const WORD = new RegExp(String.raw`\d*(?:${OPERATOR})|(?:\\.|'[^']*'|"(?:\\.|[^"\\])*"|\$\((?:[^()]|\([^()]*\))*\)|${'`'}[^${'`'}]*${'`'}|\$\((?:[^()]|\([^()]*\))*$|${'`'}[^${'`'}]*$|"(?:\\.|[^"\\])*$|[^\s'"${'`'}\\<>&]|&(?!>))+`, 'gu');
-const words = (segment) => segment.match(WORD) ?? [];
+// Read by the bracket table (2026-11-14; a regex went one ( deep, so `$(( (1+2)*3 ))` was cut into words): a quote,
+// $( ), backtick or arithmetic is passed whole to where it closes; one that never closes runs to the end ("...,
+// $( and a backtick) or, a ', is no part of any word. ( and ) are letters of the word, as before (`(cd`, `f.txt)`).
+const OPERATOR_WORD = new RegExp(String.raw`\d*(?:${OPERATOR})`, 'uy');
+function words(segment) {
+  const out = [];
+  const n = segment.length;
+  for (let i = 0; i < n;) {
+    if (/\s/u.test(segment[i])) { i++; continue; }
+    OPERATOR_WORD.lastIndex = i;
+    const op = OPERATOR_WORD.exec(segment);
+    if (op) { out.push(op[0]); i += op[0].length; continue; }
+    if (segment[i] === "'" && closeOf(segment, i) < 0) { i++; continue; }
+    let j = i;
+    while (j < n) {
+      const c = segment[j];
+      if (/\s/u.test(c) || c === '<' || c === '>' || (c === '&' && segment[j + 1] === '>')) break;
+      if (c === '\\') { if (j + 1 >= n) break; j += 2; continue; }
+      if (c === "'" || c === '"' || c === '`' || (c === '$' && (segment[j + 1] === '(' || segment[j + 1] === '['))) {
+        const e = closeOf(segment, j);
+        if (e > j) { j = e; continue; }
+        if (c === "'") break;
+        if (c !== '$' || segment[j + 1] === '(') { j = n; break; } // "..., $( or a backtick that never closes
+      }
+      j++;
+    }
+    if (j > i) out.push(segment.slice(i, j)); else i++;
+    i = Math.max(j, i);
+  }
+  return out;
+}
 // Where `cd target` moves from `from`: null when that cannot be known (a variable: `cd $D`, `cd "$(dirname x)"`), and
 // relative paths after it are then not named at all rather than named under the wrong folder (2026-11-08: `cd $D`
 // made the hook show `$D/a.test.js`).
@@ -319,106 +354,195 @@ const moveTo = (from, t) => {
   return from == null ? null : resolve(from, t);
 };
 
-// Where the arithmetic that opens at i ends: $(( )), $[ ] or a (( )) command (the index past its last bracket), or -1
-// when it never closes. Its brackets nest (`$(( (1+2) > 0 ))`) and a $( ) in it holds commands of its own (closeOf).
-// Every reader asks this one: a > or | in it compares or computes, and was read as a redirect or a pipe
-// (`echo $((1 > 0))` wrote a file 0, `$[1>0]` a file `0]`, until 2026-11-13).
-// As bash reads it, (( is arithmetic only when the first ) that closes its inner ( is followed at once by the outer
-// one: `$((echo 1) > b)` and `$((cd /a); echo > b)` are a $( ) holding a subshell, and write b (read as arithmetic
-// for a while on 2026-11-13, so the write was lost): then this is -2. -1: it never closes (then the text is not
-// read again as a $( ): each level of `$( $((1 $( $((1 ...` read it twice, and 500 of them did not finish).
-// The answers for the last text asked about are kept: blank, closeOf, parens and shellWord ask about one command again
-// and again.
-let arithSeen = { s: null, ends: new Map() };
-function arithEnd(s, i) {
-  if (arithSeen.s !== s) arithSeen = { s, ends: new Map() };
-  if (!arithSeen.ends.has(i)) arithSeen.ends.set(i, arithScan(s, i));
-  return arithSeen.ends.get(i);
-}
-// One scan, by a loop with no call back into closeOf: a $( ) in it adds its brackets as any ( ) does, and quoted text
-// is passed whole (calling closeOf for a $( ) nested as deep as the text did: `$( $((1 ` 2,000 times ran out of stack).
-function arithScan(s, i) {
-  const square = s.startsWith('$[', i);
-  const [open, close] = square ? ['[', ']'] : ['(', ')'];
-  let depth = 0;
-  for (let j = s[i] === '$' ? i + 1 : i; j < s.length; j++) {
+// The bracket table of some shell text (2026-11-14): one pass over its characters, with a stack and no recursion, that
+// finds where each quote, $( ), backtick, (( )), $(( )), $[ ], ( ) and <( ) / >( ) opens and closes, by the shell's
+// quoting rules (quotes open again inside $( ), a ' is a plain character inside "...", nothing opens inside '...').
+// Every reader asks this one table: blank, closeOf, arithEnd, words and lift. Until then each read the brackets its own
+// way (a regex that went one ( deep in words, a closeOf that called itself once per level and ran out of stack on
+// `"$( ` 4,000 times, an arithEnd and a blank that scanned again from each opener, quadratic on unclosed chains), and
+// the command was split at a ; | or && inside a $( ), so `(echo $(cd /a; pwd) > f)` and `cp $(cat l; echo x) dest`
+// lost their writes.
+// end: the index past an opener's closer; -1 when it never closes; -2 for a (( or $(( that is a ( or $( holding a
+// subshell (bash reads (( as arithmetic only when the ) that closes its inner ( is followed at once by the outer ),
+// so `$((echo 1) > b)` writes b), whose end is in subEnd.
+// spans: each construct with its kind, where it opens and closes, and the length of its opener and closer.
+// A quote, ( or (( that never closes is a plain character, as before; a $( ), backtick or <( ) that never closes is a
+// command bash cannot parse, and its text is hidden (spans, unclosed).
+function scanText(s) {
+  const end = new Map();
+  const subEnd = new Map();
+  const spans = [];
+  const stack = [];
+  const push = (kind, from, ctx, open, extra = {}) => stack.push({ kind, from, ctx, open, ...extra });
+  const closeTop = (to, close) => {
+    const f = stack.pop();
+    if (end.get(f.from) === -2) subEnd.set(f.from, to); else end.set(f.from, to);
+    spans.push({ from: f.from, to, kind: f.kind, open: f.open, close });
+  };
+  // $( or $(( at j: the index of its last opening character.
+  const dollar = (j) => {
+    if (s[j + 2] === '(') { push('$((', j, 'arith', 3, { depth: 2 }); return j + 2; }
+    push('$(', j, 'code', 2);
+    return j + 1;
+  };
+  for (let j = 0; j < s.length; j++) {
+    const f = stack.at(-1);
+    const ctx = f ? f.ctx : 'code';
     const c = s[j];
+    if (ctx === 'sq') { if (c === "'") closeTop(j + 1, 1); continue; }
     if (c === '\\') { j++; continue; }
-    if (c === "'") { const k = s.indexOf("'", j + 1); if (k < 0) return -1; j = k; continue; }
-    if (c === '"') { let k = j + 1; while (k < s.length && s[k] !== '"') k += s[k] === '\\' ? 2 : 1; if (k >= s.length) return -1; j = k; continue; }
-    if (c === open) depth++;
-    else if (c === close) {
-      depth--;
-      if (square && depth === 0) return j + 1;
-      if (!square && depth === 1) return s[j + 1] === ')' ? j + 2 : -2;
-    }
-  }
-  return -1;
-}
-// Where the quoted text or $( ) that opens at i ends (the index past its last character), or -1 when it never closes.
-// Quotes open again inside $( ), as the shell reads them; inside "..." a ' is a plain character.
-function closeOf(s, i) {
-  if (s.startsWith('$[', i)) return arithEnd(s, i);
-  if (s.startsWith('$((', i)) { const e = arithEnd(s, i); if (e !== -2) return e; } // -2: a $( ) holding a subshell
-  if (s[i] === "'") { const k = s.indexOf("'", i + 1); return k < 0 ? -1 : k + 1; }
-  const sub = s[i] === '$';
-  for (let j = i + (sub ? 2 : 1); j < s.length;) {
-    const c = s[j];
-    if (c === '\\') { j += 2; continue; }
-    if (!sub && c === '"') return j + 1;
-    if (sub && c === ')') return j + 1;
-    if ((c === '$' && (s[j + 1] === '(' || s[j + 1] === '[')) || (sub && (c === '"' || c === "'"))) {
-      const k = closeOf(s, j);
-      if (k < 0) return -1;
-      j = k;
+    if (ctx === 'bt') { if (c === '`') closeTop(j + 1, 1); continue; }
+    if (c === '`') { push('`', j, 'bt', 1); continue; }
+    if (c === '$' && s[j + 1] === '(') { j = dollar(j); continue; }
+    if (c === '$' && s[j + 1] === '[') { push('$[', j, 'arith', 2, { depth: 1, square: true }); j++; continue; }
+    if (ctx === 'dq') { if (c === '"') closeTop(j + 1, 1); continue; }
+    if (c === "'") { push("'", j, 'sq', 1); continue; }
+    if (c === '"') { push('"', j, 'dq', 1); continue; }
+    if (ctx === 'arith') {
+      if (f.square) { if (c === '[') f.depth++; else if (c === ']' && --f.depth === 0) closeTop(j + 1, 1); continue; }
+      if (c === '(') f.depth++;
+      else if (c === ')' && --f.depth === 1) {
+        if (s[j + 1] === ')') { closeTop(j + 2, 2); j++; continue; }
+        // A ( or $( holding a subshell that closes here: it goes on as commands.
+        end.set(f.from, -2);
+        const inner = f.from + (f.kind === '$((' ? 2 : 1);
+        end.set(inner, j + 1);
+        spans.push({ from: inner, to: j + 1, kind: '(', open: 1, close: 1 });
+        Object.assign(f, f.kind === '$((' ? { kind: '$(', open: 2 } : { kind: '(', open: 1 }, { ctx: 'code' });
+      }
       continue;
     }
-    j++;
+    if ((c === '<' || c === '>') && s[j + 1] === '(') { push('<(', j, 'code', 2); j++; continue; }
+    if (c === '(') { if (s[j + 1] === '(') { push('((', j, 'arith', 2, { depth: 2 }); j++; } else push('(', j, 'code', 1); continue; }
+    if (c === ')' && f) closeTop(j + 1, 1);
   }
-  return -1;
+  for (const f of stack) {
+    if (end.get(f.from) === -2) subEnd.set(f.from, -1); else end.set(f.from, -1);
+    if (LIFTED.has(f.kind)) spans.push({ from: f.from, to: s.length, kind: f.kind, open: f.open, close: 0, unclosed: true });
+  }
+  spans.sort((a, b) => a.from - b.from);
+  return { end, subEnd, spans };
+}
+// The command substitutions, whose text is commands run by a subshell of their own: $( ), backticks, <( ) and >( ).
+const LIFTED = new Set(['$(', '`', '<(']);
+// Constructs whose own text is not commands: quotes and arithmetic (a $( ) in them still holds commands).
+const NOT_CODE = new Set(["'", '"', '$((', '((', '$[']);
+// The table of the last texts asked about: the readers ask about one segment again and again.
+let tables = new Map();
+function table(s) {
+  let t = tables.get(s);
+  if (!t) {
+    if (tables.size > 256) tables = new Map();
+    t = scanText(s);
+    tables.set(s, t);
+  }
+  return t;
+}
+// Where the arithmetic that opens at i ends: $(( )), $[ ] or a (( )) command (the index past its last bracket), -1 when
+// it never closes, -2 when it is a $( or ( holding a subshell. Its > and | compare and compute, and were read as a
+// redirect or a pipe (`echo $((1 > 0))` wrote a file 0, `$[1>0]` a file `0]`, until 2026-11-13).
+// i not an opener of the table (asked about from inside a quote): the text from i is scanned on its own.
+function arithEnd(s, i) {
+  const e = table(s).end.get(i);
+  return e !== undefined ? e : i > 0 ? atStart(s.slice(i), arithEnd, i) : -1;
+}
+const atStart = (rest, ask, i) => { const e = ask(rest, 0); return e < 0 ? e : e + i; };
+// Where the quoted text, $( ), backtick or arithmetic that opens at i ends (the index past its last character), or -1
+// when it never closes.
+function closeOf(s, i) {
+  const t = table(s);
+  const e = t.end.get(i);
+  if (e === -2) return t.subEnd.get(i);
+  return e !== undefined ? e : i > 0 ? atStart(s.slice(i), closeOf, i) : -1;
 }
 
-// Quoted text blanked to spaces, same length, so positions found in it hold in the original. A $( ) inside "..." stays
-// visible: it holds commands, and its own quotes are blanked in turn. A regex took `"$(python3 -c "` for one quoted string
-// and the code after it for commands, so `i>=0` was a write to the file `=0` (2026-11-09). A quote that never closes is
-// read as a plain character, as before.
-// An arithmetic $(( )) or $[ ] is blanked the same way, wherever it stands: its > and | compare and compute.
+// Quoted text and arithmetic blanked to spaces, same length, so positions found in it hold in the original. A $( ) in
+// "..." or in arithmetic stays visible: it holds commands, and its own quotes are blanked in turn. A regex took
+// `"$(python3 -c "` for one quoted string and the code after it for commands, so `i>=0` was a write to the file `=0`
+// (2026-11-09). A quote that never closes is read as a plain character, as before; a $( ) that never closes is hidden.
+// One sweep over the table's spans: the innermost span around a character decides.
 function blank(s) {
+  const { spans } = table(s);
+  if (!spans.length) return s;
   const out = s.split('');
-  const hide = (from, to) => { for (let k = from; k < to; k++) out[k] = ' '; };
-  // From `from` to `to` hidden, except the commands of each $( ) in it, which are walked in turn: the inside of "..."
-  // and of an arithmetic $(( )) or $[ ] (whose own $(( or $[ is not a command).
-  const commandsOnly = (from, to) => {
-    let shown = from;
-    for (let j = from; j < to;) {
-      if (s[j] === '\\') { j += 2; continue; }
-      if (s[j] !== '$' || s[j + 1] !== '(') { j++; continue; }
-      if (s[j + 2] === '(' && arithEnd(s, j) >= 0) { j += 3; continue; }
-      const close = closeOf(s, j);
-      if (close < 0 || close > to) break;
-      hide(shown, j + 2);
-      walk(j + 2, close - 1);
-      shown = close - 1;
-      j = close;
-    }
-    hide(shown, to);
-  };
-  const walk = (from, to) => {
-    for (let i = from; i < to;) {
-      const c = s[i];
-      if (c === '\\') { i += 2; continue; }
-      const arith = c === '$' && (s.startsWith('$((', i) || s[i + 1] === '[') && arithEnd(s, i) >= 0;
-      if (c !== "'" && c !== '"' && !arith) { i++; continue; }
-      const end = closeOf(s, i);
-      if (end < 0 || end > to) { i++; continue; }
-      if (c === "'") hide(i, end);
-      else commandsOnly(i, end);
-      i = end;
-    }
-  };
-  walk(0, s.length);
+  const open = [];
+  let k = 0;
+  let dead = 0; // inside an unclosed $( ), backtick or <( )
+  for (let p = 0; p < s.length; p++) {
+    while (open.length && open.at(-1).to <= p) { if (open.pop().unclosed) dead--; }
+    while (k < spans.length && spans[k].from === p) { open.push(spans[k]); if (spans[k].unclosed) dead++; k++; }
+    if (!open.length) continue;
+    const top = open.at(-1);
+    const inside = p >= top.from + top.open && p < top.to - top.close;
+    let shown;
+    if (dead) shown = false;
+    // A (( )) command keeps its (( and )) where a reader looks for them (parens, writesIn); what is inside is hidden.
+    else if (NOT_CODE.has(top.kind) && (inside || top.kind !== '((')) shown = false;
+    else if (inside) shown = true; // the commands inside it
+    else { const parent = open.at(-2); shown = !parent || !NOT_CODE.has(parent.kind); } // its brackets: as where it stands
+    if (!shown) out[p] = ' ';
+  }
   return out.join('');
 }
+
+// Command substitutions taken out of some shell text (2026-11-14): each $( ), backtick, <( ) and >( ) that closes is
+// replaced by a placeholder that keeps its place, `$(\x01N)`, `` `\x01N` ``, or `/dev/fd/\x01N` for <( ) and >( )
+// (a file name the shell makes, never one in a repository), and its text, with its own substitutions taken out the same
+// way, is kept as body N. The command around it is then split, and its words read, with nothing inside a substitution
+// to mislead them; each body is read on its own as the commands of a subshell (shellWrites). One sweep, no recursion:
+// each character goes to one text.
+// BODIES: N -> { text: the body with its substitutions taken out, root, from, to: where it stands in the text given }.
+// Kept while a shellWrites or bashReads runs (`depth`), and dropped when the outermost one returns.
+const PLACE = '\x01';
+const BODIES = new Map();
+let nextBody = 0;
+let liftDepth = 0;
+function lift(s) {
+  const { spans } = table(s);
+  if (!spans.some((x) => LIFTED.has(x.kind) && !x.unclosed)) return s;
+  const parts = [[]];
+  const open = []; // every span around p
+  const bodies = []; // the lifted ones among them, innermost last
+  let k = 0;
+  let dead = 0; // inside a $( ) that never closes: nothing in it is taken out
+  const leave = () => {
+    const o = open.pop();
+    if (o.unclosed) dead--;
+    if (o.id !== undefined) { bodies.pop(); BODIES.get(o.id).text = parts.pop().join(''); }
+  };
+  for (let p = 0; p < s.length; p++) {
+    while (open.length && open.at(-1).to <= p) leave();
+    while (k < spans.length && spans[k].from === p) {
+      const x = spans[k++];
+      if (x.unclosed) dead++;
+      if (!LIFTED.has(x.kind) || x.unclosed || dead) { open.push({ to: x.to, unclosed: x.unclosed }); continue; }
+      const id = nextBody++;
+      BODIES.set(id, { text: '', root: s, from: x.from + x.open, to: x.to - x.close });
+      parts.at(-1).push(x.kind === '$(' ? `$(${PLACE}${id})` : x.kind === '`' ? `\`${PLACE}${id}\`` : `/dev/fd/${PLACE}${id}`);
+      parts.push([]);
+      const o = { to: x.to, id, inFrom: x.from + x.open, inTo: x.to - x.close };
+      open.push(o);
+      bodies.push(o);
+    }
+    const top = bodies.at(-1);
+    if (top && (p < top.inFrom || p >= top.inTo)) continue; // its own brackets: in the placeholder
+    parts.at(-1).push(s[p]);
+  }
+  while (open.length) leave();
+  return parts[0].join('');
+}
+// A text with its placeholders put back: what the shell text said there (for a word not known, as the hook names it).
+// A root may itself hold placeholders (a `bash -c` string taken from a command already lifted): put back again until
+// none is left that BODIES knows.
+const unlift = (t) => {
+  for (let before = null; t.includes(PLACE) && t !== before;) {
+    before = t;
+    t = t.replace(/\x01(\d+)/gu, (m, n) => { const b = BODIES.get(Number(n)); return b ? b.root.slice(b.from, b.to) : m; });
+  }
+  return t;
+};
+// The bodies a text holds: their numbers, in order.
+const bodiesIn = (t) => (t.includes(PLACE) ? [...t.matchAll(/\x01(\d+)/gu)].map((m) => Number(m[1])) : []);
 // Command segments split at && || ; | and newlines outside quotes: node -e "a; fs.writeFileSync(...)" is one segment
 // (split inside the quotes, the write call never reached its -e argument, 2026-11-08).
 // An unquoted `#` at the start of a word begins a comment to the end of the line: `cp a b # c d` copies to b.
@@ -868,7 +992,11 @@ export function bashWrites(command, cwd = process.cwd()) {
 // makes: { files, unknown, repos }. unknown: [{ part, word, why, prefix, fresh?, direct? }]: what is not known, the word
 // it is in, why, and the folder it is known to be under. A command starts with the variables `vars` gives (the hook:
 // its environment); a here-document or a `bash -c` string is read with those of the shell around it that it sees.
-export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), why = null } = {}) {
+export function shellWrites(command, cwd = process.cwd(), options = {}) {
+  liftDepth++;
+  try { return writesOf(command, cwd, options); } finally { if (--liftDepth === 0) { BODIES.clear(); nextBody = 0; } }
+}
+function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   const found = new Set();
   const unknown = [];
   // The variables it starts with (the hook passes its own environment: Claude Code starts it with the session's), and
@@ -957,7 +1085,7 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   };
   // Where relative paths start, and what the variables are, after some shell text (here-documents already taken out
   // of it). A cd or an assignment inside ( ) ends at its `)`.
-  const stateAt = (text) => { const st = start(); return eachCommand(text, st, (p, raw, how) => follow(st, opening(raw), how)); };
+  const stateAt = (text) => { const st = start(); return eachCommand(lift(text), st, (p, raw, how) => follow(st, opening(raw), how)); };
   // Shell text read inside this command (a here-document or a `bash -c` string), from where it runs and with the
   // variables it sees.
   const inner = (text, innerVars) => {
@@ -973,13 +1101,15 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   let kept = ''; // the shell text up to this here-document, earlier bodies taken out
   let last = 0;
   // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`).
-  const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' ')).replace(/([^\n]*?)<<-?\s*(['"]?)(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\3(?=\s|$)/gu, (all, head, quote, tag, rest, body, offset, text) => {
+  // The head is taken from the start of a line (^, m): tried from every character, the regex read each line again from
+  // each of them, so a long line took time by its square (`echo $( $((1 ` 16,000 times: 4.4 s here, 2026-11-14).
+  const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' ')).replace(/^([^\n]*?)<<-?\s*(['"]?)(\w+)['"]?([^\n]*)\n([\s\S]*?)\n\s*\3(?=\s|$)/gmu, (all, head, quote, tag, rest, body, offset, text) => {
     kept += `${text.slice(last, offset)}${head}`;
     last = offset + all.length;
     Object.assign(state, stateAt(kept));
     kept += ` ${rest}`;
     // Only the command the here-document feeds: in `node x.mjs; cat > f <<E` it goes to cat (2026-11-08).
-    const hw = words(segments(head).at(-1)).map(dq);
+    const hw = words(segments(lift(head)).at(-1)).map(dq);
     const at = hw.findIndex((w) => RUNNER.test(w.split('/').pop()));
     // The script's arguments: words after the runner that are not options, the script itself ('-') or a redirect.
     const args = at < 0 ? [] : hw.slice(at + 1).filter((w) => w !== '-' && !w.startsWith('-') && !/^[<>|&]/u.test(w));
@@ -1098,7 +1228,21 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
   // showed another repository's notes for a write in this one, and the `)` stuck to the last word made `f.txt)` the
   // file (2026-11-09).
   // Variables set inside ( ) end there too: in `(S=/a; ...); echo > $S/g` the second $S is not the command's.
-  eachCommand(shell, state, (p, raw, how) => writesIn(p.body, how), redirects);
+  // The commands inside each $( ), backtick, <( ) and >( ) (lift) run in a subshell of their own, where the command
+  // around them stands: each body is read after the command, from a copy of the state at that point, and what it
+  // changes does not stay. One after another from a list, never by a call per level: thousands nested do not run out
+  // of stack. Until 2026-11-14 the command was split at a ; or | inside them, so `(echo $(cd /a; pwd) > f)` and
+  // `cp $(cat l; echo x) dest` lost their writes, and a > in them was read as the outer command's.
+  const pending = [];
+  const sub = (text) => { for (const id of bodiesIn(text)) pending.push({ id, at: snapshot(state) }); };
+  const visit = (p, raw, how) => { sub(p.body); writesIn(p.body, how); };
+  const after = (text) => { sub(text); redirects(text); };
+  eachCommand(lift(shell), state, visit, after);
+  for (let k = 0; k < pending.length; k++) {
+    const { id, at } = pending[k];
+    Object.assign(state, at, { blocks: [], chain: null, fnDepth: 0, fnAwait: false, paren: 0 });
+    eachCommand(BODIES.get(id).text, state, visit, after);
+  }
   repos.delete('');
   // A file in a checkout the command itself makes is not there when the hook runs, so its notes cannot be read yet: it
   // is listed as not known, in that checkout (`git worktree add $S/w-a main && cp t.js $S/w-a/test/`). Only a checkout
@@ -1107,7 +1251,8 @@ export function shellWrites(command, cwd = process.cwd(), { vars = new Map(), wh
     const r = [...madeAt].find((x) => f.startsWith(`${x.replace(/\/$/u, '')}/`));
     if (r) { found.delete(f); missing({ part: r, word: f, why: 'it is in a checkout this command makes, not there yet', prefix: `${r.replace(/\/$/u, '')}/` }); }
   }
-  return { files: [...found], unknown, repos: [...repos] };
+  // What the command said where each $( ) stands, put back for whoever reads the unknown parts (the hook names them).
+  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: unlift(u.part), word: unlift(u.word) })), repos: [...repos] };
 }
 
 // The files each `readfirst read` in a shell command asks for, and whether its whole output reaches whoever ran the
@@ -1124,8 +1269,10 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
   // cd and the variables the command sets are followed as bashWrites follows them (`S=/a; cd $S && readfirst read f`);
   // `vars`: those it starts with (the hook's environment).
   const state = { base: cwd, why: null, vars: copyVars(vars) };
+  // A `readfirst read` inside a $( ) is not seen (its output goes to the command around it): the bodies are taken out.
   const shell = withoutComments(String(command ?? '').replace(/\\\r?\n/gu, ' '));
-  eachCommand(shell, state, (p, raw, how, op) => {
+  liftDepth++;
+  try { eachCommand(lift(shell), state, (p, raw, how, op) => {
     const opened = opening(raw);
     const ws = unwrap(opened).map((w) => shellWord(w, state.vars).text);
     const at = ws.findIndex((w) => /^(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)$/u.test(w));
@@ -1164,6 +1311,6 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
       const abs = files.filter((f) => !f.includes(HOLE) && !/[*?]/u.test(f)).map((f) => (isAbsolute(f) ? f : from == null ? null : resolve(from, f))).filter(Boolean);
       if (abs.length) out.push({ files: abs, seen: !thrown && !limit, why: thrown ? 'its output was sent elsewhere' : limit ? '--limit cut the list' : null });
     }
-  });
+  }); } finally { if (--liftDepth === 0) { BODIES.clear(); nextBody = 0; } }
   return out;
 }

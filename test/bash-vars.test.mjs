@@ -204,12 +204,13 @@ test('hook --gate from outside: a repository the session already used is where a
 // old value as if sure). Unknown parts are shown as they are.
 test('values changed where the reader cannot follow are not known: $( ) split at |, +=, eval, branches, pipes, functions', () => {
   const s = (c) => { const r = shellWrites(c, '/r'); return r.files.length ? r.files : r.unknown.map((u) => u.part); };
-  // A: a $( ) or backticks the command is split inside (at its | ; &&) is still an assignment, of a value not known.
-  assert.deepEqual(s('S=/a; S=$(echo b | tr b c); echo x > $S/f'), ['$(echo b …)']);
-  assert.deepEqual(s('S=/a; S=`echo b | tr b c`; echo x > $S/f'), ['`echo b …`']);
-  assert.deepEqual(s('S=/a; S="$(echo b | tr b c)"; echo x > $S/f'), ['$(echo b …)']);
-  assert.deepEqual(s('S=/a; S=$(cd /z && pwd); echo x > $S/f'), ['$(cd /z …)']);
-  assert.deepEqual(s('cd $(echo b | tr b c) && echo x > f'), ['$(echo b …)']);
+  // A: a $( ) or backticks with a | ; or && inside is still an assignment, of a value not known. Since 2026-11-14 the
+  // command is no longer split inside it (lift), so the part is shown whole: it was `$(echo b …)`.
+  assert.deepEqual(s('S=/a; S=$(echo b | tr b c); echo x > $S/f'), ['$(echo b | tr b c)']);
+  assert.deepEqual(s('S=/a; S=`echo b | tr b c`; echo x > $S/f'), ['`echo b | tr b c`']);
+  assert.deepEqual(s('S=/a; S="$(echo b | tr b c)"; echo x > $S/f'), ['$(echo b | tr b c)']);
+  assert.deepEqual(s('S=/a; S=$(cd /z && pwd); echo x > $S/f'), ['$(cd /z && pwd)']);
+  assert.deepEqual(s('cd $(echo b | tr b c) && echo x > f'), ['$(echo b | tr b c)']);
   // B: other ways of setting a value.
   assert.deepEqual(s('S=/a; S+=/b; echo x > $S/f'), ['/a/b/f'], '+= appends');
   for (const c of ["S=/a; eval 'S=/b'; echo x > $S/f", 'S=/a; printf -v S %s /b; echo x > $S/f', 'S=/a; . env.sh; echo x > $S/f',
