@@ -187,6 +187,9 @@ const SHAPES = {
   'here-documents on one line': "(n) => 'cat ' + Array.from({ length: n }, (_, i) => '<<E' + i).join(' ') + '\\n' + Array.from({ length: n }, (_, i) => 'b\\nE' + i + '\\n').join('')",
   // Each one inside the $( ) of the one before: the bodies are read from one stack, 32,000 deep, no call per level.
   'here-documents nested in $( )': "(n) => 'x=' + '$(cat <<E\\n'.repeat(n) + 'a\\n' + 'E\\n)'.repeat(n)",
+  // Each function calls the one before it: each body is read where it is called, from one list (test/bash-functions.test.mjs;
+  // put in front with unshift(), the chain took time by the square: 6.8 s at 32,000).
+  'a chain of function calls': "(n) => 'f0() { echo > deep; }\\n' + Array.from({ length: n }, (_, i) => 'f' + (i + 1) + '() { f' + i + '; }\\n').join('') + 'f' + n",
 };
 const SIZES = [2000, 8000, 32000];
 const TIMED = `const { parentPort } = require('node:worker_threads');
