@@ -1234,6 +1234,16 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
         const bytes = readFileSync(at);
         const end = bytes.subarray(Math.max(0, bytes.length - size));
         if (bytes.length <= size || (end.some((b) => b !== 0) && !createHash(algo).update(bytes.subarray(0, bytes.length - size)).digest().equals(end))) throw Object.assign(new Error(`the index file (${relative(root, at) || at}) does not match the hash at its end: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`), { ours: true });
+        // A split index keeps most entries in sharedindex.<hash> files, named by the hash at their end; git reads a
+        // damaged one without a word too (review of readfirst#207). Each there is checked by its content and its name.
+        const shared = dirname(resolve(root, git(root, 'rev-parse', '--git-path', 'sharedindex.x').trim()));
+        let names = [];
+        try { names = readdirSync(shared).filter((f) => /^sharedindex\.[0-9a-f]{40,64}$/u.test(f)); } catch { names = []; }
+        for (const f of names) {
+          const b = readFileSync(join(shared, f));
+          const tail = b.subarray(Math.max(0, b.length - size));
+          if (b.length <= size || tail.toString('hex') !== f.slice('sharedindex.'.length) || !createHash(algo).update(b.subarray(0, b.length - size)).digest().equals(tail)) throw Object.assign(new Error(`the shared index file ${relative(root, join(shared, f)) || f} does not match the hash at its end and in its name: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`), { ours: true });
+        }
       }
     }
     const at = named ? ` in ${basename(root)}` : '';

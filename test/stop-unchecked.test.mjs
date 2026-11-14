@@ -100,6 +100,24 @@ test('a git that exits 0 but says error: on stderr is a stop that could not chec
   assert.ok(said.includes('error: cache entry has null sha1: src/b.js'), said);
 });
 
+test('a split index whose shared part has one byte flipped is a stop that could not check, though git says nothing', () => {
+  const s = edited();
+  s.git('update-index', '--split-index');
+  const [f] = readdirSync(join(s.root, '.git')).filter((n) => n.startsWith('sharedindex.'));
+  assert.ok(f, 'git made a shared index');
+  const at = join(s.root, '.git', f);
+  const bytes = Buffer.from(readFileSync(at));
+  bytes[40] ^= 0xff;
+  writeFileSync(at, bytes);
+  const r = spawnSync('git', ['-C', s.root, ...STATUS], { encoding: 'utf8', env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } });
+  assert.equal(r.status, 0, 'git itself says nothing is wrong');
+  const out = s.stop();
+  const said = String(out?.reason ?? out?.systemMessage ?? '');
+  assert.doesNotMatch(said, /check\(s\) passed/u);
+  assert.equal(out?.decision, 'block');
+  assert.ok(said.includes(`the shared index file .git/${f} does not match the hash at its end and in its name: it is cut or damaged, and git reads it without saying so, so its answers about this repository cannot be trusted`), said);
+});
+
 test('git\'s error: and fatal: lines are said whole, never cut mid-word', () => {
   const s = edited();
   // A split index whose shared part is gone: git fails with a fatal line naming the 40-hex file.
