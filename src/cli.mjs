@@ -517,8 +517,6 @@ function commandKey(command, cwd) {
 // not-this answers on the diff from it, so a commit made on the branch before the session never counts against an
 // answer. '' when the repository had no commit yet.
 const HEAD_KEY = /^head:([0-9a-f]*):(.+)$/su;
-// The empty tree, the start of a session in a repository that had no commit yet (SHA-1; git hash-object -t tree).
-const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 function headOf(seen, root) {
   for (const k of Object.keys(seen)) { const m = k.match(HEAD_KEY); if (m && m[2] === root) return m[1]; }
   return null;
@@ -1232,7 +1230,10 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     if (notThis.length && !noStart) {
       let changes = null;
       try {
-        changes = parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', start.snapshot || EMPTY_TREE));
+        // A repository with no commit yet started from the empty tree, asked of git: its name differs between SHA-1 and
+        // SHA-256 repositories (review of readfirst#204: a fixed SHA-1 name failed in a SHA-256 one).
+        const from = start.snapshot || execFileSync('git', ['-C', root, 'hash-object', '-t', 'tree', '--stdin'], { encoding: 'utf8', input: '', stdio: ['pipe', 'pipe', 'pipe'], env: gitEnv() }).trim();
+        changes = parseGitDiff(git(root, 'diff', '-U0', '--no-color', '--no-renames', '--no-ext-diff', from));
         const before = new Set(start.untracked);
         for (const f of git(root, 'ls-files', '--others', '--exclude-standard', '-z').split('\0').filter(Boolean)) if (!changes.has(f) && !before.has(f)) changes.set(f, { lines: new Set(), text: [], whole: true });
         // readfirst keeps no copy of an untracked file from the start, so what the session changed in one is not judged:
@@ -1241,6 +1242,16 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
         const unkept = [...new Set([...targets, ...changes.keys()])].filter((f) => before.has(f)).sort();
         for (const f of unkept) changes.delete(f);
         if (unkept.length) noStart = `readfirst${at}: ${unkept.map((f) => `\`${f}\``).join(', ')} ${unkept.length === 1 ? 'was' : 'were'} not tracked by git when the session began; anything changed there since was not compared with its ${notThis.length} not-this answer(s).`;
+        // A merge into the branch since the start (git merge main, a pull) brings other people's changes into the diff,
+        // and a not-this about the session's own edit would be refused for them (review of readfirst#204). The files a
+        // merge on the first-parent line changed leave the diff and are named as not compared.
+        const merges = head ? git(root, 'rev-list', '--merges', '--first-parent', `${head}..HEAD`).split('\n').filter(Boolean) : [];
+        const merged = new Set();
+        for (const m of merges) for (const f of git(root, 'diff', '--name-only', '-z', '--no-renames', `${m}^1`, m).split('\0').filter(Boolean)) merged.add(f);
+        const mergedHere = [...merged].filter((f) => changes.has(f)).sort();
+        for (const f of mergedHere) changes.delete(f);
+        // cut: the merge commits' shas are shortened for the message; every one is named.
+        if (mergedHere.length) noStart = [noStart, `readfirst${at}: ${mergedHere.map((f) => `\`${f}\``).join(', ')} ${mergedHere.length === 1 ? 'was' : 'were'} changed by ${merges.length} merge(s) into this branch since the session began (${merges.map((m) => m.slice(0, 12)).join(', ')}); what changed there was not compared with its ${notThis.length} not-this answer(s).`].filter(Boolean).join('\n');
       } catch (e) { changes = null; noStart = notCompared(`the session's diff could not be read (${errorText(e)})`); }
       if (changes) try {
         judge(list, { changes, read: readText(root), files, imports });

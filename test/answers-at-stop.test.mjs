@@ -251,6 +251,45 @@ test('a repository with no commit yet and files already added says why its start
   assert.doesNotMatch(base, /stash create failed/u);
 });
 
+test('a merge of main into the branch during the session is not counted against a not-this, and is named', () => {
+  const s = session();
+  const git = (...a) => execFileSync('git', ['-C', s.root, ...a], { encoding: 'utf8' });
+  const commit = (m) => git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qam', m);
+  git('checkout', '-q', '-b', 'work');
+  s.call('Edit', inBeta(s.root));
+  notThisBeta(s);
+  leave(s.root);
+  commit('beta, in the session');
+  // Someone else changes alpha on main; the session merges main in.
+  git('checkout', '-q', 'main');
+  writeFileSync(join(s.root, 'src/a.js'), A.replace('  return x + one;', '  return x + one + 0;'));
+  commit('alpha, on main');
+  git('checkout', '-q', 'work');
+  git('-c', 'user.email=t@t', '-c', 'user.name=t', 'merge', '-q', '--no-edit', 'main');
+  const out = said(s.stop());
+  assert.doesNotMatch(out, /does not bear out/u, 'alpha came from main by the merge, not from the session');
+  assert.match(out, /`src\/a\.js` was changed by 1 merge\(s\) into this branch since the session began \([0-9a-f]{12}\); what changed there was not compared with its 1 not-this answer\(s\)\./u);
+});
+
+test('a SHA-256 repository with no commit yet diffs from its own empty tree', () => {
+  const root = mkdtempSync(join(tmpdir(), 'readfirst-stop-answers-sha256-'));
+  mkdirSync(join(root, 'src'));
+  mkdirSync(join(root, '.readfirst'));
+  writeFileSync(join(root, '.readfirst/map.json'), JSON.stringify({ format: 'readfirst/map@1', groups: [{ id: 'src', title: 'the code', files: ['src/**'], risks: [{ text: BOTH }, { text: PROSE }] }], rules: [{ id: 'no-net', rule: RULE, files: ['src/**'] }] }));
+  execFileSync('git', ['-C', root, 'init', '-q', '-b', 'main', '--object-format=sha256']);
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-stop-answers-state-'));
+  const id = `stop-answers-sha256-${process.pid}`;
+  let now = Date.now() + 5000;
+  const call = (tool, input) => runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input }), { stateDir, gate: true, now: (now += 1000) });
+  call('Write', { file_path: join(root, 'src/a.js'), content: A });
+  call('Bash', { command: `npx readfirst answer '${JSON.stringify([{ item: ID.both, answer: 'not-this', because: 'beta only', symbols: ['beta'] }, ...keeps(ID.prose, ID.rule)])}'` });
+  writeFileSync(join(root, 'src/a.js'), A);
+  const out = runStopHook(JSON.stringify({ session_id: id, cwd: root }), { stateDir, timeout: 30 });
+  const text = said(out ? JSON.parse(out) : null);
+  assert.doesNotMatch(text, /could not be read/u, 'the fixed SHA-1 empty tree is no object in a SHA-256 repository');
+  assert.match(text, new RegExp(`\`${ID.both}\` was answered not-this \\(\`beta\`\\), but the change touches it by \`alpha\``, 'u'), 'src/a.js made in the session counts whole');
+});
+
 test('more untracked files at the start than readfirst records compares no not-this, and says how many', () => {
   const s = session();
   mkdirSync(join(s.root, 'scratch'));
