@@ -44,8 +44,8 @@ export function parseAnswer(text) {
 }
 
 // Whether a word as written gives its text with nothing taken from elsewhere: no $ (a variable, $( ), $(( ))) and no
-// backtick outside single quotes. A variable the command sets itself is no answer either (the lead's call on readfirst#200,
-// after plan 2.3): the answer is the one quoted argument, written out.
+// backtick outside single quotes. A variable the command sets itself is no answer either (readfirst#200, as plan 2.3
+// says): the answer is the one quoted argument, written out.
 const literal = (raw) => {
   for (let i = 0, single = false; i < raw.length; i++) {
     const c = raw[i];
