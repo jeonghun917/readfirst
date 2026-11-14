@@ -685,8 +685,11 @@ export function findQueries(command, cwd) {
     let root = c.at;
     for (let i = start; i < w.length; i++) {
       const x = w[i];
-      if (x.known && x.text.startsWith('-')) {
-        const [name, value] = x.text.replace(/^--?/u, '').split(/=(.*)/su);
+      // An option is told by the word as written, before it is known: `--root=$D` is an option whose value is not
+      // known (review of 099df6e: it was read as neither, and the find counted in the command's folder).
+      const flag = x.known ? x.text : String(x.raw ?? '').replace(/^["']/u, '');
+      if (flag.startsWith('-')) {
+        const [name, value] = flag.replace(/^--?/u, '').split(/=(.*)/su);
         const given = value !== undefined ? x : VALUES.has(name) ? w[++i] : null;
         if (name === 'root') root = given?.known ? resolve(c.at, value ?? given.text) : null;
         continue;

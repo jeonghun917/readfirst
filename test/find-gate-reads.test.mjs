@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { runHook } from '../src/cli.mjs';
+import { findQueries, runHook } from '../src/cli.mjs';
 
 let n = 0;
 function session() {
@@ -103,6 +103,20 @@ test('a find given --root counts in that folder\'s repository, not the one it wa
   const here = session();
   here.call('Bash', { command: 'npx readfirst find --root=src "retry a payment"' });
   assert.ok(!noFind(here.add('retryPayment')), 'a --root inside this repository, relative to the command\'s folder');
+});
+
+// Review of 099df6e: `--root=$D`, a word not known as written, was read neither as an option nor as a word of the
+// query, so the find counted in the command's own folder.
+test('a --root whose value is not written out leaves the find counting nowhere, in every shape', () => {
+  const cwd = '/work/r1';
+  for (const arg of ['--root=$D', '--root="$D"', '"--root=$D"', '--root=$(pwd)/x', '--root "$D"', '--root $D']) {
+    assert.deepEqual(findQueries(`npx readfirst find ${arg} billing`, cwd), [], arg);
+  }
+  assert.deepEqual(findQueries('npx readfirst find --root /work/r2 billing', cwd), [{ query: 'billing', at: '/work/r2' }]);
+  assert.deepEqual(findQueries('npx readfirst find --root=../r2 billing', cwd), [{ query: 'billing', at: '/work/r2' }]);
+  const away = session();
+  away.call('Bash', { command: 'npx readfirst find --root=$SOMEWHERE "retry a payment"' });
+  assert.ok(noFind(away.add('retryPayment')), 'where it searched is not known');
 });
 
 test('a find that asks nothing does not count as a find run after the gate asked', () => {
