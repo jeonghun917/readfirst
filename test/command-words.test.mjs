@@ -52,6 +52,27 @@ test('a word the shell may expand by what is on disk is not known: unquoted JSON
   }
 });
 
+// The review of 2026-11-14 ran 84 argument forms through bash: each of these was given as known while bash passed
+// something else (more words, a /dev/fd path, or nothing: a syntax error).
+test('a variable unquoted, process substitution, a backslash at the end or a quote left open is not known', () => {
+  assert.deepEqual(spawnSync('bash', ['-c', `V="a b"; printf '%s\\0' $V`], { encoding: 'utf8' }).stdout.split('\0').slice(0, -1), ['a', 'b'], 'bash splits it');
+  for (const command of ['V="a b"; readfirst answer $V', 'V=x; readfirst answer $V', 'IFS=,; V="a,b"; readfirst answer $V',
+    'readfirst answer <(echo hi)', 'readfirst answer abc\\', `readfirst answer 'abc`, 'readfirst answer "abc']) {
+    assert.ok(answerArgs(command).length && answerArgs(command).every((w) => !w.known), command);
+  }
+  assert.deepEqual(answerArgs('V="a b"; readfirst answer "$V"').map((w) => [w.text, w.known]), [['a b', true]], 'quoted it is one word, as bash passes it');
+});
+
+test('a here-document body and a function body are not commands where they are written', () => {
+  // The body's lines are data: text that reads like an answer in a document written with cat is none.
+  assert.deepEqual(commandWords(`cat > notes.md <<EOF\nrun: readfirst answer '["x"]'\nEOF`, '/r').map((c) => c.words.map((w) => w.text)), [['cat']]);
+  assert.deepEqual(commandWords(`readfirst answer <<'EOF'\n{"a":1}\nEOF\necho done`, '/r').map((c) => c.words.map((w) => w.text)), [['readfirst', 'answer'], ['echo', 'done']]);
+  // A function's definition and the commands of its body run when it is called: they are marked `body`.
+  const fn = commandWords(`f() {\n  readfirst answer '[]'\n}\nf '{"a":1}'`, '/r').map((c) => [c.words.map((w) => w.text).join(' '), c.body]);
+  assert.deepEqual(fn, [['f() {', true], ['readfirst answer []', true], ['}', true], ['f {"a":1}', false]]);
+  assert.ok(commandWords(`f() { readfirst answer '[]'; }; f`, '/r').filter((c) => c.words.some((w) => w.text === 'answer')).every((c) => c.body));
+});
+
 test('wrappers, redirects and the commands around it are not its words; a pipe into it gives it none', () => {
   const all = commandWords(`sudo env A=1 readfirst answer '[]' > log 2>&1 && sed -i s/a/b/ f`, '/r');
   assert.deepEqual(all.map((c) => [c.words.map((w) => w.text), c.op]), [[['readfirst', 'answer', '[]'], '&&'], [['sed', '-i', 's/a/b/', 'f'], '']]);
