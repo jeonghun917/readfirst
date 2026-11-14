@@ -17,7 +17,7 @@ const entry = pre.find((m) => (m.hooks ?? []).some((h) => /readfirst\.mjs" hook\
 
 test('the PreToolUse hook of this repository matches Bash too and runs the gate', () => {
   assert.ok(entry, 'a PreToolUse entry runs bin/readfirst.mjs hook');
-  assert.deepEqual(entry.matcher.split('|').sort(), ['Bash', 'Edit', 'MultiEdit', 'Write']);
+  assert.deepEqual(entry.matcher.split('|').sort(), ['Bash', 'Edit', 'MultiEdit', 'NotebookEdit', 'Write']);
   const command = entry.hooks.find((h) => /readfirst\.mjs" hook\b/u.test(h.command)).command;
   assert.equal(command, 'node "$CLAUDE_PROJECT_DIR/bin/readfirst.mjs" hook --gate');
 });
