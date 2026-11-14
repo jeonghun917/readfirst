@@ -129,8 +129,9 @@ function firstWord(argv) {
 // stderr is captured, not shown: a repository with no commits yet makes `rev-parse HEAD` complain, and that is expected.
 // GIT_OPTIONAL_LOCKS=0: readfirst runs beside the user's own git (in hooks, at the same time as their commands), so its
 // `git status` neither refreshes nor locks their index, as git asks of background tools.
-const GIT_ENV = { ...process.env, GIT_OPTIONAL_LOCKS: '0' };
-const git = (root, ...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env: GIT_ENV });
+// Read at each call, as git inherited process.env before: a variable set after this module loaded still reaches git.
+const gitEnv = (more = {}) => ({ ...process.env, GIT_OPTIONAL_LOCKS: '0', ...more });
+const git = (root, ...a) => execFileSync('git', ['-C', root, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'], env: gitEnv() });
 
 export function repoFiles(root) {
   // Tracked files plus new files not ignored by .gitignore, so a file being added can be looked up before its commit.
@@ -559,7 +560,7 @@ function markHead(seen, root, now) {
       // No index to copy: stash create on an empty one would take every file for deleted.
       if (!existsSync(resolve(root, at))) throw new Error(`no index file at ${at}`);
       copyFileSync(resolve(root, at), index);
-      snapshot = execFileSync('git', ['-C', root, 'stash', 'create'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...GIT_ENV, GIT_INDEX_FILE: index } }).trim() || sha;
+      snapshot = execFileSync('git', ['-C', root, 'stash', 'create'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: gitEnv({ GIT_INDEX_FILE: index }) }).trim() || sha;
     } catch (e) { snapshot = null; why = `git stash create failed (${errorText(e)})`; }
     if (copy) try { rmSync(copy, { recursive: true, force: true }); } catch { /* the temp folder is cleaned by the system */ }
   }
