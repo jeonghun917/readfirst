@@ -973,7 +973,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "git",
-      "line": 127,
+      "line": 137,
       "labels": [
         "exec"
       ],
@@ -986,7 +986,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "addLineTo",
-      "line": 192,
+      "line": 210,
       "labels": [
         "fs-write"
       ],
@@ -999,7 +999,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "verifyChecks",
-      "line": 283,
+      "line": 316,
       "labels": [
         "secrets",
         "exec"
@@ -1012,29 +1012,33 @@
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "callSig",
-      "line": 419,
+      "symbol": "markHead",
+      "line": 617,
       "labels": [
-        "crypto"
+        "fs-write",
+        "exec"
       ],
       "rules": [
-        "no-silent-cut",
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-network-in-cli",
+        "no-silent-cut"
       ],
-      "note": "Hashes, signs or encrypts"
+      "note": "Writes files, runs commands"
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "treeState",
-      "line": 858,
+      "symbol": "stopFor",
+      "line": 1319,
       "labels": [
+        "exec",
         "crypto"
       ],
       "rules": [
-        "no-silent-cut",
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-network-in-cli",
+        "no-silent-cut"
       ],
-      "note": "Hashes, signs or encrypts"
+      "note": "Runs commands, hashes, signs or encrypts"
     },
     {
       "file": "src/git-hooks.mjs",
