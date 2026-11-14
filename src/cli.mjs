@@ -1046,8 +1046,6 @@ export function actedLine({ shown = 0, asked = 0, acted = 0, notActed = [], rese
   return `readfirst, this session: notes shown for ${shown} file(s); asked ${asked} (checks to run, files that change together), done ${acted}${not}${again}${nofind}${misreadLine}${failedLine}${unsureLine}.`;
 }
 
-// `readfirst hook --report`: the Stop hook's lines of every session kept in ACTED_LOG (the last one of each session),
-// added up, with every item not done and how often.
 // The last line of each session in ACTED_LOG, or null when there is none (no session recorded, or no such file).
 function actedSessions(stateDir = tmpdir()) {
   let text = '';
@@ -1056,6 +1054,8 @@ function actedSessions(stateDir = tmpdir()) {
   for (const l of text.split('\n')) { try { const r = JSON.parse(l); if (r && typeof r.session === 'string') last.set(r.session, r); } catch { /* a line cut short */ } }
   return [...last.values()];
 }
+// `readfirst hook --report`: the Stop hook's lines of every session kept in ACTED_LOG (the last one of each session),
+// added up, with every item not done and how often.
 export function hookReport({ stateDir = tmpdir() } = {}) {
   const rows = actedSessions(stateDir);
   if (!rows) return 'readfirst hook --report: no session has been recorded yet (the Stop hook writes one line per session).';
