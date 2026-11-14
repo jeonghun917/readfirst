@@ -93,7 +93,9 @@ export function readList({ map: mapIn, files, imports, targets, commit = null, l
     }
     if (group) {
       if (group.deprecated) note('deprecated', group.id, { group: group.id, why: group.deprecated.why, use: group.deprecated.use ?? null }, target);
-      for (const r of group.risks ?? []) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text, named: Boolean(r.files), ...(r.files ? { files: r.files } : {}) }, target);
+      // A risk written as a plain string breaks the map (check says so), and is still shown by its text, never as
+      // undefined (until 2026-11-14).
+      for (const r of (group.risks ?? []).map((x) => (typeof x === 'string' ? { text: x } : x))) if (!r.files || matcher(r.files)(target)) note('risks', `${group.id}\0${r.text}`, { group: group.id, text: r.text, named: Boolean(r.files), ...(r.files ? { files: r.files } : {}) }, target);
       for (const c of group.checks ?? []) note('checks', c.run, { run: c.run, why: c.why ?? `checks for ${group.title}`, from: `group ${group.id}` }, target);
     }
     // Risks of other groups whose files name this file (risksNaming): they show here too.

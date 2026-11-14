@@ -232,10 +232,12 @@ test('values changed where the reader cannot follow are not known: $( ) split at
   assert.deepEqual(s('S=/a; S+=/b; echo x > $S/f'), ['/a/b/f'], '+= appends');
   for (const c of ["S=/a; eval 'S=/b'; echo x > $S/f", 'S=/a; printf -v S %s /b; echo x > $S/f', 'S=/a; . env.sh; echo x > $S/f',
     'S=/a; source env.sh; echo x > $S/f', 'S=/a; mapfile S < l; echo x > $S/f', 'S=/a; let S=3; echo x > $S/f', 'S=/a; ((S=3)); echo x > $S/f',
-    'S=/a; f(){ S=/b; }; f; echo x > $S/f', 'if x; then S=/a; else S=/b; fi; echo x > $S/f', 'true || S=/a; echo x > $S/f']) {
+    'if x; then S=/a; else S=/b; fi; echo x > $S/f', 'true || S=/a; echo x > $S/f']) {
     // A script source or `.` runs is given as not known itself too (test/bash-eval.test.mjs): what it writes is not read.
     assert.deepEqual(s(c).filter((p) => !/^(?:source|\.) env\.sh$/u.test(p)), ['$S'], c);
   }
+  // A function's body is read where it is called (test/bash-functions.test.mjs): its assignment is followed there.
+  assert.deepEqual(s('S=/a; f(){ S=/b; }; f; echo x > $S/f'), ['/b/f']);
   // A pipeline's stage runs in a subshell: its assignment does not stay.
   assert.deepEqual(s('S=/z; S=/a | cat; echo x > $S/f'), ['/z/f']);
   assert.deepEqual(s('S=/z; echo | S=/a; echo x > $S/f'), ['/z/f']);
@@ -394,8 +396,8 @@ test('case arms, a block after a wrapper, and a function that may cd: not named 
   assert.deepEqual(s('nohup while x; do cd /w; done; echo x > f'), ['cd /w']);
   assert.deepEqual(s('for a in 1; do for b in $L; do S=/q; done; echo > $S/i; done'), ['$S'], 'a loop opened after do');
   assert.deepEqual(s('time ls > l.txt'), ['/r/l.txt'], 'a wrapper before a plain command');
-  // A function the command defines may cd: after a call, relative paths are not known; absolute ones still are.
-  assert.deepEqual(s('f() { cd /z; }; f; echo x > g'), ['f']);
+  // A function the command defines is read where it is called (test/bash-functions.test.mjs): its cd is followed.
+  assert.deepEqual(s('f() { cd /z; }; f; echo x > g'), ['/z/g']);
   assert.deepEqual(s('f() { echo; }; f; echo x > /abs/g'), ['/abs/g']);
 });
 
@@ -427,26 +429,29 @@ test('command, builtin and time cd, source, case heads after {, if or a wrapper,
   assert.deepEqual(s('f() { echo; }; f; echo x > g'), ['/r/g']);
   assert.deepEqual(s('f() { echo "$x"; }; f; echo > h'), ['/r/h']);
   assert.deepEqual(s('f() {\n  npm test\n}\nf\necho > h'), ['/r/h']);
-  assert.deepEqual(s('f() {\n  npm test\n  cd /q\n}\nf\necho > h'), ['f']);
-  assert.deepEqual(s('f() { g; }; g() { cd /z; }; f; echo > h'), ['f']);
-  assert.deepEqual(s('run() { "$@"; }; run ls; echo > h'), ['run']);
-  assert.deepEqual(s('f() { npm test; }; f() { cd /z; }; f; echo > h'), ['f']);
+  // Read where they are called (test/bash-functions.test.mjs), a function's cd and one it calls are followed.
+  assert.deepEqual(s('f() {\n  npm test\n  cd /q\n}\nf\necho > h'), ['/q/h']);
+  assert.deepEqual(s('f() { g; }; g() { cd /z; }; f; echo > h'), ['/z/h']);
+  // "$@" is the call's words (`run ls` runs ls, `run cd /a` would cd: test/bash-functions.test.mjs), and the
+  // definition read is the one in force where the function is called.
+  assert.deepEqual(s('run() { "$@"; }; run ls; echo > h'), ['/r/h']);
+  assert.deepEqual(s('f() { npm test; }; f() { cd /z; }; f; echo > h'), ['/z/h']);
 });
 
 test('a function written `f ()` or with its { on the next line, and a subshell after time', () => {
   const s = (c) => { const r = shellWrites(c, '/r'); return [...r.files, ...r.unknown.map((u) => u.part)]; };
   // `name ()` with a space is a function too (it was read as the command f, so the call's cd was lost and h was /r/h).
-  assert.deepEqual(s('f () { cd /a; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('f () { cd /a; }; f; echo > h'), ['/a/h']);
   assert.deepEqual(s('f () { echo hi; }; f; echo > h'), ['/r/h']);
-  assert.deepEqual(s('function f () { cd /a; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('function f () { cd /a; }; f; echo > h'), ['/a/h']);
   // A body whose { is on the line after the name runs when it is called, not where it is written (its cd was run at the
   // definition, so h was /a/h with no call).
   assert.deepEqual(s('f ()\n{\n  cd /a\n}\necho > h'), ['/r/h']);
   assert.deepEqual(s('f()\n{\n  cd /a\n}\necho > h'), ['/r/h']);
-  assert.deepEqual(s('f ()\n{ cd /a\n}\nf\necho > h'), ['f']);
+  assert.deepEqual(s('f ()\n{ cd /a\n}\nf\necho > h'), ['/a/h']);
   assert.deepEqual(s('f()\n{\n  npm test\n}\nf\necho > h'), ['/r/h']);
   // A comment or blank line between the name and its { leaves the body still to come.
-  assert.deepEqual(s('f ()\n# the body\n{ cd /a\n}\nf; echo > h'), ['f']);
+  assert.deepEqual(s('f ()\n# the body\n{ cd /a\n}\nf; echo > h'), ['/a/h']);
   assert.deepEqual(s('f ()\n\n# c\n\n{\n cd /a\n}\necho > h'), ['/r/h']);
   assert.deepEqual(s('f() { echo; }\n\n{ cd /b; }\necho > h'), ['/b/h']);
   // time ( ... ) is a subshell: its cd moves what is inside it, and what follows its ) starts from before it.
@@ -484,16 +489,17 @@ test('a { or } that is an argument, `f ( )`, and time ( inside time (', () => {
   // A group inside a body is the body's (its { was taken off before it was counted, so its } ended the body early and
   // the cd after it ran where it was written: h was /c/h).
   assert.deepEqual(s('f() {\n  { echo; }\n  cd /c\n}\necho > h'), ['/r/h']);
-  assert.deepEqual(s('f() {\n  { echo; }\n  cd /c\n}\nf; echo > h'), ['f']);
+  assert.deepEqual(s('f() {\n  { echo; }\n  cd /c\n}\nf; echo > h'), ['/c/h']);
   // `f ( )` is a definition as `f ()` is (it was read as a call of f, so the call's cd was lost and h was /r/h).
-  assert.deepEqual(s('f ( ) { cd /a; }; f; echo > h'), ['f']);
-  assert.deepEqual(s('f( ) { cd /a; }; f; echo > h'), ['f']);
-  assert.deepEqual(s('g() { :; }; f ( ) { cd /a; }; f; echo > h'), ['f']);
+  assert.deepEqual(s('f ( ) { cd /a; }; f; echo > h'), ['/a/h']);
+  assert.deepEqual(s('f( ) { cd /a; }; f; echo > h'), ['/a/h']);
+  assert.deepEqual(s('g() { :; }; f ( ) { cd /a; }; f; echo > h'), ['/a/h']);
   assert.deepEqual(s('f ( ) { echo hi; }; f; echo > h'), ['/r/h']);
   assert.deepEqual(s('f() { echo hi; }; f ( ); echo > h'), ['/r/h']);
   // The body's first command is read as any line of it is: `if cd /a` runs cd (`if` was kept as the command, so the
   // call was taken not to cd and h was /r/h). A ( ) body is a subshell: its cd stays inside.
-  assert.deepEqual(s('f() { if cd /a; then :; fi; }; f; echo > h'), ['f']);
+  // Read where f is called, the body's `if cd /a` is what it is outside a function: a cd on some paths only.
+  assert.deepEqual(s('f() { if cd /a; then :; fi; }; f; echo > h'), ['cd /a']);
   assert.deepEqual(s('f() { if true; then :; fi; }; f; echo > h'), ['/r/h']);
   assert.deepEqual(s('f() (cd /a); f; echo > h'), ['/r/h']);
   // time ( inside time ( is a subshell too: its cd was not followed (f was /r/f).
