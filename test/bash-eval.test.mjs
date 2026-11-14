@@ -75,6 +75,24 @@ test('a script run as the command, or fed to a shell on stdin or by a pipe, is g
   }
 });
 
+// Review of #213 (acbad2f): a file with an execute bit and no #! runs too: the kernel refuses it (ENOEXEC) and bash
+// reads it as a shell script; readfirst looked for #! only, and was silent. One with #! but no execute bit runs nothing
+// (permission denied) and stays quiet, as does a program (its magic bytes).
+test('an executable file without #! runs as a script, one without an execute bit does not, and bash agrees', { skip: !hasBash && 'bash is not installed' }, () => {
+  const dir = mkdtempSync(join(tmpdir(), 'readfirst-eval-plain-'));
+  writeFileSync(join(dir, 'plain.sh'), 'echo > made1\n');
+  chmodSync(join(dir, 'plain.sh'), 0o755);
+  writeFileSync(join(dir, 'noexec.sh'), '#!/bin/sh\necho > made2\n');
+  writeFileSync(join(dir, 'prog'), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0]));
+  chmodSync(join(dir, 'prog'), 0o755);
+  spawnSync('bash', ['-c', './plain.sh; ./noexec.sh'], { cwd: dir, env: { PATH: process.env.PATH }, stdio: 'ignore', timeout: 5000 });
+  const made = readdirSync(dir);
+  assert.ok(made.includes('made1') && !made.includes('made2'), `bash runs plain.sh and not noexec.sh: ${made}`);
+  assert.match(shellWrites('./plain.sh', dir).unknown[0]?.why ?? '', /does not read the file's text/u);
+  assert.deepEqual(shellWrites('./noexec.sh', dir).unknown, []);
+  assert.deepEqual(shellWrites('./prog', dir).unknown, []);
+});
+
 // A path with a / that is not there runs nothing (bash fails), and a shell that reads stdin or runs nothing has no file.
 test('the look-alikes stay quiet: no write, nothing not known', () => {
   for (const script of ['eval true', 'eval "echo hi"', "bash -c 'echo hi'", 'bash --version', 'sh -c "ls -la"', 'bash -n x.sh', 'bash -s a b', 'source ./no-such-file.sh', 'bash /no/such/x.sh']) {

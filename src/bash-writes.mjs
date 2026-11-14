@@ -7,7 +7,7 @@
 //   python, node, ruby, perl or a shell from -c / -e or a here-document: there the targets of its write calls count
 //   (codeTargets), not every path-like word in it.
 // A here-document fed to cat or tee is data; only where it goes counts. `cd dir &&` moves where relative paths start.
-import { closeSync, existsSync, openSync, readdirSync, readSync } from 'node:fs';
+import { closeSync, existsSync, openSync, readdirSync, readSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 
@@ -29,10 +29,20 @@ function shellScript(args) {
   }
   return undefined;
 }
-// Whether the file starts with #!: a script run as a command, not a program (a file that cannot be read: false).
-function hasShebang(file) {
+// Whether running the file as a command runs it as a script: it can be run (an execute bit) and it is no program. A
+// file without #! runs too: the kernel refuses it (ENOEXEC) and bash reads it as a shell script (`./plain.sh` with no
+// #! wrote, and readfirst said nothing: review of #213). A program starts with its format's magic bytes (ELF, Mach-O,
+// PE) or holds a NUL in its first 512 bytes. A file that cannot be read, or has no execute bit, runs nothing: false.
+const BINARY = [[0x7f, 0x45, 0x4c, 0x46], [0xfe, 0xed, 0xfa, 0xce], [0xfe, 0xed, 0xfa, 0xcf], [0xce, 0xfa, 0xed, 0xfe], [0xcf, 0xfa, 0xed, 0xfe], [0xca, 0xfe, 0xba, 0xbe], [0x4d, 0x5a]];
+function runsAsScript(file) {
   let fd = null;
-  try { fd = openSync(file, 'r'); const b = Buffer.alloc(2); return readSync(fd, b, 0, 2, 0) === 2 && b.toString('latin1') === '#!'; } catch { return false; } finally { if (fd !== null) closeSync(fd); }
+  try {
+    if (!(statSync(file).mode & 0o111)) return false;
+    fd = openSync(file, 'r');
+    const b = Buffer.alloc(512);
+    const n = readSync(fd, b, 0, 512, 0);
+    return !BINARY.some((m) => m.length <= n && m.every((x, i) => b[i] === x)) && !b.subarray(0, n).includes(0);
+  } catch { return false; } finally { if (fd !== null) closeSync(fd); }
 }
 // The file a command reads on stdin from its words as written (`< f`, `<f`; not <<, <<<, <( or <&), or undefined.
 function stdinFile(ws) {
@@ -1390,14 +1400,14 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // (`bash < build.sh`) (w: its path, as dq gives it; by: what runs it; part: what the command said, `by w` unless
   // given): its text is not read, so what it writes is given as not known. A path that is not there runs nothing (bash
   // fails) and is quiet; a bare name a shell or source is given may be found in PATH (`path`), one read from stdin may
-  // not. Run as the command, only a script (#!) is: a program such as /usr/bin/git is read by its name, as any program
-  // is (`script`).
+  // not. Run as the command, only a script (runsAsScript) is: a program such as /usr/bin/git is read by its name, as
+  // any program is (`script`).
   const runFile = (w, by, { part = null, path = true, script = false } = {}) => {
     if (!w) return;
     const p = w === '~' || w.startsWith('~/') ? join(homedir(), w.slice(1)) : w;
     if (!p.includes(HOLE) && (p.includes('/') || !path) && (isAbsolute(p) || state.base != null)) {
       const at = isAbsolute(p) ? p : resolve(state.base, p);
-      if (!existsSync(at) || (script && !hasShebang(at))) return;
+      if (!existsSync(at) || (script && !runsAsScript(at))) return;
     }
     const shown = w.replaceAll(HOLE, '');
     missing({ part: part ?? `${by} ${shown}`, word: shown, why: `${by} runs it, and readfirst does not read the file's text`, prefix: '' });
