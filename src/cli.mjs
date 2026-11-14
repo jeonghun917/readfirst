@@ -1132,7 +1132,9 @@ function trustedRuns(root, firstSeen) {
 }
 
 // The line that says the map is broken in itself, for both hooks.
-const brokenMapLine = (broken) => `${MAP_PATH} is broken (${broken.length} problem${broken.length === 1 ? '' : 's'}; first: ${broken[0]}), so read, diff and verify stop until it is fixed: \`npx readfirst check\` lists the problems and \`npx readfirst fix\` repairs most.`;
+// `ran`: the stop read the map and used what it gives (its checks, run or said not run beside this line), so the line
+// does not say only that verify stops (review of readfirst#214: it stood beside "1 check(s) passed").
+const brokenMapLine = (broken, ran = false) => `${MAP_PATH} is broken (${broken.length} problem${broken.length === 1 ? '' : 's'}; first: ${broken[0]})${ran ? ': the stop still read it and used what it gives; read, diff and verify stop until it is fixed' : ', so read, diff and verify stop until it is fixed'}: \`npx readfirst check\` lists the problems and \`npx readfirst fix\` repairs most.`;
 
 // Claude Code Stop hook (opt-in, `hook --install --verify`): before Claude Code ends its turn, run the map's checks for the
 // files it edited in this session that are still changed. A failing check blocks the stop once, with the failure as the
@@ -1394,7 +1396,7 @@ function stopFor(root, edited, timeout, named, since, { said = () => false, say 
     // Refused once for the map as it is (`unchecked:<root>:<hash of the map file>`), then said as a note on every later
     // stop, and refused again when the map changes: until 2026-11-14 it refused every stop, so a session that could not
     // fix the map could not stop (ledger broken-map-refuses-every-stop).
-    const brokenText = broken.length ? `readfirst${at}: ${brokenMapLine(broken)}${list ? '' : ' The checks for the files you edited were not run.'} Fix it before you finish.` : null;
+    const brokenText = broken.length ? `readfirst${at}: ${brokenMapLine(broken, Boolean(list))}${list ? '' : ' The checks for the files you edited were not run.'} Fix it before you finish.` : null;
     let mapBytes = '';
     try { mapBytes = readFileSync(join(root, MAP_PATH)); } catch { mapBytes = broken.join('\n'); }
     const brokenKey = brokenText ? `unchecked:${root}:${createHash('sha1').update('map\0').update(mapBytes).digest('hex').slice(0, 12)}` : null;

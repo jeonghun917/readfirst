@@ -41,6 +41,11 @@ test('a map broken in itself refuses the stop once for its content, says it on e
     const later = stop();
     assert.notEqual(later?.decision, 'block', `stop ${n}: not refused again for the same map`);
     assert.match(said(later), /map\.json is broken/u, `stop ${n}: still said`);
+    // The map was read and its checks ran: the line says so, never that verify stops (review of readfirst#214: "1
+    // check(s) passed" and "so read, diff and verify stop until it is fixed" were said together).
+    assert.match(said(later), /readfirst verify: \d+ check\(s\) passed/u);
+    assert.match(said(later), /the stop still read it and used what it gives; read, diff and verify stop until it is fixed/u);
+    assert.doesNotMatch(said(later), /\), so read, diff and verify stop/u);
   }
   // The map changed and is not even JSON: refused once more, then said.
   writeFileSync(join(root, '.readfirst/map.json'), '{ nope');
