@@ -260,6 +260,13 @@ const OPERATOR = String.raw`&>>|&>|<<<|<<-|<<|<>|<&|<|>>|>\||>&|>`;
 // segments reads the text without them (eachCommand), so text in a document is never a command.
 // Until 2026-11-14 one regex found them: `$((1<<x))` took the lines up to one starting with x for a body, `<<< EOF` was
 // a here-document, and a line only starting with the tag (`END of the doc`) ended one, so a cd after it was followed.
+// It also joins the lines a backslash continues, in the same walk, as bash does: a backslash and a newline are taken
+// out where the shell reads code, in "...", $( ) and backticks, and in the body of a here-document whose tag is not
+// quoted; not inside '...', in a comment (it ends at the newline) or in the body under a quoted tag. `\\` and a newline
+// is an escaped backslash and a line end. Until then every reader joined them first, with a regex over the whole text:
+// `# note \` ran on into the next command, which was lost, a body under <<'E' lost its tag line after a line ending in
+// \, and `\\` or a CR before the newline joined lines bash keeps apart (review of #202).
+const joinRun = (t) => t.replace(/\\(\\|\n)/gu, (m, x) => (x === '\n' ? '' : m));
 function hereDocs(s) {
   // The text is kept as parts with its length and where its last line starts (lineAt), so nothing is copied per
   // here-document.
@@ -269,16 +276,16 @@ function hereDocs(s) {
   const put = (chunk) => { parts.push(chunk); const k = chunk.lastIndexOf('\n'); if (k >= 0) lineAt = len + k + 1; len += chunk.length; };
   const docs = [];
   let pending = [];
-  const stack = []; // 'dq' inside "...", 'sub' in $( ) or ( ), 'bt' in backticks
+  const stack = []; // 'dq' inside "...", 'dsub' in $( ), 'sub' in ( ), 'bt' in backticks
   let wordStart = true;
   for (let i = 0; i < s.length;) {
     const c = s[i];
     const mode = stack.at(-1);
-    if (c === '\\') { put(s.slice(i, i + 2)); i += 2; wordStart = false; continue; }
+    if (c === '\\') { if (s[i + 1] === '\n') { i += 2; continue; } put(s.slice(i, i + 2)); i += 2; wordStart = false; continue; }
     // Arithmetic is copied whole: a << in it is a shift.
     if ((s.startsWith('$((', i) || s.startsWith('$[', i) || (mode !== 'dq' && s.startsWith('((', i))) && arithEnd(s, i) >= 0) {
       const e = arithEnd(s, i);
-      put(s.slice(i, e));
+      put(joinRun(s.slice(i, e)));
       i = e;
       wordStart = false;
       continue;
@@ -286,11 +293,16 @@ function hereDocs(s) {
     if (mode === 'dq') {
       if (c === '"') stack.pop();
       else if (c === '`') stack.push('bt');
-      else if (c === '$' && s[i + 1] === '(') { stack.push('sub'); put('$('); i += 2; wordStart = true; continue; }
+      else if (c === '$' && s[i + 1] === '(') { stack.push('dsub'); put('$('); i += 2; wordStart = true; continue; }
       put(c);
       i++;
       continue;
     }
+    // A $( ) is part of the word it stands in ('dsub'): after its ) the word goes on, so a # there starts no comment
+    // (`"$(echo z)"#'a` is one word; read as a comment, the ' in it opened no quote, and a here-document after
+    // `$(true)#<<E` was not found, review of #203). After the ) of a ( ) subshell a word starts.
+    if (c === '$' && s[i + 1] === '(') { stack.push('dsub'); put('$('); i += 2; wordStart = true; continue; }
+    if (c === ')' && mode === 'dsub') { stack.pop(); put(c); i++; wordStart = false; continue; }
     if (c === "'") {
       const k = s.indexOf("'", i + 1);
       if (k >= 0) { put(s.slice(i, k + 1)); i = k + 1; wordStart = false; continue; }
@@ -313,7 +325,8 @@ function hereDocs(s) {
         if (s[k] === '\\') k += 2;
         else if (s[k] === "'" || s[k] === '"') { const q = s.indexOf(s[k], k + 1); k = q < 0 ? s.length : q + 1; } else k++;
       }
-      const word = s.slice(j, k);
+      // A backslash and a newline in the tag are taken out too (`<<E\` + newline + `X` is the tag EX, not quoted).
+      const word = joinRun(s.slice(j, k));
       if (word) {
         pending.push({ at: len, line: lineAt, quote: /['"\\]/u.test(word), tag: word.replace(/\\(.)/gu, '$1').replace(/['"]/gu, ''), dash });
         put(' ');
@@ -328,8 +341,21 @@ function hereDocs(s) {
         const lines = [];
         while (at < s.length) {
           const e = s.indexOf('\n', at);
-          const line = s.slice(at, e < 0 ? s.length : e);
+          let piece = s.slice(at, e < 0 ? s.length : e);
           at = e < 0 ? s.length : e + 1;
+          // Under a tag not quoted, a line ending in an odd count of backslashes goes on in the next, before the tag
+          // is looked for (`a\` + newline + `E` is the line aE, as bash reads it); under a quoted tag it stays as it is.
+          // Kept as pieces and joined once: one line of many continued ones is not copied for each.
+          const pieces = [];
+          const odd = (t) => { let n = 0; while (n < t.length && t[t.length - 1 - n] === '\\') n++; return n % 2 === 1; };
+          while (!p.quote && at < s.length && odd(piece)) {
+            pieces.push(piece.slice(0, -1));
+            const f = s.indexOf('\n', at);
+            piece = s.slice(at, f < 0 ? s.length : f);
+            at = f < 0 ? s.length : f + 1;
+          }
+          pieces.push(piece);
+          const line = pieces.join('');
           if ((p.dash ? line.replace(/^\t+/u, '') : line) === p.tag) break;
           lines.push(line);
         }
@@ -962,7 +988,8 @@ function eachCommand(text, state, visit, tail = () => {}) {
   // ' in a body (`it's`) would otherwise open a quote for the comment reader. Both are no change on text without them.
   // Each is skipped where it has nothing to find (no << or no #): stateAt walks the text before each here-document
   // again, and reading it twice more made a command of 2,000 here-documents half as slow again (2026-11-14).
-  const docless = text.includes('<<') ? hereDocs(text).text : text;
+  // hereDocs also joins the lines a backslash continues (the one place that does): it runs when there is either.
+  const docless = text.includes('<<') || text.includes('\\\n') ? hereDocs(text).text : text;
   // Then the substitutions are taken out (lift): a ; or | in a $( ) splits nothing here, and the caller reads the bodies.
   // A (( that is two subshells is written `( (` (spaced): split at the ; inside it, `((echo > e` alone looks like
   // arithmetic that never closes, so opening() kept it as the arithmetic command `((echo` and its write and cd were
@@ -976,9 +1003,12 @@ function eachCommand(text, state, visit, tail = () => {}) {
   // the first arm. Until 2026-11-13 the arm was not read: `a)` stood where the command name should be, so a cd in an
   // arm was not followed and a write after `esac` was named in the folder from before it. The words before a head
   // (`{`, `if`, `time`: caseHead) are read on their own first, so each opens what it opens.
+  // Read by an index, the heads a case arm begins with put in front of it (`front`): shift() moves the whole list each
+  // time, and 64,000 comment lines took seconds (2026-11-14).
   const queue = segmentsAndOps(shell).flatMap((s) => caseHead(s.text, s.op) ?? [s]);
-  while (queue.length) {
-    const seg = queue.shift();
+  const front = [];
+  for (let qi = 0; front.length || qi < queue.length;) {
+    const seg = front.length ? front.shift() : queue[qi++];
     const { op } = seg;
     let { text } = seg;
     // An arm starts after `case W in` and after each `;;` (which leaves an empty segment): its `pattern)` is taken off,
@@ -995,7 +1025,7 @@ function eachCommand(text, state, visit, tail = () => {}) {
         branchAgain(state, top, top.fall);
         top.fall = false;
         const nested = caseHead(text.slice(pattern[0].length), op);
-        if (nested) { queue.unshift(...nested); continue; }
+        if (nested) { front.unshift(...nested); continue; }
         text = text.slice(pattern[0].length);
       }
     }
@@ -1290,11 +1320,12 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
   // the hook showed another repository's notes for a relative path after a cd).
-  // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`). Both
-  // characters go, as bash takes them out, here and in bashReads and commandWords: they were read as a space, so in
-  // `echo a\\` + newline + `#b > f` the word a#b became a comment and the write was lost (review of #202, 2026-11-14).
+  // A backslash at the end of a line continues the command on the next one (`sed -i \\` + newline + `-e ... f`): hereDocs
+  // takes both characters out where bash does (not in '...', a comment or a body under a quoted tag). They were read as
+  // a space first, so in `echo a\\` + newline + `#b > f` the word a#b became a comment and the write was lost (review of
+  // #202, 2026-11-14), and then taken out everywhere first, so `# note \\` took the next line into the comment.
   // hereDocs gives each here-document with where it opens in the text without bodies (`at`) and where its line starts.
-  const { text: bare, docs } = hereDocs(String(command ?? '').replace(/\\\r?\n/gu, ''));
+  const { text: bare, docs } = hereDocs(String(command ?? ''));
   for (const { at: opens, line, quote, body } of docs) {
     Object.assign(state, stateAt(bare.slice(0, opens)));
     // Only the command the here-document feeds: in `node x.mjs; cat > f <<E` it goes to cat (2026-11-08).
@@ -1466,7 +1497,7 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
   // eachCommand takes here-documents and then comments out: a `readfirst read` in a document's body is no read (it
   // counted until 2026-11-14, so a note that only quoted the command let the gate through). It takes the bodies of
   // substitutions out too (lift): a `readfirst read` inside a $( ) is not seen (its output goes to the command around it).
-  const shell = String(command ?? '').replace(/\\\r?\n/gu, '');
+  const shell = String(command ?? ''); // eachCommand joins the continued lines (hereDocs)
   liftDepth++;
   try { eachCommand(shell, state, (p, raw, how, op) => {
     const opened = opening(raw);
@@ -1543,7 +1574,7 @@ function expands(word) {
 export function commandWords(command, cwd = process.cwd(), { vars = new Map() } = {}) {
   const out = [];
   const state = { base: cwd, why: null, vars: copyVars(vars) };
-  const shell = withoutComments(hereDocs(String(command ?? '').replace(/\\\r?\n/gu, '')).text);
+  const shell = withoutComments(hereDocs(String(command ?? '')).text);
   // A quote that never closes or a backslash at the very end: bash refuses the command or hands over another word, and
   // `words` drops the character, so it is looked for in the whole text (each word known: false).
   const b = blank(shell);

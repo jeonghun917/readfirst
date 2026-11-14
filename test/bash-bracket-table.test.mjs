@@ -141,6 +141,10 @@ const SHAPES = {
   "unclosed ' then $((": "(n) => \"echo 'x \" + '$((1)) '.repeat(n)",
   "unclosed ' then quotes": "(n) => \"echo 'x \" + '\"a\" '.repeat(n)",
   'unclosed (( then ((': "(n) => 'echo ' + '(( '.repeat(n)",
+  // Lines: eachCommand took each from the front of its list with shift(), which moves the rest each time (32,000
+  // comment lines took 0.5 to 0.9 s a reader, 2026-11-14).
+  'comment lines ending in a backslash': "(n) => '# c \\\\\\n'.repeat(n) + 'echo > f'",
+  'command lines': "(n) => 'echo a\\n'.repeat(n)",
 };
 const SIZES = [2000, 8000, 32000];
 const TIMED = `const { parentPort } = require('node:worker_threads');
@@ -173,6 +177,26 @@ const TIMED = `const { parentPort } = require('node:worker_threads');
   }
   parentPort.postMessage(null);
 })();`;
+
+// A count of steps, which no load on the machine changes (2026-11-14): eachCommand took each command off the front of
+// its list with shift(), which moves the rest of the list each time, so a command of n lines cost about n*n/2 moves
+// (at 32,000 lines 0.5 to 0.9 s a reader; the slope test below sits near its limit there). Each element shift() moves is
+// counted while the three readers read 4,000 lines: they now read by an index.
+test('the commands of a long text are taken one after another, not moved along the list', () => {
+  const n = 4000;
+  const text = 'echo a\n'.repeat(n);
+  const shift = Array.prototype.shift;
+  let moved = 0;
+  Array.prototype.shift = function counted() { moved += Math.max(0, this.length - 1); return shift.call(this); };
+  try {
+    shellWrites(text, '/r');
+    commandWords(text, '/r');
+    bashReads(text, '/r');
+  } finally {
+    Array.prototype.shift = shift;
+  }
+  assert.ok(moved < 10 * n, `shift() moved ${moved} elements for ${n} lines (about ${n * n * 1.5} when each command is taken off the front)`);
+});
 
 test('linear time in the length of unclosed chains and of nesting', async () => {
   const done = [];
