@@ -796,7 +796,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       return u.roots.length ? `could be in ${some}` : 'could be in any repository: none is known to this session';
     };
     const unknownLine = !newUnknown ? null : askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${clip(u.word)}\` (${clip(u.part)}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.`
-      : `readfirst: this command changes files readfirst cannot name before it runs: ${unplaced.map((u) => `\`${clip(u.part)}\` (${u.why}; ${landIn(u)})`).join('; ')}. The Stop hook checks the files that change.`;
+      : `readfirst: this command changes files readfirst cannot name before it runs: ${unplaced.map((u) => `\`${clip(u.part)}\` (${u.why}; ${landIn(u)})`).join('; ')}. Not refused: what it brings from a commit is committed code, not this session's edit, and the Stop hook does not check it (its checks are that commit's); what it leaves changed in the working tree (a stash pop, an install) is checked at the stop, and an edit made on top of either is asked about as usual.`;
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
@@ -925,9 +925,12 @@ function rootOf(abs, known = new Map()) {
 // (2026-11-13). The walks share 2000 folders and the time until `until`.
 // Whether writes readfirst cannot place make the gate refuse the call once. Not those that only move between commits
 // or install packages (`moves`, from shellWrites: git checkout of a branch, merge, rebase, pull, a stash, npm
-// install...): the refusal could name no file to read, and the Stop hook checks the files they change (its HEAD reflog
-// tells what came in from what the session wrote). Their line is shown, without refusing (review of readfirst#225:
-// `git checkout -q main` and `git pull` were each refused once, naming no file).
+// install...): the refusal could name no file to read. What a checkout, merge, reset or pull brings is committed code,
+// whose checks are the PR of its commit: the Stop hook does not check it (after the move the tree is clean against the
+// new HEAD; the HEAD reflog tells it from the session's own commits). What a move leaves changed in the working tree (a
+// stash pop) is checked at the stop, and an edit on top is asked about as any edit. Their line is shown, without
+// refusing (review of readfirst#225: `git checkout -q main` and `git pull` were each refused once, naming no file). Not
+// asked either: a cherry-pick or `stash branch`, which brings in changes no PR reviewed.
 function refuses(unplaced) {
   return unplaced.some((u) => !u.moves);
 }

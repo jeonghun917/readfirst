@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { test } from 'node:test';
 import { shellWrites } from '../src/bash-writes.mjs';
-import { runHook } from '../src/cli.mjs';
+import { runHook, runStopHook } from '../src/cli.mjs';
 
 const hasGit = spawnSync('bash', ['-c', 'git --version && patch --version'], { env: { PATH: process.env.PATH }, stdio: 'ignore' }).status === 0;
 // Who commits, and no signing, for git run here and by bash (a cherry-pick commits).
@@ -155,4 +155,53 @@ test('a patch read from a pipe is not known, and one that makes or removes a fil
   assert.deepEqual(shellWrites('git apply p.diff', dir).files, [join(dir, 'new.txt'), join(dir, 'old.txt')]);
   assert.deepEqual(shellWrites('git apply --directory=sub p.diff', dir).files, [join(dir, 'sub/new.txt'), join(dir, 'sub/old.txt')]);
   assert.deepEqual(shellWrites('patch -p0 < p.diff', dir).files, [join(dir, 'b/new.txt'), join(dir, 'a/old.txt')]);
+});
+
+// A repository whose src/ check always fails, on main's map from before the session, and a branch `other` that changes
+// src/a.js. What a move between commits brings is committed code: the Stop hook does not take it for this session's
+// edit (its checks are the commit's), an edit on top of it is asked about, and what a move leaves changed in the
+// working tree (a stash pop) is checked at the stop (review of readfirst#225).
+const mapped = () => {
+  const root = mkdtempSync(join(tmpdir(), 'readfirst-more-moved-'));
+  mkdirSync(join(root, 'src'));
+  mkdirSync(join(root, '.readfirst'));
+  writeFileSync(join(root, 'src/a.js'), 'export const a = 1;\n');
+  writeFileSync(join(root, '.readfirst/map.json'), JSON.stringify({ format: 'readfirst/map@1', groups: [{ id: 'src', title: 'the code', files: ['src/**'], risks: [{ text: 'a moves with b' }], checks: [{ run: 'false', why: 'fails' }] }] }));
+  const past = new Date(Date.now() - 120_000).toISOString();
+  const at = (...a) => spawnSync('git', a, { cwd: root, stdio: 'ignore', env: { PATH: process.env.PATH, HOME: root, ...GIT_ENV, GIT_AUTHOR_DATE: past, GIT_COMMITTER_DATE: past } });
+  at('init', '-q', '-b', 'main');
+  at('add', '.');
+  at('commit', '-q', '-m', 'one');
+  at('checkout', '-q', '-b', 'other');
+  writeFileSync(join(root, 'src/a.js'), 'export const a = 2;\n');
+  at('commit', '-q', '-am', 'two');
+  at('checkout', '-q', 'main');
+  return root;
+};
+
+test('after a move between commits the Stop hook does not check what it brought, an edit on top is asked about, and a stash pop is checked', { skip: !hasGit && 'bash, git or patch is not installed' }, () => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-more-state-'));
+  const run = (root, command) => spawnSync('bash', ['-c', command], { cwd: root, env: { PATH: process.env.PATH, HOME: root, ...GIT_ENV }, stdio: 'ignore' });
+  const hook = (root, id, tool, input) => { const out = runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input }), { stateDir, gate: true }); return out ? JSON.parse(out).hookSpecificOutput : null; };
+  const stop = (root, id) => runStopHook(JSON.stringify({ session_id: id, cwd: root }), { stateDir, timeout: 30 });
+  for (const command of ['git checkout -q other', 'git merge -q other', 'git reset -q --hard other']) {
+    const root = mapped();
+    const id = `more-moved-${process.pid}-${command}`;
+    const told = hook(root, id, 'Bash', { command });
+    assert.equal(told?.permissionDecision, undefined, command);
+    assert.match(told.additionalContext, /not this session's edit/u, command);
+    run(root, command);
+    assert.equal(readFileSync(join(root, 'src/a.js'), 'utf8'), 'export const a = 2;\n', `${command}: bash brought the change`);
+    assert.equal(stop(root, id), null, `${command}: what the move brought is not checked`);
+    const edit = hook(root, id, 'Edit', { file_path: join(root, 'src/a.js'), old_string: '2', new_string: '3' });
+    assert.equal(edit?.permissionDecision, 'deny', `${command}: an edit on top is asked about`);
+    assert.match(edit.permissionDecisionReason, /a moves with b/u, `${command}: with the notes of src/a.js`);
+  }
+  const root = mapped();
+  writeFileSync(join(root, 'src/a.js'), 'export const a = 4;\n');
+  run(root, 'git stash -q');
+  const id = `more-moved-${process.pid}-pop`;
+  assert.equal(hook(root, id, 'Bash', { command: 'git stash pop -q' })?.permissionDecision, undefined, 'stash pop: shown, not refused');
+  run(root, 'git stash pop -q');
+  assert.match(String(stop(root, id)), /`false`/u, 'stash pop leaves src/a.js changed: its check is asked for');
 });
