@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { runHook } from '../src/cli.mjs';
+import { newCode, runHook } from '../src/cli.mjs';
 
 let n = 0;
 function session() {
@@ -52,6 +52,25 @@ test('a name of the file\'s top level, a class member or an export is still aske
   assert.match(asked(out), /retryPayment/u);
   assert.match(asked(out), /Ledger/u);
   assert.match(asked(out), /settleAccount/u);
+});
+
+// Review of 8666556, each a whole new file written (newCode on a Write).
+const added = (rel, content) => newCode('Write', { file_path: join(tmpdir(), 'no-such-dir', rel), content }, join(tmpdir(), 'no-such-dir', rel), rel);
+
+test('a test helper file other tests import from is asked about: Python\'s top level, CommonJS exports', () => {
+  assert.deepEqual(added('tests/conftest.py', '@pytest.fixture\ndef db_session():\n    pass\n'), ['db_session'], 'a fixture conftest.py shares');
+  assert.deepEqual(added('tests/helpers.py', 'def make_user(name):\n    return name\n'), ['make_user']);
+  assert.deepEqual(added('test/helpers.js', 'function makeUser(n) { return n; }\nmodule.exports = { makeUser };\n'), ['makeUser']);
+  assert.deepEqual(added('test/a.test.js', 'function rowsFor(n) { return n; }\nrowsFor(1);\n'), [], 'not exported: this test\'s own');
+});
+
+test('a method of an exported object is asked about; a method of a class local to a function is not', () => {
+  assert.deepEqual(added('src/api.js', 'export const api = {\n  fetchUser() {},\n};\n'), ['fetchUser'], 'used elsewhere as api.fetchUser');
+  assert.deepEqual(added('src/outer.js', 'export function outer() {\n  class Local { localMethod() {} }\n}\n'), ['outer'], 'Local and its method are outer\'s');
+});
+
+test('a local of an unnamed default function is not asked about', { todo: 'declarations reads the body of `export default function () {}` as the top level' }, () => {
+  assert.deepEqual(added('src/d.js', 'export default function () {\n  const computeTotal = () => 1;\n}\n'), []);
 });
 
 test('a test file\'s helper is not asked about unless the file exports it', () => {

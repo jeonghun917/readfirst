@@ -95,18 +95,41 @@ function docOf(lines, i, py, top = null) {
 // The comment that says what each does comes from the reader's `top` (the comment and decorators right above) and a
 // Python docstring right below. The list also carries the file's own header comment (`header`), which says what the
 // module is for: find matches it for the file as a whole, once, not for each definition in it.
+// The names a CommonJS module exports by `module.exports = { a, b: c }` (the words inside its braces), which
+// declarations does not mark as exported: read from the lexed tokens, only when the file says `exports`.
+function commonExports(rows) {
+  const out = new Set();
+  if (!rows.some((r) => /\bexports\b/u.test(r.code ?? r.text ?? String(r)))) return out;
+  const t = tokens(rows);
+  for (let i = 0; i + 4 < t.length; i++) {
+    if (!(t[i].v === 'module' && t[i + 1].v === '.' && t[i + 2].v === 'exports' && t[i + 3].v === '=' && t[i + 4].v === '{')) continue;
+    for (let j = i + 5, depth = 1; j < t.length && depth; j++) {
+      if (t[j].k === 'punct' && /^[{([]$/u.test(t[j].v)) depth++;
+      else if (t[j].k === 'punct' && /^[})\]]$/u.test(t[j].v)) depth--;
+      else if (depth === 1 && t[j].k === 'word') out.add(t[j].v);
+    }
+  }
+  return out;
+}
 function readDefinitions(path, body, { lists = false } = {}) {
   const lines = body.split('\n');
   const py = /\.py$/u.test(path);
   const decls = declarations(path, body, { members: true });
   const rows = codeRows(path, body);
-  // reusable: another file could use the name (the file's top level, a class's member, what the module exports), read
-  // from where it is declared; a name local to a function is not (the find gate asks only about reusable ones).
+  // reusable: another file could use the name, read from where it is declared: the file's top level, what the module
+  // exports, or a member of a class or an exported object that is itself reusable (a class inside a function is the
+  // function's, and so are its methods: review of 8666556). A name local to a function is not. exported: what another
+  // file imports by name: an export, a CommonJS export (`module.exports = { name }` too), Python's top level, or a
+  // member of what is exported. The find gate asks only about reusable names, and in a test file only exported ones.
   const at = new Map(decls.map((d) => [`${d.name}\0${d.line}`, d]));
-  const reusable = (d) => !d.depth || d.exported || d.ofModule || at.get(`${d.parent}\0${d.parentLine}`)?.what === 'class';
+  const parentOf = (d) => (d.parent == null ? null : at.get(`${d.parent}\0${d.parentLine}`) ?? null);
+  const holds = (p) => Boolean(p) && (p.what === 'class' || (p.what === 'var' && (p.exported || p.ofModule)));
+  const cjs = py ? new Set() : commonExports(rows);
+  const reusable = (d) => !d.depth || d.exported || d.ofModule || (holds(parentOf(d)) && reusable(parentOf(d)));
+  const exported = (d) => Boolean(d.exported || d.ofModule || (!d.depth && (py || cjs.has(d.name))) || (holds(parentOf(d)) && exported(parentOf(d))));
   const out = decls
     .filter((d) => (d.what !== 'var' || d.fn || d.ofModule) && (!d.member || d.ofModule) && !d.name.startsWith('#') && !KEYWORDS.has(d.name) && d.name.length >= 3)
-    .map((d) => ({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), kind: ['class', 'type', 'alias', 'enum'].includes(d.what) ? 'type' : 'function', reusable: reusable(d), exported: Boolean(d.exported || d.ofModule) }));
+    .map((d) => ({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), kind: ['class', 'type', 'alias', 'enum'].includes(d.what) ? 'type' : 'function', reusable: reusable(d), exported: exported(d) }));
   out.header = headerOf(path, body, lines, decls, rows);
   // find asks for the lists too, read from the same declarations and lines: a second pass over every file doubled
   // the time of find.
