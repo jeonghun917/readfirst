@@ -65,6 +65,24 @@ test('a here-document target with $ or a backtick is not known under a tag not q
   assert.ok(existsSync(join(dir, '$E/x.txt')), 'python wrote $E/x.txt');
 });
 
+// A pathlib path made of a literal is that file: `Path('p.txt').write_text(...)` names p.txt and nothing else (review
+// of #240: read as a script file is, each one also gave a write not known).
+test('a pathlib write names its file alone, and python agrees', { skip: !hasPython && 'python3 is not installed' }, () => {
+  for (const [code, file] of [
+    ["import pathlib; pathlib.Path('p.txt').write_text('x')", 'p.txt'],
+    ["from pathlib import Path; Path('p.txt').write_bytes(b'x')", 'p.txt'],
+    ["from pathlib import Path; p = Path('p3.txt'); p.write_text('x')", 'p3.txt'],
+    ["from pathlib import Path; Path('o.txt').open('w').write('x')", 'o.txt'],
+  ]) {
+    for (const command of [`python3 -c "${code}"`, `python3 - <<'EOF'${NL}${code.split('; ').join(NL)}${NL}EOF`]) {
+      const dir = mkdtempSync(join(tmpdir(), 'readfirst-code-writes-'));
+      assert.deepEqual(read(command, dir), { files: [file], unknown: [] }, command);
+      spawnSync('bash', ['-c', command], { cwd: dir });
+      assert.ok(existsSync(join(dir, file)), `python wrote ${file}: ${command}`);
+    }
+  }
+});
+
 // What was right stays right.
 test('literal targets, sys.argv and names assigned one literal read as before', () => {
   const dir = mkdtempSync(join(tmpdir(), 'readfirst-code-writes-'));
