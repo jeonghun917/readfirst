@@ -12,7 +12,7 @@
 // - `ask:<JSON [item, by]>`: the gate asked the item, which the change touched by those names (none: not judged);
 // - `answer:<JSON [item, kind, covered, symbols, because]>`: an answer given, holding for the names in `covered` (those
 //   the item was asked for when it was given).
-import { commandWords } from './bash-writes.mjs';
+import { readfirstCommands, readfirstRun } from './bash-writes.mjs';
 
 export const ANSWER_KINDS = ['keeps', 'not-this', 'done', 'unsure'];
 // The items a session must have been asked before an answer leaving over half of them unsure is refused.
@@ -58,14 +58,12 @@ const literal = (raw) => {
   }
   return true;
 };
-// The word that names readfirst: readfirst, readfirst@<version>, or a path to it (bin/readfirst.mjs, …/bin/readfirst).
-const READFIRST = /^(?:\S*\/)?readfirst(?:@[\w.-]+)?(?:\.mjs)?$/u;
-// Where the arguments of `readfirst <sub>` start in one command's words (commandWords), or -1 when the command runs no
-// readfirst <sub>: readfirst itself, by npx (with -y or --yes) or by node.
+// Where `readfirst <sub>` runs in one command's words (readfirstCommands): { program, sub }, the indexes of the
+// readfirst program and of `sub`, as readfirstRun reads them (until 2026-11-15 a pattern of its own, which missed a
+// version such as ^1.2, a Windows path, an option before the subcommand, npm exec and bun x), or null.
 export function readfirstAt(w, sub) {
-  let i = 0;
-  if (w[i]?.text === 'npx') { i++; while (/^(?:-y|--yes)$/u.test(w[i]?.text ?? '')) i++; } else if (w[i]?.text === 'node') i++;
-  return READFIRST.test(w[i]?.text ?? '') && w[i + 1]?.text === sub ? i + 2 : -1;
+  const run = readfirstRun(w);
+  return run && 'sub' in run && w[run.sub]?.text === sub ? run : null;
 }
 // Each `readfirst answer` a Bash command runs, as the shell hands its words over: [{ text }] for one read, [{ why }]
 // for one that gives no readable answer. A command inside a function body is not run where it is written and is left
@@ -73,17 +71,16 @@ export function readfirstAt(w, sub) {
 export function answerRuns(command, cwd) {
   const out = [];
   if (!/\banswer\b/u.test(String(command ?? ''))) return out;
-  for (const c of commandWords(command, cwd)) {
+  for (const c of readfirstCommands(command, cwd)) {
     if (c.body) continue;
     const w = c.words;
-    const at = readfirstAt(w, 'answer');
-    if (at < 0) continue;
-    const i = at - 2;
-    const arg = w[at];
+    const run = readfirstAt(w, 'answer');
+    if (!run) continue;
+    const arg = w[run.sub + 1];
     if (c.pipe) out.push({ why: 'it is in a pipeline: give the JSON as its one quoted argument, not on standard input' });
     else if (!arg) out.push({ why: 'it has no argument (a here-document or standard input is not read): give the JSON as its one quoted argument' });
     else if (!arg.known || !literal(arg.raw ?? '')) out.push({ why: 'its argument is not written out in the command ($( ), a file or a variable): an answer is one literal argument, the JSON itself in single quotes' });
-    else if (w.length > i + 3) out.push({ why: `it has ${w.length - i - 2} arguments: give the whole JSON as one quoted argument` });
+    else if (w.length > run.sub + 2) out.push({ why: `it has ${w.length - run.sub - 1} arguments: give the whole JSON as one quoted argument` });
     else out.push({ text: arg.text });
   }
   return out;
