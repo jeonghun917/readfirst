@@ -547,15 +547,28 @@ function physical(abs) {
 const callSig = (tool, targets) => createHash('sha1').update(`${tool}\0${targets.join('\0')}`).digest('hex').slice(0, 12);
 // A call as a refusal names it, so the agent can tell which of the calls it sent in one response was refused (an Edit
 // by the first line of its old text; review of 2026-11-14: an error read against the wrong edit sent that edit twice).
-function callWhat(tool, input, targets) {
-  const known = new Map();
-  const files = targets.map((abs) => { const root = rootOf(abs, known); return root ? relative(root, abs) : abs; }).join(', ');
+function callWhat(tool, input, targets, here = undefined) {
+  const files = filesSaid(targets, here);
   const first = (text) => String(text ?? '').split('\n').find((l) => l.trim()) ?? '';
   if (tool === 'Edit') return `Edit of ${files} (the edit of \`${clip(first(input?.old_string))}\`)`;
   if (tool === 'MultiEdit') return `MultiEdit of ${files} (${input?.edits?.length ?? 0} edits)`;
   if (tool === 'NotebookEdit') return `NotebookEdit of ${files} (${clip(String(input?.edit_mode ?? 'replace'))} of cell ${clip(String(input?.cell_id ?? 'new'))})`;
   if (tool === 'Bash') return `Bash command \`${clip(first(input?.command))}\`${files ? ` (writing ${files})` : ''}`;
   return `${tool} of ${files}`;
+}
+// The files a call writes as the hook says them: each relative to its checkout, and that checkout named when it is not
+// `here`, the one the session's folder is in (null when that folder is in none: then every checkout is named; not
+// given, none is). Another worktree of the same repository has the same paths and the
+// same notes, so its files read as this checkout's: a copy into a scratch worktree was said as "writing src, test,
+// src/cli.mjs" (2026-11-15).
+function filesSaid(targets, here, known = new Map()) {
+  const by = new Map();
+  for (const abs of targets) {
+    const root = rootOf(abs, known) ?? '';
+    if (!by.has(root)) by.set(root, []);
+    by.get(root).push(root ? relative(root, abs) : abs);
+  }
+  return [...by].map(([root, files]) => `${files.join(', ')}${root && here !== undefined && root !== here ? ` in ${root}` : ''}`).join('; ');
 }
 // Said with every refusal: the hook sees one call, never the others of its response.
 const BATCH_LINE = 'If it was one of several calls in one response, the others were not refused by this: those before it ran, those after it are judged on their own. Check that what went in still fits without this one.';
@@ -807,6 +820,9 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
   try {
     event = JSON.parse(input);
     const cwd = event.cwd ?? process.cwd();
+    // The checkout the session's folder is in, only to name another checkout's files as such (filesSaid); each file's
+    // repository is still found from the file.
+    const here = rootOf(physical(join(resolve(cwd), '.here'))); // rootOf looks in the folder a path is in
     const tool = event.tool_name ?? '';
     // NotebookEdit names its file notebook_path (2026-11-14: until then it was not read at all).
     const file = tool === 'NotebookEdit' ? event.tool_input?.notebook_path : event.tool_input?.file_path;
@@ -912,13 +928,13 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       if (!(gate && askUnknown)) Object.assign(seen, reads);
       const saved = save();
       if (!unknownLine) return null;
-      if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst refused this ${callWhat(tool, event.tool_input, targets)}${event.tool_use_id ? ` (call ${event.tool_use_id})` : ''}. ${BATCH_LINE}\n\n${unknownLine}` } });
+      if (gate && askUnknown && saved) return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: `readfirst refused this ${callWhat(tool, event.tool_input, targets, here)}${event.tool_use_id ? ` (call ${event.tool_use_id})` : ''}. ${BATCH_LINE}\n\n${unknownLine}` } });
       return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: unknownLine } });
     }
     { const roots = new Map(); for (const abs of targets) markHead(seen, rootOf(abs, roots), now); }
     const deadline = Date.now() + budget;
     const edited = new Map(targets.flatMap((abs) => { const e = editTexts(tool, event.tool_input, abs); return e ? [[abs, e]] : []; }));
-    const { notes, late, items } = notesFor(targets, seen, now, { deadline, stateDir, edited, gate });
+    const { notes, late, items } = notesFor(targets, seen, now, { deadline, stateDir, edited, gate, here });
     // The gate asks each item the change touches, or that readfirst cannot judge against it, until it has an answer that
     // holds (answered: the item touched by no other names than when it was answered). Until the answers, the same call
     // made again was let through whether the notes had been read or not. An item not touched is one line, not asked.
@@ -962,7 +978,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     // again: the others of its response went in without it.
     // A call let through that writes a file of a refused one, by any tool, makes that change again (`redone:<sig>`):
     // the same edit is often made again as a MultiEdit, a Write or a `sed -i` (review of readfirst#212).
-    const what = callWhat(tool, event.tool_input, targets);
+    const what = callWhat(tool, event.tool_input, targets, here);
     if (gate && (asks.length || askLate || askFind || askUnknown)) seen[`refused:${sig}:${JSON.stringify([what, targets])}`] = now;
     else {
       for (const k of Object.keys(before)) {
@@ -1158,7 +1174,7 @@ function hookContext(root, stateDir) {
 // gate: the files already shown are judged too (their notes are not shown again) and `items` gives each rule and risk
 // of every file with the repository it is in and whether its notes were shown in this call (noteItems): the gate asks
 // what a change touches every time, not once per file.
-function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = new Map(), gate = false } = {}) {
+function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = new Map(), gate = false, here = undefined } = {}) {
   const known = new Map();
   const branches = new Map();
   const byRoot = new Map();
@@ -1229,7 +1245,7 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = 
     if (ctx.broken.length) lines.unshift(brokenMapLine(ctx.broken));
     for (const p of done) { seen[join(root, p)] = now; seen[`shown:${branchOf(root, branches)}:${join(root, p)}`] = now; }
     if (!lines.length) continue;
-    notes.push(`readfirst notes for ${done.join(', ')}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${lines.join('\n- ')}`);
+    notes.push(`readfirst notes for ${done.join(', ')}${here !== undefined && root !== here ? ` in ${root}` : ''}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${lines.join('\n- ')}`);
   }
   return { notes, late, items };
 }
