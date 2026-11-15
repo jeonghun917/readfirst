@@ -71,7 +71,7 @@ test('a script run as the command, or fed to a shell on stdin or by a pipe, is g
     assert.match(u[0].why, /runs it, and readfirst does not read the file's text|runs the commands the command before it prints/u, script);
   }
   for (const script of ['./no-such.sh', '/bin/true', 'cat build.sh', 'bash -n < build.sh', 'sh -n build.sh']) {
-    assert.deepEqual(shellWrites(script, dir), { files: [], unknown: [], repos: [] }, script);
+    assert.deepEqual(shellWrites(script, dir), { files: [], unknown: [], repos: [], removes: [] }, script);
   }
 });
 

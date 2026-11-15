@@ -7,7 +7,20 @@ import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
+import { shellWrites } from '../src/bash-writes.mjs';
 import { runHook } from '../src/cli.mjs';
+
+test('shellWrites gives the files a command only removes or moves as removes', () => {
+  const at = realpathSync(mkdtempSync(join(tmpdir(), 'readfirst-removes-')));
+  const r = (c) => shellWrites(c, at).removes.map((f) => f.slice(at.length + 1)).sort();
+  assert.deepEqual(r('rm a b; unlink c'), ['a', 'b', 'c']);
+  assert.deepEqual(r('git mv a b'), ['a', 'b']);
+  assert.deepEqual(r('mv a d/b'), ['d/b']);
+  assert.deepEqual(r('mv -t d a'), ['d']);
+  assert.deepEqual(r('rm a; echo x > a; touch t; cp a c'), []);
+  assert.deepEqual(r("bash -c 'rm a'"), ['a']);
+  assert.deepEqual(r('sed -i s/x/y/ a'), []);
+});
 
 let n = 0;
 function session() {
@@ -40,6 +53,30 @@ test('a Bash write asks every item, and the refusal says an edit tool would ask 
   assert.match(r.text, /not judged: no edit to judge it against/u);
   assert.match(r.text, HINT);
 });
+
+// No edit tool removes or moves a file, so a command that only does that is not told to use one (review of #243: the
+// hint was on `rm src/a.js` and `git mv src/a.js src/x.js`).
+for (const command of ['rm src/a.js', 'unlink src/a.js', 'git rm -q src/a.js', 'git mv src/a.js src/x.js', 'mv src/a.js src/x.js']) {
+  test(`a command that only removes or moves a file is asked without the hint: ${command}`, () => {
+    const { call } = session();
+    const r = call('Bash', { command });
+    assert.ok(r.refused, r.text);
+    assert.match(r.text, /not judged: no edit to judge it against/u);
+    assert.doesNotMatch(r.text, HINT);
+  });
+}
+
+// A command that writes a file's content keeps the hint, also beside a removal, and a file removed then written again
+// is a content write.
+for (const command of ['cp src/a.js src/b.js', 'echo x > src/a.js', 'rm src/b.js; sed -i s/1/9/ src/a.js', 'rm src/a.js && echo x > src/a.js']) {
+  test(`a command that writes a file's content keeps the hint: ${command}`, () => {
+    const { root, call } = session();
+    writeFileSync(join(root, 'src/b.js'), 'export const b = 1;\n');
+    const r = call('Bash', { command });
+    assert.ok(r.refused, r.text);
+    assert.match(r.text, HINT);
+  });
+}
 
 test('an Edit of the same file asks only the item it touches, and says nothing of it', () => {
   const { root, call } = session();

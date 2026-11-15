@@ -48,7 +48,7 @@ test('what the command cannot know is listed as unknown, never dropped', () => {
   assert.deepEqual(unknown('echo x > "$(git rev-parse --show-toplevel)/f"'), ['$(git rev-parse --show-toplevel)']);
   assert.deepEqual(shellWrites('cd $D && echo x > f.txt', '/r').unknown[0].why, 'D is not set by the command');
   // A write the command names in full is still named; only the unknown one is listed.
-  assert.deepEqual(shellWrites('echo a > k.txt; echo b > $OUT', '/r'), { files: ['/r/k.txt'], unknown: [{ part: '$OUT', word: '$OUT', why: 'OUT is not set by the command', prefix: '' }], repos: [] });
+  assert.deepEqual(shellWrites('echo a > k.txt; echo b > $OUT', '/r'), { files: ['/r/k.txt'], unknown: [{ part: '$OUT', word: '$OUT', why: 'OUT is not set by the command', prefix: '' }], repos: [], removes: [] });
   // prefix: the folder the write is known to be under, '' when nothing is known.
   assert.deepEqual(shellWrites('echo x > /tmp/x/$D/f', '/r').unknown.map((u) => u.prefix), ['/tmp/x/']);
   assert.deepEqual(shellWrites('cd /srv/$D && echo x > f', '/r').unknown.map((u) => u.prefix), ['/srv/']);
@@ -70,7 +70,7 @@ test('words as the shell reads them: a backslash escapes the next character', ()
 
 test('commands that only read stay without writes and without unknowns', () => {
   for (const c of ['S=/a; ls $S', 'F=x; cat $F', 'echo $HOME', 'for f in a b; do echo $f; done', 'grep -n x "$F" 2>/dev/null']) {
-    assert.deepEqual(shellWrites(c, '/r'), { files: [], unknown: [], repos: [] }, c);
+    assert.deepEqual(shellWrites(c, '/r'), { files: [], unknown: [], repos: [], removes: [] }, c);
   }
 });
 
