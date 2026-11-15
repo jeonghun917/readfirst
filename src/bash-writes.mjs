@@ -1978,11 +1978,19 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     if (!abs) return state.why?.prefix ?? '';
     return abs.endsWith('/') ? abs : dirname(abs);
   };
+  // The folder a command's own writes are under, from the folder word it is given (dq'd: `npm --prefix $D`, `git -C`,
+  // `--directory`): a part known only when it runs leaves what is known before it (`$D`: anywhere), never the word
+  // with its \0s (`<cwd>/\0$D\0/` was the prefix of `npm --prefix $D install` until 2026-11-15).
+  const folderUnder = (dir) => {
+    if (dir.includes(HOLE)) return knownPrefix(dir.slice(0, dir.indexOf(HOLE)));
+    return state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+  };
   const dq = (w) => { const r = shellWord(w, state.vars); for (const u of r.unknown) holes.set(u.text, u); return r.text; };
   // Each part and word once, looked up by key: searched through the list, every call past the budget of function bodies
   // (each one not known) took time by the number already there (8,000 functions each calling the next twice: 10.8 s).
   const listed = new Set();
-  const missing = (u) => { const key = `${u.part}\0${u.word}`; if (!listed.has(key)) { listed.add(key); unknown.push(u); } };
+  // The same part under another folder is another write (`find d e -exec cp {} {}.m \;`: `{}` under d and under e).
+  const missing = (u) => { const key = `${u.part}\0${u.word}\0${u.prefix ?? ''}`; if (!listed.has(key)) { listed.add(key); unknown.push(u); } };
   // repos: the checkouts the command makes (git worktree add, clone, init), as a folder or the known start of one;
   // madeAt: those whose folder is known in full.
   const repos = new Set();
@@ -2198,7 +2206,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // name in ways that depend on which files are there, and a patch not read names nothing: either is not known, with
   // why, under where the command runs.
   const applyPatch = (by, text, strip, dir) => {
-    const under = state.base == null ? state.why?.prefix ?? '' : `${resolve(state.base, dir)}/`;
+    const under = folderUnder(dir);
     if (text == null) { missing({ part: by, word: by, why: `${by} changes the files the patch names, and readfirst does not read the patch`, prefix: under }); return; }
     if (strip === undefined) { missing({ part: by, word: by, why: `${by} without -p takes the names in the patch in ways that depend on the files there`, prefix: under }); return; }
     diffPaths(text, strip).forEach((p) => add(foldDirs([dir, p])));
@@ -2227,7 +2235,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     }
     if (!moves) return;
     const part = `git ${sub}`;
-    const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+    const under = folderUnder(dir);
     // `moves`: a move between commits (all of these but clean, which takes away files where they are): the hook shows
     // it without refusing (refuses in src/cli.mjs), since it can name no file to read first.
     missing({ part, word: part, why: `${part} changes the tracked files it brings, known only when it runs`, prefix: under, ...(sub === 'clean' ? {} : { moves: true }) });
@@ -2284,7 +2292,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     if (!(sub === undefined && cmd === 'yarn') && !/^(?:install|i|ci|add|uninstall|un|remove|rm|update|up|upgrade)$/u.test(sub ?? '')) return;
     const what = sub === 'ci' ? 'node_modules' : `${LOCKS[cmd]}${named.length || /^(?:uninstall|un|remove|rm)$/u.test(sub ?? '') ? ', package.json' : ''} and node_modules`;
     const part = `${cmd}${sub ? ` ${sub}` : ''}`;
-    const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+    const under = folderUnder(dir);
     missing({ part, word: part, why: `${part} writes ${what}, as the packages it installs make it`, prefix: under, moves: true });
   };
   // find (raw: its words after the name as written, without redirects; args: the same as dq gives them). The command
@@ -2331,7 +2339,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
             ? shellWrites(text, null, { vars, why: { part: `find ${args[i]}`, why: `${args[i]} runs it in the folder of each file find finds, known only when it runs`, prefix: startAt ? `${startAt.replace(/\/$/u, '')}/` : '' } })
             : shellWrites(text, state.base, { vars, why: state.why });
         r.files.forEach((f) => found.add(f));
-        r.unknown.forEach(missing);
+        // What it gives is shown as the command was written: `{}` again, with the start folder put before it, never
+        // FOUND (`node ./$__readfirst_found_file` was the part of `find . -exec node {} \;`, review of #222).
+        const before = inDir ? './' : rootText.includes(HOLE) ? `${root}/` : `${rootText.replace(/\/+$/u, '')}/`;
+        const shown = (v) => (typeof v === 'string' ? v.replaceAll(`${before}$${FOUND}`, '{}').replaceAll(`\${${FOUND}}`, '{}').replaceAll(`$${FOUND}`, '{}') : v);
+        r.unknown.forEach((u) => missing(Object.fromEntries(Object.entries(u).map(([k, v]) => [k, shown(v)]))));
         r.repos.forEach((x) => repos.add(x));
       }
       i = j;
