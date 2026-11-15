@@ -1697,16 +1697,28 @@ const HOOK_MATCHER = HOOK_TOOLS.join('|');
 // not see it and added a second entry, so the hook ran twice).
 // Read by the command's words (commandWords), never by its spelling (review of #218: a pattern missed
 // `readfirst@^1.2 hook`, `node C:\x\readfirst.mjs hook` and `readfirst --no-color hook`, and took `readfirst hook-x`):
-// what launches it (node, npx, pnpm dlx, bunx, their options, NAME=value), then the readfirst program (readfirst,
-// readfirst@<any version>, a path ending in readfirst or readfirst.mjs, read as written so a backslash stays a
-// separator), then its first word that is not an option or an option's value, which must be `hook`. { stop } says
-// whether it is the Stop hook (`--stop`); null: no readfirst hook.
-const LAUNCHERS = new Set(['node', 'npx', 'bunx', 'pnpm', 'yarn', 'dlx', 'exec', 'env']);
-export function readfirstHookOf(command) {
+// what launches it (a shell, node, npx, npm exec, pnpm dlx, bun x, their options and the values those take, `--`,
+// NAME=value), then the readfirst program (readfirst, readfirst@<any version>, a path ending in readfirst or
+// readfirst.mjs, read as written so a backslash stays a separator), then its first word that is not an option or an
+// option's value, which must be `hook`. A -c string (sh -c, bash -lc, npx -c / --call) is read the same way as a
+// command of its own. { stop } says whether it is the Stop hook (`--stop`); null: no readfirst hook.
+const LAUNCHERS = new Set(['sh', 'bash', 'zsh', 'dash', 'node', 'npx', 'npm', 'bun', 'bunx', 'pnpm', 'yarn', 'dlx', 'exec', 'x', 'env', '--']);
+const LAUNCHER_VALUE = /^(?:-[prC]|--(?:package|require|import|loader|experimental-loader|conditions|env-file|workspace|prefix|dir|cache))$/u;
+const LAUNCHER_CODE = /^(?:-[a-z]*c|--call)$/u;
+export function readfirstHookOf(command, depth = 0) {
   for (const c of commandWords(String(command ?? ''), process.cwd())) {
     const w = c.words.map((x) => String(x.raw ?? x.text).replace(/^["']|["']$/gu, ''));
     let i = 0;
-    while (i < w.length && (LAUNCHERS.has(w[i]) || w[i].startsWith('-') || /^\w+=/u.test(w[i]))) i++;
+    let code = null;
+    while (i < w.length && (LAUNCHERS.has(w[i].split(/[\\/]/u).pop()) || w[i].startsWith('-') || /^\w+=/u.test(w[i]))) {
+      if (i > 0 && LAUNCHER_CODE.test(w[i])) { code = c.words[i + 1]?.text ?? ''; break; }
+      i += LAUNCHER_VALUE.test(w[i]) ? 2 : 1;
+    }
+    if (code !== null) {
+      const inner = depth < 3 ? readfirstHookOf(code, depth + 1) : null;
+      if (inner) return inner;
+      continue;
+    }
     if (!/^readfirst(?:@\S+)?(?:\.mjs)?$/u.test((w[i] ?? '').split(/[\\/]/u).pop())) continue;
     let j = i + 1;
     while (j < w.length && w[j].startsWith('-')) j += !w[j].includes('=') && VALUES.has(w[j].replace(/^--?/u, '')) ? 2 : 1;
