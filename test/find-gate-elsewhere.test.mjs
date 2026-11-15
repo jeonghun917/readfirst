@@ -73,6 +73,25 @@ test('a find elsewhere that asked other words is not named, and with no find at 
   assert.match(findLine(none.add('retryPayment')), /no `readfirst find` in this session asked about it\. Run `npx readfirst find/u);
 });
 
+test('a find given --root on a folder that is not there searched nothing, and is not named', () => {
+  const { call, add } = session();
+  call('Bash', { command: 'npx readfirst find "retry a payment" --root /nonexistent/x' });
+  const line = findLine(add('retryPayment'));
+  assert.match(line, /no `readfirst find` in this session asked about it\. Run `npx readfirst find/u);
+  assert.ok(!line.includes('/nonexistent/x'), line);
+});
+
+test('two folders are said with "and" and "are"; past three the rest are counted', () => {
+  const two = session();
+  const [a, b] = [0, 1].map(() => realpathSync(mkdtempSync(join(tmpdir(), 'readfirst-elsewhere-out-'))));
+  for (const d of [a, b]) two.call('Bash', { command: `cd ${d} && npx readfirst find "retry a payment"` });
+  const line2 = findLine(two.add('retryPayment'));
+  assert.ok([`in ${a} and ${b}, which are not this repository`, `in ${b} and ${a}, which are not this repository`].some((s) => line2.includes(s)), line2);
+  const five = session();
+  for (let i = 0; i < 5; i++) five.call('Bash', { command: `cd ${realpathSync(mkdtempSync(join(tmpdir(), 'readfirst-elsewhere-out-')))} && npx readfirst find "retry a payment"` });
+  assert.match(findLine(five.add('retryPayment')), /in [^,]+, [^,]+, [^,]+ and 2 more, which are not this repository/u);
+});
+
 test('the same find run here after it counts as before', () => {
   const { root, call, add } = session();
   call('Bash', { command: `cd ${tmpdir()} && npx readfirst find "retry a payment"` });

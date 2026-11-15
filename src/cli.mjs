@@ -842,7 +842,8 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       const asked = askedWords(query);
       if (!asked.length) continue;
       if (id) { seen[`find:${id}`] = now; seen[`findwords:${id}:${asked.join(' ')}`] = now; }
-      else seen[`findat:${physical(at)}:${asked.join(' ')}`] = now;
+      // A folder that is not there searched nothing (`--root /gone`): find failed, and it asked nothing anywhere.
+      else if (existsSync(at)) seen[`findat:${physical(at)}:${asked.join(' ')}`] = now;
     }
     // `readfirst read` run in Bash shows the same notes the hook would (2026-11-13: the gate did not count it, so a
     // file read that way was refused all the same). It counts for the branch it ran on, and only when its whole
@@ -945,7 +946,9 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       const by = f.names.map((n) => [n, findsElsewhere(seen, n)]).filter(([, at]) => at.length);
       return by.length ? [{ root: f.root, names: by.map(([n]) => n), at: [...new Set(by.flatMap(([, at]) => at))] }] : [];
     });
-    const elsewhereLine = elsewhere.map((e) => ` A \`readfirst find\` of this session asked about ${e.names.map((n) => `\`${n}\``).join(', ')} in ${e.at.join(', ')}, which is not this repository (${e.root}), so it searched other files: run it here, or with \`--root ${e.root}\`.`).join('');
+    // cut: three folders named, the rest counted (each is a find of this session that asked a word of the name)
+    const places = (at) => (at.length === 1 ? `in ${at[0]}, which is` : `in ${at.length > 3 ? `${at.slice(0, 3).join(', ')} and ${at.length - 3} more` : `${at.slice(0, -1).join(', ')} and ${at.at(-1)}`}, which are`);
+    const elsewhereLine = elsewhere.map((e) => ` A \`readfirst find\` of this session asked about ${e.names.map((n) => `\`${n}\``).join(', ')} ${places(e.at)} not this repository (${e.root}), so it searched other files: run it here, or with \`--root ${e.root}\`.`).join('');
     const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}${elsewhere.length ? ' in this repository' : ''}.${elsewhereLine} Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
     // Files it had no time for refuse the call once: made again at once it goes through, the files named and still
