@@ -2396,7 +2396,9 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // opened by the shell, where the command runs. Until 2026-11-15 -d was left out: `patch -d sub -p1 < fix.diff`
     // named a.txt where patch changed sub/a.txt, and `--directory sub` named sub as the file.
     else if (cmd === 'patch' && !args.includes('--dry-run')) {
-      const dir = o.values.d?.at(-1) ?? '.';
+      // Each -d moves on from the folder the one before it moved to (`-d sub -d b` is sub/b), an absolute one from /
+      // (review of #236: only the last was taken, so `-d sub -d b` named b/a.txt where patch changed sub/b/a.txt).
+      const dir = (o.values.d ?? []).reduce((at, d) => (isAbsolute(d) ? d : join(at, d)), '.');
       const at = (w) => (isAbsolute(w) ? w : join(dir, w));
       const file = o.files[0];
       if (o.values.o) add(at(o.values.o.at(-1)));

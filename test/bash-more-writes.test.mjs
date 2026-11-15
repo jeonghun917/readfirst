@@ -223,10 +223,15 @@ test('patch -d DIR names the files under DIR, and bash agrees', { skip: !hasGit 
     ['patch -s -d sub -o out.txt a.txt < fix0.diff', ['sub/out.txt']],
     ['patch -s -d sub -p0 < fix0.diff', ['sub/a.txt']],
     ['patch -s --strip 1 -d sub < fix.diff', ['sub/a.txt']],
+    // Each -d moves on from the one before (review of #236: only the last was taken).
+    ['patch -s -d sub -d b -p0 < fix0.diff', ['sub/b/a.txt']],
+    ['patch -s -d sub -d sub -p0 < fix0.diff', ['sub/sub/a.txt']],
+    ['patch -s -d d -d ../sub -p0 < fix0.diff', ['sub/a.txt']],
+    ['patch -s --directory=sub -d b -o o.txt a.txt < fix0.diff', ['sub/b/o.txt']],
   ]) {
     const dir = setUp();
-    mkdirSync(join(dir, 'sub'));
-    for (const f of ['sub/a.txt', 'sub/b.txt']) writeFileSync(join(dir, f), 'one\n');
+    for (const f of ['sub/b', 'sub/sub']) mkdirSync(join(dir, f), { recursive: true });
+    for (const f of ['sub/a.txt', 'sub/b.txt', 'sub/b/a.txt', 'sub/sub/a.txt']) writeFileSync(join(dir, f), 'one\n');
     writeFileSync(join(dir, 'sub/in.diff'), readFileSync(join(dir, 'fix.diff'), 'utf8'));
     writeFileSync(join(dir, 'fix0.diff'), p0);
     assert.deepEqual(named(script, dir), want, script);
