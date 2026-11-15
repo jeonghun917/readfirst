@@ -1302,16 +1302,32 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // Keys recorded before paths were resolved through symlinks are resolved here.
     const raw = tag ? tag[2] : recorded;
     const key = isAbsolute(raw) ? physical(raw) : raw;
-    if (isAbsolute(key) && seen[`gone:${key}`] !== undefined) continue;
     // A file whose folder is gone is placed by its nearest existing folder (rootOf): a folder deleted inside a repository
-    // that is still there is a change of that repository and is checked (until 2026-11-15 it was said as not checked).
+    // that is still there is a change of that repository and is checked (until 2026-11-15 it was said as not checked),
+    // when that repository tracks the file (in its index or HEAD). One it does not track was in a checkout that is gone
+    // (a worktree or a nested repository kept inside it, ignored there), which that repository's checks never see.
     const folderThere = isAbsolute(key) && existsSync(dirname(key));
-    const root = isAbsolute(key) ? rootOf(key, roots) : here;
+    let root = isAbsolute(key) ? rootOf(key, roots) : here;
+    let broken = false;
+    if (root && isAbsolute(key) && !folderThere) {
+      const rel = relative(root, key).replace(/\\/gu, '/');
+      // A git that fails here leaves the file not checked, said on every stop (lost), never dropped as gone. A repository
+      // with no commit has no HEAD: its index is the answer.
+      try {
+        let tracked = Boolean(git(root, 'ls-files', '--cached', '--', rel).trim());
+        let head = true;
+        try { git(root, 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}'); } catch { head = false; }
+        if (!tracked && head) tracked = Boolean(git(root, 'ls-tree', '-r', '--name-only', 'HEAD', '--', rel).trim());
+        if (!tracked) root = null;
+      } catch { root = null; broken = true; }
+    }
     // The hook marks only files inside a repository, so a marked file whose repository git no longer finds (a .git file
     // pointing at a gitdir that is gone, a moved folder) is a file whose checks cannot run: said below, never dropped
     // (review of readfirst#207). One whose folder is gone and no repository holds what is left (a worktree removed in
-    // the session) is said once and then dropped (`gone:<path>`): until 2026-11-15 it was said on every stop.
-    if (!root) { if (folderThere) lost.push(key); else if (isAbsolute(key)) gone.push(key); continue; }
+    // the session) is said once and then dropped: `gone:<path>` keeps it from being said again, and is read only while the
+    // path is still gone, so a checkout made again at that path is checked as any (review of readfirst#247: the mark
+    // left a worktree added again at the same path unchecked). Until 2026-11-15 it was said on every stop.
+    if (!root) { if (folderThere || broken) lost.push(key); else if (isAbsolute(key) && seen[`gone:${key}`] === undefined) gone.push(key); continue; }
     const path = isAbsolute(key) ? relative(root, key).replace(/\\/gu, '/') : key;
     if (path.startsWith('..')) continue;
     if (!byRoot.has(root)) byRoot.set(root, []);
