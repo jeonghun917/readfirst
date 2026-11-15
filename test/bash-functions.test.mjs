@@ -143,15 +143,30 @@ test('a chain of calls puts each body in front of the list without moving the re
 
 // Review of 71dbf3d: mayCd called itself once per function a function calls, so a chain of 8,000 ran out of stack in
 // every reader (main too), and each call past the budget asked it again, so 8,000 functions each calling the next twice
-// took 8.7 to 10.0 s (three reads). Each reader reads both shapes at 20,000 functions within 10 s.
-test('long chains of functions are read by every reader without running out of stack or time', () => {
-  const chain = (n, twice) => { let t = 'f0() { echo > leaf; }\n'; for (let i = 1; i <= n; i++) t += `f${i}() { f${i - 1};${twice ? ` f${i - 1};` : ''} }\n`; return `${t}f${n}; echo > h`; };
+// took 8.7 to 10.0 s (three reads). Each reader reads both shapes at 20,000 functions without running out of stack,
+// and in time that grows with the length: four times the functions take less than eight times as long (about four
+// when linear, sixteen by the square), the best of two reads at 2,000 and 8,000 (before the fix of 71dbf3d, 754 ms and 8,305 ms: 11 times). A fixed limit (10 s at 20,000)
+// failed on a slower CI runner with the code unchanged (10.6 s on Node 20, review of #225); the one at 20,000 is
+// only a bound far past any runner.
+const chain = (n, twice) => { let t = 'f0() { echo > leaf; }\n'; for (let i = 1; i <= n; i++) t += `f${i}() { f${i - 1};${twice ? ` f${i - 1};` : ''} }\n`; return `${t}f${n}; echo > h`; };
+test('long chains of functions are read by every reader without running out of stack', () => {
   for (const twice of [false, true]) {
     const text = chain(20000, twice);
     for (const read of [shellWrites, bashReads, commandWords]) {
       const t = performance.now();
       assert.doesNotThrow(() => read(text, '/r'), `${read.name}, ${twice ? 'calling twice' : 'once'}`);
-      assert.ok(performance.now() - t < 10000, `${read.name}, ${twice ? 'calling twice' : 'once'}: ${performance.now() - t} ms`);
+      assert.ok(performance.now() - t < 120_000, `${read.name}, ${twice ? 'calling twice' : 'once'}: ${performance.now() - t} ms`);
+    }
+  }
+});
+
+test('the time to read a chain of functions grows with its length, not by its square', () => {
+  const best = (read, text) => { let m = Infinity; for (let k = 0; k < 2; k++) { const t = performance.now(); read(text, '/r'); m = Math.min(m, performance.now() - t); } return m; };
+  for (const twice of [false, true]) {
+    for (const read of [shellWrites, bashReads, commandWords]) {
+      const small = best(read, chain(2000, twice));
+      const large = best(read, chain(8000, twice));
+      assert.ok(large / small < 8, `${read.name}, ${twice ? 'calling twice' : 'once'}: ${small.toFixed(1)} ms at 2,000, ${large.toFixed(1)} ms at 8,000`);
     }
   }
 });
