@@ -1,8 +1,9 @@
 // A command the shell never runs (review of #228, 2026-11-15): after `exit`, after `false &&`, after `true ||` or `: ||`.
-// Until then every reader read it as run: `false && readfirst read a.js` counted as a read and opened the gate,
-// `exit 0; readfirst answer '...'` as an answer, and shellWrites named the write of `true || echo > f` as certain. Now
-// eachCommand decides it once, for every walk (shellWrites, bashReads, commandWords and the readers built on it): only a
-// constant result counts (`true`, `false`, `:`, an `exit` at the top level); any other && or || may run, as before.
+// Until then every reader read it as run: `false && readfirst read a.js` counted as a read and opened the gate, and
+// `exit 0; readfirst answer '...'` as an answer. Now eachCommand decides it once, and only the readers that credit
+// something skip it (bashReads, commandWords and the answer, find and hook readers built on it): there a wrong guess
+// credits less. shellWrites and stateAt skip nothing, on purpose: there a wrong guess would let a write through. Only
+// a constant result counts (the bare `true`, `false`, `:`, an `exit` at the top level); any other && or || may run.
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
@@ -43,18 +44,20 @@ test('a command that may run is read as before', () => {
   assert.deepEqual(reads('false && { x; } || readfirst read a.js'), ['/r/a.js'], 'the || after a block skipped by false && runs');
 });
 
-test('shellWrites names no write the shell never runs, and a call that never runs reads no body', () => {
+// The other side, on purpose: the writes are read as before, every one of them, whether it runs or not. Named when it
+// may not run, a write costs at most one refusal; skipped on a wrong guess, it goes through the gate unread (three
+// reviews of this change found such guesses: a redirect that fails, a name redefined by a function, eval or enable).
+test('shellWrites skips nothing: a write that may never run is still named', () => {
   const written = (command) => shellWrites(command, CWD).files;
-  assert.deepEqual(written('true || echo x > f'), []);
-  assert.deepEqual(written('false && echo x > f; exit; echo y > g'), []);
-  assert.deepEqual(written('f() { echo x > f; }; true || f'), []);
+  assert.deepEqual(written('true || echo x > f'), ['/r/f']);
+  assert.deepEqual(written('false && echo x > f; exit; echo y > g'), ['/r/f', '/r/g']);
+  assert.deepEqual(written('f() { echo x > f; }; true || f'), ['/r/f']);
   assert.deepEqual(written('x || echo x > f'), ['/r/f']);
-  assert.deepEqual(written('false && cd /elsewhere; echo x > f'), ['/r/f'], 'a cd that never runs moves nothing');
 });
 
 // Against bash itself: every script below writes f only through the command after its first part. Where bash writes f,
-// shellWrites must name it (a write it misses is one the gate lets through); where it never runs, it names nothing.
-// The forms that may run but do not here (`X=1 false &&`, `env true ||`) are named: readfirst reads no constant there.
+// shellWrites must name it (a write it misses is one the gate lets through); after a command that never runs, a read
+// of the same place is not credited.
 const NEVER = ['true || ', ': || ', 'false && ', 'exit; ', 'exit 0\n', 'command true || ', 'builtin false && ', 'false && x && ', 'true || x || '];
 const MAY = [
   'true < missing || ', 'true > nodir/x || ', ': > nodir/x || ', 'exit < missing; ', 'true() { return 1; }; true || ', ':() { return 1; }; : || ',
@@ -66,7 +69,7 @@ const MAY = [
 // Function names that are no identifiers (review of 05c537f: put in a RegExp, `[` threw and `p?` found no body).
 const ODD_NAMES = ['[', 'p?', 'a*', 'x+', 'a.b', ':'];
 const bash = spawnSync('bash', ['-c', 'true']).status === 0;
-test('against bash: no write bash makes is missed, and none is named after a command that never runs', { skip: !bash && 'bash is not found here' }, () => {
+test('against bash: no write bash makes is missed, and no read is credited after a command that never runs', { skip: !bash && 'bash is not found here' }, () => {
   for (const before of [...NEVER, ...MAY]) {
     const dir = mkdtempSync(join(tmpdir(), 'readfirst-never-'));
     const script = `${before}echo x > f`;
@@ -75,8 +78,11 @@ test('against bash: no write bash makes is missed, and none is named after a com
     const w = shellWrites(script, dir);
     const named = w.files.includes(join(dir, 'f')) || w.unknown.length > 0;
     if (existsSync(join(dir, 'f'))) assert.ok(named, `bash writes f after ${JSON.stringify(before)}, and readfirst does not name it`);
-    if (NEVER.includes(before)) assert.equal(existsSync(join(dir, 'f')) || named, false, `never runs: ${JSON.stringify(before)}`);
-    else assert.ok(named, `may run: ${JSON.stringify(before)}`);
+    assert.ok(named, `every write is named: ${JSON.stringify(before)}`);
+    if (NEVER.includes(before)) {
+      assert.equal(existsSync(join(dir, 'f')), false, `bash never runs it: ${JSON.stringify(before)}`);
+      assert.deepEqual(bashReads(`${before}readfirst read f`, dir), [], `a read there is not credited: ${JSON.stringify(before)}`);
+    }
   }
   for (const name of ODD_NAMES) {
     const dir = mkdtempSync(join(tmpdir(), 'readfirst-never-'));
@@ -96,8 +102,11 @@ const GATE_DENY = [
   `true() { return 1; }; true || ${W}`, `:() { return 1; }; : || ${W}`, `exit() { :; }; exit; ${W}`, `false() { :; }; false && ${W}`,
   `X=1 false && ${W}`, `env true || ${W}`, `[() { ${W}; }; [`, `p?() { ${W}; }; p?`, `a*() { ${W}; }; a*`,
   `eval 'true() { return 1; }'; true || ${W}`, `shopt -s expand_aliases\nalias true=false\ntrue || ${W}`, `enable -n exit; exit; ${W}`,
+  `builtin enable -n exit; exit; ${W}`, `eval 'enable -n exit'; exit; ${W}`,
+  // And the writes that surely never run: named all the same, so refused as on main.
+  `true || ${W}`, `false && ${W}`, `exit; ${W}`, `false && { ${W}; }`,
 ];
-test('the gate refuses a write after a result that only looks constant, as on main', () => {
+test('the gate refuses every write of its list, as on main', () => {
   const root = mkdtempSync(join(tmpdir(), 'readfirst-never-gate-'));
   const files = { 'src/a.js': 'export const a = 1;\n', '.readfirst/map.json': JSON.stringify({ format: 'readfirst/map@1', groups: [{ id: 'src', title: 'the code', files: ['src/**'], risks: [{ text: 'a changes with care' }] }] }) };
   for (const [p, body] of Object.entries(files)) { mkdirSync(dirname(join(root, p)), { recursive: true }); writeFileSync(join(root, p), body); }

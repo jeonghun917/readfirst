@@ -1430,7 +1430,11 @@ const CHAINED = /^(?:&&|\|\||\|&?)$/u;
 // A call of a function from inside its own body is not read again, and the bodies read for one text are capped
 // (CALL_BUDGET and 8 per segment of it): such a call is given as `unread`, with why.
 const CALL_BUDGET = 20000;
-function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}) {
+// skip: leave out the commands that never run (bashReads and commandWords, whose readers credit a read, an answer or a
+// find: a wrong guess there credits less). shellWrites and stateAt never skip: a write that may not run is still
+// named, so a wrong guess can only refuse once more, never let a write through (2026-11-15, after three reviews found
+// guesses that hid writes).
+function eachCommand(text, state, visit, tail = () => {}, { calls = false, skip = false } = {}) {
   // Here-documents first, then comments, in one place for every walk (hereDocs): a body's lines are no commands, and a
   // ' in a body (`it's`) would otherwise open a quote for the comment reader. Both are no change on text without them.
   // Each is skipped where it has nothing to find (no << or no #). (stateAt walked the text before each here-document
@@ -1534,7 +1538,7 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     const p = parens(text, outer.length);
     const deep = (state.blocks?.length ?? 0) + groups.length + outer.length;
     if (dead !== null && deep <= dead) dead = null;
-    const never = dead !== null || (before === '&&' && status === 'false') || (before === '||' && status === 'true');
+    const never = skip && (dead !== null || (before === '&&' && status === 'false') || (before === '||' && status === 'true'));
     const subBefore = ticks || inSub(outer);
     if ((blank(text).match(/(?<!\\)`/gu) ?? []).length % 2) ticks = !ticks;
     for (let k = 0; k < p.lead; k++) outer.push(snapshot(state));
@@ -2521,7 +2525,7 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map(), dept
       const abs = files.filter((f) => !f.includes(HOLE) && !/[*?]/u.test(f)).map((f) => (isAbsolute(f) ? f : from == null ? null : resolve(from, f))).filter(Boolean);
       if (abs.length) out.push({ files: abs, seen: !thrown && !limit, why: thrown ? 'its output was sent elsewhere' : limit ? '--limit cut the list' : null });
     }
-  }); } finally { liftDone(); }
+  }, undefined, { skip: true }); } finally { liftDone(); }
   return out;
 }
 
@@ -2584,7 +2588,7 @@ export function commandWords(command, cwd = process.cwd(), { vars = new Map() } 
       const at = state.base;
       follow(state, opened, how);
       if (words.length) out.push({ words, op, pipe: how.pipe, body, at });
-    });
+    }, undefined, { skip: true });
   } finally { liftDone(); }
   return out;
 }
