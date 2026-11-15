@@ -2101,10 +2101,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
         if (expands && /[$`]/u.test(v)) { open = true; return false; }
         return true;
       });
-      // A literal, or a pathlib path made of one (`Path('p.txt')`, `pathlib.Path('p.txt')`): the receiver of
-      // `.write_text(` is the path, as codeTargets reads it (review of #240: every pathlib write was also not known).
+      // A literal, or a pathlib path made of one (`Path('p.txt')`, `pathlib.Path('p.txt')`, `pl.Path('p.txt')` after
+      // `import pathlib as pl`): the receiver of `.write_text(` is the path, as codeTargets reads it (review of #240:
+      // every pathlib write was also not known).
       const plain = new RegExp(String.raw`^${LIT}$`, 'u');
-      const path = new RegExp(String.raw`^(?:pathlib\.)?Path\(\s*${LIT}\s*\)$`, 'u');
+      const path = new RegExp(String.raw`^(?:[A-Za-z_]\w*\.)?Path\(\s*${LIT}\s*\)$`, 'u');
       const lit = { [Symbol.match]: (v) => v.match(plain) ?? v.match(path) };
       for (const { target, unsure } of t.others) {
         if (unsure) { open = true; continue; }

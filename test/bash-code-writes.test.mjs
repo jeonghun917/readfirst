@@ -73,6 +73,8 @@ test('a pathlib write names its file alone, and python agrees', { skip: !hasPyth
     ["from pathlib import Path; Path('p.txt').write_bytes(b'x')", 'p.txt'],
     ["from pathlib import Path; p = Path('p3.txt'); p.write_text('x')", 'p3.txt'],
     ["from pathlib import Path; Path('o.txt').open('w').write('x')", 'o.txt'],
+    // A module alias (review of 04082fd: `pl.Path(...)` was also not known; main named the file alone).
+    ["import pathlib as pl; pl.Path('al.txt').write_text('x')", 'al.txt'],
   ]) {
     for (const command of [`python3 -c "${code}"`, `python3 - <<'EOF'${NL}${code.split('; ').join(NL)}${NL}EOF`]) {
       const dir = mkdtempSync(join(tmpdir(), 'readfirst-code-writes-'));
