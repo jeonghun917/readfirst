@@ -75,3 +75,30 @@ test('whole long names, and tools with no list of names, read as before', () => 
   assert.deepEqual(named('sort --output=o.txt in.txt', d).files, ['o.txt']);
   assert.deepEqual(named('rsync --rsh ssh a.txt d', d).files, ['d/a.txt'], 'd is a folder here: the file that lands in it');
 });
+
+// GNU patch 2.7.6 (its names in OPTIONS since 2026-11-15; before, patch read whole names only): `--dir=sub` named a.txt
+// where patch changed sub/a.txt, `--out=o.txt` named a.txt where it wrote o.txt, `--dry` named the file a dry run
+// leaves alone, and `--d sub` named sub, though patch refuses it.
+const gnuPatch = /GNU patch/u.test(spawnSync('patch', ['--version'], { encoding: 'utf8' }).stdout ?? '');
+const withPatch = () => {
+  const d = setUp();
+  mkdirSync(join(d, 'sub'));
+  writeFileSync(join(d, 'sub', 'a.txt'), 'one\n');
+  writeFileSync(join(d, 'p.diff'), '--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+two\n');
+  return d;
+};
+test('patch: a unique prefix of its long options is that option, and patch agrees', { skip: !gnuPatch && 'GNU patch is not installed' }, () => {
+  for (const script of [
+    'patch --dry -p1 < p.diff', 'patch --dry-ru -p1 < p.diff', 'patch --dir=sub -p1 < p.diff', 'patch --dire sub -p1 < p.diff',
+    'patch --out=o.txt a.txt p.diff', 'patch --in=p.diff -p1', 'patch --st=1 < p.diff', 'patch --str 1 < p.diff', 'patch --qui -p1 < p.diff',
+  ]) {
+    const d = withPatch();
+    assert.deepEqual(named(script, d), { files: run(script, d).changed, unknown: [] }, script);
+  }
+  for (const script of ['patch --d sub -p1 < p.diff', 'patch --s 1 < p.diff', 'patch --reject-f=r.rej -p1 < p.diff']) {
+    const d = withPatch();
+    const { status, changed } = run(script, d);
+    assert.ok(status !== 0 && changed.length === 0, `${script}: patch refuses it (${status}, ${changed})`);
+    assert.deepEqual(named(script, d), { files: [], unknown: [`patch ${script.split(' ')[1]}`] }, script);
+  }
+});

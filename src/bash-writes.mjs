@@ -791,11 +791,11 @@ const OPTIONS = {
   sort: { next: 'oSTkt', long: { output: 'o', 'buffer-size': 'S', 'temporary-directory': 'T', key: 'k', 'field-separator': 't', parallel: 'p', 'files0-from': 'F' }, takes: ['batch-size', 'compress-program', 'random-source', 'sort'], names: ['batch-size', 'buffer-size', 'check', 'compress-program', 'debug', 'dictionary-order', 'field-separator', 'files0-from', 'general-numeric-sort', 'help', 'human-numeric-sort', 'ignore-case', 'ignore-leading-blanks', 'ignore-nonprinting', 'key', 'merge', 'month-sort', 'numeric-sort', 'output', 'parallel', 'random-sort', 'random-source', 'reverse', 'sort', 'stable', 'temporary-directory', 'unique', 'version', 'version-sort', 'zero-terminated'] },
   awk: { next: 'fEvFWil', long: { file: 'f', exec: 'E', assign: 'v', 'field-separator': 'F', include: 'i', load: 'l' } },
   // GNU patch 2.7.6: every option that takes a value (`--directory sub` named sub as the file it patches until
-  // 2026-11-15); the long-only ones are put under letters patch does not use.
-  patch: { next: 'BDdFgioprVYzx', long: { prefix: 'B', ifdef: 'D', directory: 'd', fuzz: 'F', get: 'g', input: 'i', output: 'o', strip: 'p', 'reject-file': 'r', 'version-control': 'V', 'basename-prefix': 'Y', suffix: 'z', debug: 'x', 'quoting-style': 'Q', 'reject-format': 'R', 'read-only': 'O' } },
+  // 2026-11-15); the long-only ones are put under letters patch does not use. names: from `patch --help` and, for the
+  // two it does not list (--debug, --follow-symlinks), getopt's own list when a prefix is ambiguous (`patch --d`:
+  // '--directory' '--debug' '--dry-run'); the ones that require a value are exactly those in long.
+  patch: { next: 'BDdFgioprVYzx', long: { prefix: 'B', ifdef: 'D', directory: 'd', fuzz: 'F', get: 'g', input: 'i', output: 'o', strip: 'p', 'reject-file': 'r', 'version-control': 'V', 'basename-prefix': 'Y', suffix: 'z', debug: 'x', 'quoting-style': 'Q', 'reject-format': 'R', 'read-only': 'O' }, names: ['backup', 'backup-if-mismatch', 'basename-prefix', 'batch', 'binary', 'context', 'debug', 'directory', 'dry-run', 'ed', 'follow-symlinks', 'force', 'forward', 'fuzz', 'get', 'help', 'ifdef', 'ignore-whitespace', 'input', 'merge', 'no-backup-if-mismatch', 'normal', 'output', 'posix', 'prefix', 'quiet', 'quoting-style', 'read-only', 'reject-file', 'reject-format', 'remove-empty-files', 'reverse', 'set-time', 'set-utc', 'silent', 'strip', 'suffix', 'unified', 'verbose', 'version', 'version-control'] },
 };
-// { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given,
-// ambiguous: the long options written as a prefix of more than one of spec.names }
 // The long option a word `--name` or `--name=value` stands for. A unique prefix of one of the tool's long names is that
 // option, as GNU getopt_long reads it; one that starts several is refused by the tool: null (options() gives it as
 // `ambiguous`, and what its value would be is not known). A spec without names reads the name as written.
@@ -805,11 +805,15 @@ function longName(word, spec) {
   const fits = spec.names && !spec.names.includes(given) ? spec.names.filter((n) => n.startsWith(given)) : [given];
   return fits.length > 1 ? null : fits[0] ?? given;
 }
+// { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given,
+// ambiguous: the long options written as a prefix of more than one of spec.names, given: the long options given, by the
+// name each stands for (`--dry` is dry-run) }
 function options(args, spec) {
   const files = [];
   const values = {};
   const put = (k, v) => { (values[k] ??= []).push(v ?? ''); };
   const ambiguous = [];
+  const named = [];
   let inPlace = false;
   let ended = false;
   for (let i = 0; i < args.length; i++) {
@@ -820,6 +824,7 @@ function options(args, spec) {
       const eq = a.indexOf('=');
       const name = longName(a, spec);
       if (name === null) { ambiguous.push(a); continue; }
+      named.push(name);
       if (spec.inPlace && name === 'in-place') inPlace = true;
       else if (spec.long[name]) put(spec.long[name], eq < 0 ? args[++i] : a.slice(eq + 1));
       else if (spec.takes?.includes(name) && eq < 0) i++;
@@ -833,7 +838,7 @@ function options(args, spec) {
       if (spec.digits?.includes(c)) { const d = a.slice(j + 1).match(/^[0-7]*/u)[0]; put(c, d); j += d.length; }
     }
   }
-  return { files, values, inPlace, script: Boolean(values.e || values.E || values.f), ambiguous };
+  return { files, values, inPlace, script: Boolean(values.e || values.E || values.f), ambiguous, given: named };
 }
 
 // The folder a command works in after each of its change-folder options, in order (patch -d, git -C), dq'd: each
@@ -893,6 +898,29 @@ function backupSuffix(args, spec) {
   if (/^(?:numbered|t)$/u.test(control ?? '')) return { numbered: true };
   return { suffix: o.values.S?.at(-1) || '~' };
 }
+
+// An absolute folder written as a prefix: one / at its end, so the root is `/` (`${resolve(...)}/` made it `//`, and
+// the hook kept no repository it knew under it: none starts with `//`; 2026-11-15).
+const asFolder = (abs) => (abs.endsWith('/') ? abs : `${abs}/`);
+// The folder a known start of a path stands for (text: what is known before the first part not known; base: the folder
+// the command is in, null when not known): `/tmp/x/` and `/tmp/x/a` (part of a name) are under /tmp/x/, a relative
+// start is under base (null when base is not known), an empty one under nothing known (''). The folders before the
+// last / are resolved, `..` and `.` taken out, and what follows it is the start of a name, never a folder:
+// `/a/b/../$X` is under /a/ (it was `/a/b/../`, under which no repository's path starts, so the hook left out those
+// the command makes), `/r/..$X` under /r/, and `../$X` from /r under / (it was `//`; 2026-11-15).
+function knownFolder(text, base) {
+  if (!text) return '';
+  if (!isAbsolute(text) && base == null) return null;
+  return asFolder(resolve(isAbsolute(text) ? '/' : base, text.slice(0, text.lastIndexOf('/') + 1)));
+}
+// A `..` after a part not known climbs from the folder known before it, as that part may be empty: `sub/$X/../f` may be
+// ./f. ups: how many; '' (nothing known) stays ''; the root stays /.
+function climb(folder, ups) {
+  let above = folder;
+  for (let k = 0; k < ups && above; k++) { const t = above.replace(/\/+$/u, ''); above = t && dirname(t) !== '/' ? `${dirname(t)}/` : '/'; }
+  return above;
+}
+const upsAfter = (q) => q.slice(q.indexOf(HOLE)).split('/').filter((s) => s === '..').length;
 
 // A word runs on through quotes, a $( ) (one level of parentheses inside it) and backticks: `sed -i ... $(grep -rl x src
 // docs)` was split inside the $( ), and its src and `docs)` were named as the files sed writes (2026-11-10). Such a word
@@ -1890,14 +1918,17 @@ function follow(state, ws, { pipe = false, maybe = false, body = false, called =
     state.base = maybe || turns ? null : to;
     if (turns && before != null) state.why = { part: state.cdText, why: `${cmd} inside a loop: each turn starts where the last one ended`, prefix: '' };
     else if (maybe && before != null) state.why = { part: state.cdText, why: `${cmd} runs only on some paths through the command`, prefix: '' };
-    // prefix: the absolute folder known to hold where it went (`cd /r/$X` is under /r), '' when nothing is known; fresh:
-    // it went into a new folder mktemp made there (`cd $(mktemp -d)`), so nothing is below it yet.
+    // prefix: the folder known to hold where it went (`cd /r/$X` is under /r/, `cd sub/$X` under sub of the folder
+    // before), '' when nothing is known, read as a write's is (knownFolder, climb): until 2026-11-15 a relative one was
+    // under nothing known, `/a/b/../$X` was under `/a/b/../` and `cd /a/$X/..` under /a/ (it may be /). fresh: it went
+    // into a new folder mktemp made there (`cd $(mktemp -d)`), so nothing is below it yet; after a `..` it is not.
     if (state.base == null && !maybe && !turns) {
       const known = arg?.text.includes(HOLE) ? arg.text.slice(0, arg.text.indexOf(HOLE)) : '';
       const first = arg?.unknown[0];
       const made = !known && first?.under != null ? (isAbsolute(first.under) ? first.under : before != null ? resolve(before, first.under) : null) : null;
-      const prefix = made ? `${made.replace(/\/$/u, '')}/` : known && isAbsolute(known) ? (known.endsWith('/') ? known : dirname(known)) : '';
-      state.why = first ? { part: first.part, why: first.why, prefix, fresh: Boolean(made) } : before == null && state.why ? state.why : { part: state.cdText, why: `where ${state.cdText} goes is not known before it runs`, prefix: '' };
+      const ups = arg?.text.includes(HOLE) ? upsAfter(arg.text.replace(/\0[^\0]*\0/gu, HOLE)) : 0;
+      const prefix = made ? climb(asFolder(made), Math.max(0, ups - 1)) : known ? climb(knownFolder(known, before) ?? '', ups) : '';
+      state.why = first ? { part: first.part, why: first.why, prefix, fresh: Boolean(made) && !ups } : before == null && state.why ? state.why : { part: state.cdText, why: `where ${state.cdText} goes is not known before it runs`, prefix: '' };
     }
     // The shell keeps where it was and where it is: `cd -` and $OLDPWD go back to the folder before.
     state.vars.set('OLDPWD', before != null ? { value: before, exported: true } : { value: null, why: 'the folder before is not known', part: '$OLDPWD' });
@@ -1967,12 +1998,21 @@ export function bashWrites(command, cwd = process.cwd()) {
 // its environment); a here-document or a `bash -c` string is read with those of the shell around it that it sees.
 export function shellWrites(command, cwd = process.cwd(), options = {}) {
   try {
-    if (!liftBegin(command)) return { files: [], unknown: [{ part: 'the command', word: '', why: NO_MARK, prefix: '' }], repos: [] };
+    if (!liftBegin(command)) return { files: [], unknown: [{ part: 'the command', word: '', why: NO_MARK, prefix: '' }], repos: [], noEditTool: [] };
     return writesOf(command, cwd, options);
   } finally { liftDone(); }
 }
 function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   const found = new Set();
+  // gone: what a removal or a move names (rm, unlink, git rm: the file removed; mv and git mv: where it was and where it
+  // goes, which is written, not removed); wrote: what any other write names, mv's backup too. A file only in gone is a
+  // `noEditTool` of the result: a write no edit tool can make, so the gate's hint to use one leaves it out (2026-11-15).
+  // It is not a list of the files removed: a move's destination is in it.
+  const gone = new Set();
+  const wrote = new Set();
+  let removing = false;
+  const addFound = (f) => { found.add(f); (removing ? gone : wrote).add(f); };
+  const takeIn = (r) => { for (const f of r.files) { found.add(f); (r.noEditTool?.includes(f) ? gone : wrote).add(f); } };
   const unknown = [];
   // The variables it starts with (the hook passes its own environment: Claude Code starts it with the session's), and
   // $PWD where it starts.
@@ -1990,20 +2030,16 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   };
   // The word's text with what it holds that is not known kept between \0s, and why for each such part.
   const holes = new Map();
-  // The folder a known start of a path stands for: `/tmp/x/` and `/tmp/x/a` (part of a name) are under /tmp/x; a
-  // relative start is under where the command is; an empty one under nothing known.
-  const knownPrefix = (text) => {
-    if (!text) return '';
-    const abs = isAbsolute(text) ? text : state.base == null ? null : resolve(state.base, text) + (text.endsWith('/') ? '/' : '');
-    if (!abs) return state.why?.prefix ?? '';
-    return abs.endsWith('/') ? abs : dirname(abs);
-  };
+  // The folder a known start of a path stands for (knownFolder); relative, with where the command is not known, the
+  // folder known to hold where it went.
+  const knownPrefix = (text) => knownFolder(text, state.base) ?? state.why?.prefix ?? '';
   // The folder a command's own writes are under, from the folder word it is given (dq'd: `npm --prefix $D`, `git -C`,
   // `--directory`): a part known only when it runs leaves what is known before it (`$D`: anywhere), never the word
-  // with its \0s (`<cwd>/\0$D\0/` was the prefix of `npm --prefix $D install` until 2026-11-15).
+  // with its \0s (`<cwd>/\0$D\0/` was the prefix of `npm --prefix $D install` until 2026-11-15), and a `..` after it
+  // climbs as in a path (`-d sub/$X/..` may be the folder itself, it was under sub/ until 2026-11-15).
   const folderUnder = (dir) => {
-    if (dir.includes(HOLE)) return knownPrefix(dir.slice(0, dir.indexOf(HOLE)));
-    return state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+    if (dir.includes(HOLE)) return climb(knownPrefix(dir.slice(0, dir.indexOf(HOLE))), upsAfter(dir.replace(/\0[^\0]*\0/gu, HOLE)));
+    return state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : asFolder(resolve(state.base ?? '/', dir));
   };
   const dq = (w) => { const r = shellWord(w, state.vars); for (const u of r.unknown) holes.set(u.text, u); return r.text; };
   // Each part and word once, looked up by key: searched through the list, every call past the budget of function bodies
@@ -2062,12 +2098,9 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       // may be ./f, so it is under the folder above sub, and neither fresh, direct nor within (until 2026-11-15 it was
       // under sub/, and `$(mktemp -d)/../f` a new name).
       // A name mktemp makes is one folder in `made`, so its first `..` comes back to made.
-      const ups = q.slice(first).split('/').filter((s) => s === '..').length;
+      const ups = upsAfter(q);
       if (ups) {
-        const climbs = ups - (made ? 1 : 0);
-        let above = known;
-        for (let k = 0; k < climbs && above; k++) { const t = above.replace(/\/+$/u, ''); above = t && dirname(t) !== '/' ? `${dirname(t)}/` : '/'; }
-        missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: above });
+        missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: climb(known, ups - (made ? 1 : 0)) });
         return;
       }
       missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: known, ...(made ? { fresh: true } : {}), ...(direct ? { direct: true } : {}), ...(within ? { within } : {}) });
@@ -2077,11 +2110,13 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const relativeUnknown = () => missing({ part: state.why?.part ?? 'cd', word: p, why: state.why?.why ?? 'the folder it is relative to is not known', prefix: state.why?.prefix ?? '', ...(state.why?.fresh ? { fresh: true } : {}) });
     // A glob writes the files it matches (`sed -i ... src/*.js`): one * in the last part is expanded, anything wider
     // or a brace list is left out rather than named as a file called `*.js`.
-    if (/[*?[{]/u.test(p)) { if (isAbsolute(p)) return; if (state.base == null) relativeUnknown(); else glob(p).forEach((f) => found.add(resolve(state.base, f))); return; }
-    if (isAbsolute(p)) found.add(p);
-    else if (state.base != null) found.add(resolve(state.base, p));
+    if (/[*?[{]/u.test(p)) { if (isAbsolute(p)) return; if (state.base == null) relativeUnknown(); else glob(p).forEach((f) => addFound(resolve(state.base, f))); return; }
+    if (isAbsolute(p)) addFound(p);
+    else if (state.base != null) addFound(resolve(state.base, p));
     else relativeUnknown();
   };
+  // w: a word a removal or a move names (rm, unlink, git rm, mv, git mv), added as add does.
+  const takeAway = (w) => { removing = true; try { add(w); } finally { removing = false; } };
   // Where relative paths start, and what the variables are, after some shell text (here-documents already taken out
   // of it). A cd or an assignment inside ( ) ends at its `)`.
   const stateAt = (text) => { const st = start(); return eachCommand(text, st, (p, raw, how) => follow(st, opening(raw), how)); };
@@ -2089,7 +2124,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // variables it sees.
   const inner = (text, innerVars) => {
     const r = shellWrites(text, state.base, { vars: innerVars, why: state.why });
-    r.files.forEach((f) => found.add(f));
+    takeIn(r);
     r.unknown.forEach(missing);
     r.repos.forEach((x) => repos.add(x));
   };
@@ -2280,11 +2315,13 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     if (cmd === 'install' && flagGiven(args, OPTIONS[cmd], 'd', 'directory')) { files.forEach(add); return; }
     const into = o.values.t ? operand(o.values.t.at(-1)) : files.at(-1);
     const sources = o.values.t ? files : files.slice(0, -1);
-    if (cmd === 'mv') sources.forEach(add);
+    // mv's sources and what lands where they go are writes no edit tool makes (noEditTool); a backup it keeps is a file
+    // written.
+    if (cmd === 'mv') sources.forEach(takeAway);
     const folder = !flagGiven(args, OPTIONS[cmd], 'T', 'no-target-directory') && (Boolean(o.values.t) || sources.length > 1 || into.endsWith('/') || isFolder(into));
     // operand after join: join takes the ./ off `./-d`, and add() would leave out `-d/a.txt`.
     const targets = folder ? sources.map((s) => operand(join(into, basename(s)))) : [into];
-    targets.forEach(add);
+    targets.forEach(cmd === 'mv' ? takeAway : add);
     const backup = backupSuffix(args, OPTIONS[cmd]);
     if (backup == null) return;
     for (const target of targets) {
@@ -2371,7 +2408,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
           : inDir
             ? shellWrites(text, null, { vars, why: { part: `find ${args[i]}`, why: `${args[i]} runs it in the folder of each file find finds, known only when it runs`, prefix: startAt ? `${startAt.replace(/\/$/u, '')}/` : '' } })
             : shellWrites(text, state.base, { vars, why: state.why });
-        r.files.forEach((f) => found.add(f));
+        takeIn(r);
         // What it gives is shown as the command was written: `{}` again, with the start folder put before it, never
         // FOUND (`node ./$__readfirst_found_file` was the part of `find . -exec node {} \;`, review of #222).
         const before = inDir ? './' : rootText.includes(HOLE) ? `${root}/` : `${rootText.replace(/\/+$/u, '')}/`;
@@ -2562,7 +2599,9 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // (the file, -o, -i, a second operand: the patch) and every name in the patch is under DIR; a patch on stdin was
     // opened by the shell, where the command runs. Until 2026-11-15 -d was left out: `patch -d sub -p1 < fix.diff`
     // named a.txt where patch changed sub/a.txt, and `--directory sub` named sub as the file.
-    else if (cmd === 'patch' && !args.includes('--dry-run')) {
+    // --dry-run, or any prefix patch takes for it (`--dry`), changes nothing (until 2026-11-15 only the whole word was
+    // read so, and `--dry` named the files the patch would change); after `--` it is a file.
+    else if (cmd === 'patch' && !o.given.includes('dry-run')) {
       // Each -d moves on from the folder the one before it moved to (`-d sub -d b` is sub/b), an absolute one from /
       // (review of #236: only the last was taken, so `-d sub -d b` named b/a.txt where patch changed sub/b/a.txt).
       const dir = foldDirs(o.values.d ?? []);
@@ -2578,7 +2617,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       }
     }
     // touch and rm write (or take away) the files they are given; sort -o writes its output file.
-    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.map(operand).forEach(add);
+    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.map(operand).forEach(cmd === 'touch' ? add : takeAway);
     else if (cmd === 'sort' && o.values.o) add(operand(o.values.o.at(-1)));
     else if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') packages(cmd, args);
     else if (['cp', 'mv', 'install'].includes(cmd) && (o.values.t || o.files.length >= 2)) copies(cmd, args, o);
@@ -2631,7 +2670,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
           // git mv into a folder (more than one source, or a folder here) puts each source's name in it, as mv does.
           const into = paths.at(-1);
           const folder = sub === 'mv' && paths.length >= 2 && (paths.length > 2 || into.endsWith('/') || isFolder(into));
-          (folder ? [...paths.slice(0, -1), ...paths.slice(0, -1).map((p) => operand(join(into, basename(p))))] : paths).forEach(add);
+          (folder ? [...paths.slice(0, -1), ...paths.slice(0, -1).map((p) => operand(join(into, basename(p))))] : paths).forEach(takeAway);
         }
       } else if (sub !== undefined) gitMoves(sub, args.slice(i + 1), dir);
       for (const m of made ? perTurn(made) ?? [made] : []) {
@@ -2742,7 +2781,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // and each here-document's opener where its mark stands: since #211 the mark itself was shown (`$(cat  0 )` with a
   // private-use character, where the command said `$(cat <<E ...)`).
   const opener = (t) => (mark && t.includes(mark) ? t.replace(markWord, (m) => { const d = docs[Number(m.slice(mark.length))]; return d ? `<<${d.quote ? `'${d.tag}'` : d.tag}` : m; }) : t);
-  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: opener(unlift(u.part)), word: opener(unlift(u.word)) })), repos: [...repos] };
+  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: opener(unlift(u.part)), word: opener(unlift(u.word)) })), repos: [...repos], noEditTool: [...found].filter((f) => gone.has(f) && !wrote.has(f)) };
 }
 
 // The files each `readfirst read` in a shell command asks for, and whether its whole output reaches whoever ran the
