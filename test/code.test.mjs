@@ -91,6 +91,17 @@ const NOT_YET = [
 ];
 for (const [name, path, lines, want] of NOT_YET) test(`not read right yet: ${name}`, { todo: 'a guess of the reader, named in its header' }, () => assert.equal(bounds(path, lines.join('\n')), want));
 
+// With members: an async arrow in a JSX attribute's `{ }` or an object (`{async () => {`) is no method named async:
+// its body is a block, so the first call in it (`setOpen(false);` in formbricks' webhook-settings-tab.tsx) is no member
+// whose body is the next block. A method named async, and one whose return type holds an arrow, stay methods. The bounds
+// are the TypeScript compiler's; `run`, a property set to a function, is a member as members gives it.
+test('members: an async arrow in braces is an arrow, not a method named async', () => {
+  assert.equal(bounds('a.tsx', L('const el = (', '  <DeleteDialog', '    onDelete={async () => {', '      setOpen(false);', '      if (done) {', '        refresh();', '      }', '    }}', '  />', ');', 'const z = 1;'), { members: true }), 'el:1-10 z:11-11');
+  assert.equal(bounds('a.ts', L('const o = {', '  run: async (e) => {', '    setUploading(true);', '    if (e) {', '    }', '  },', '};', 'const z = 1;'), { members: true, params: true }), 'o:1-7 run:2-6 z:8-8');
+  assert.equal(bounds('a.js', L('const o = {', '  async() {', '    return 1;', '  },', '  async m() {', '    return 2;', '  },', '};'), { members: true }), 'o:1-8 async:2-4 m:5-7');
+  assert.equal(bounds('a.ts', L('const o = {', '  m(): () => void {', '    return () => {};', '  },', '};'), { members: true }), 'o:1-5 m:2-4');
+});
+
 // ---- The comment and decorators above a declaration (top), and what is around it (parent).
 const around = (path, body, opts) => declarations(path, body, opts).map((d) => `${d.name}:${d.top}/${d.parent ?? '-'}`).join(' ');
 
