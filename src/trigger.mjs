@@ -8,7 +8,7 @@
 // them: a changed line inside the declaration (or the declaration that holds the evidence line), or the name in an added
 // or removed line. An item that names nothing readfirst can find is triggered as before, by its files. When in doubt
 // (a file with no readable patch, a deleted file) everything in it counts as touched.
-import { codeRows, declarations as readDeclarations, entryAt, lex, reads, scopeOf, unfinished } from './code.mjs';
+import { codeRows, declarations as readDeclarations, entryAt, lex, lexLang, reads, scopeOf, unfinished } from './code.mjs';
 import { definitions, hasDefinitions } from './find.mjs';
 import { groupOf, isOwnFile, matcher } from './map.mjs';
 
@@ -247,7 +247,7 @@ function declarations(path, body) {
 // and the removed lines after it go on from there. Without the file (or a change given without `at`), each line is
 // read alone.
 function changedCode(path, c, rows) {
-  const lang = /\.py$/u.test(path) ? 'py' : 'js';
+  const lang = lexLang(path); // as codeRows reads the file, so a removed line goes on from its row's state
   let carry = null; // { before: the line a run of removed lines stood before, state }
   return c.text.map((text, i) => {
     const n = c.at?.[i];
