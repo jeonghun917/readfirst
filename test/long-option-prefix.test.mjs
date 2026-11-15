@@ -39,12 +39,13 @@ test('a unique prefix of a long option is that option, and the tool agrees', { s
     const d = setUp();
     assert.deepEqual(named(script, d), { files: run(script, d).changed, unknown: [] }, script);
   }
-  // -t DIR names the folder, as with -t (the files copied in are not each named).
+  // -t DIR, as with -t: each file copied into the folder (test/bash-folder-destination.test.mjs).
   for (const script of ['cp --t d a.txt', 'cp --target=d a.txt b.txt']) {
     const d = setUp();
+    const want = named(script, d);
     const { changed } = run(script, d);
     assert.ok(changed.length > 0 && changed.every((f) => f.startsWith('d/')), `${script}: ${changed}`);
-    assert.deepEqual(named(script, d), { files: ['d'], unknown: [] }, script);
+    assert.deepEqual(want, { files: changed, unknown: [] }, script);
   }
 });
 
@@ -72,5 +73,5 @@ test('whole long names, and tools with no list of names, read as before', () => 
   const d = setUp();
   assert.deepEqual(named('sed --in-place s/one/x/ a.txt', d).files, ['a.txt']);
   assert.deepEqual(named('sort --output=o.txt in.txt', d).files, ['o.txt']);
-  assert.deepEqual(named('rsync --rsh ssh a.txt d', d).files, ['d']);
+  assert.deepEqual(named('rsync --rsh ssh a.txt d', d).files, ['d/a.txt'], 'd is a folder here: the file that lands in it');
 });

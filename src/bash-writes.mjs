@@ -871,15 +871,24 @@ function inPlaceSuffix(args, spec) {
 // -b too), or NAME plus the -S suffix. --backup=numbered or t name NAME.~N~, whose N is not known here: { numbered }.
 // none or off keep nothing: null. existing (the default) is taken for simple, which it is while no numbered backup is
 // there.
+// Whether a flag that takes no value is given before `--`: its letter in a cluster read as options() reads one (a
+// value-taking letter before it ends the cluster: `-tb` gives t the value b), or its long name or a unique prefix of it
+// (longName). `cp -bf`, `--no-target` (--no-target-directory), `install -d`.
+function flagGiven(args, spec, letter, long) {
+  const end = args.indexOf('--');
+  const before = end < 0 ? args : args.slice(0, end);
+  // A letter with no value, read as a digits letter, is recorded; no digits follow these flags in these commands.
+  if (letter && options(before, { ...spec, digits: letter }).values[letter]) return true;
+  return Boolean(long) && before.some((w) => w.startsWith('--') && w !== '--' && longName(w, spec) === long);
+}
 function backupSuffix(args, spec) {
   const end = args.indexOf('--');
   const before = end < 0 ? args : args.slice(0, end);
-  // b takes no value: read as a digits letter, it is recorded, and no digits follow it in these commands' options.
-  const o = options(before, { ...spec, digits: 'b' });
+  const o = options(before, spec);
   // --backup or a unique prefix of it (`--back=t`), by longName as options() reads it; its value after an =.
   const word = before.findLast((w) => w.startsWith('--') && w !== '--' && longName(w, spec) === 'backup');
   const control = word === undefined ? undefined : word.includes('=') ? word.replace(/^[^=]*=/u, '') : '';
-  if (control === undefined && !o.values.b && !o.values.S) return null;
+  if (control === undefined && !flagGiven(before, spec, 'b') && !o.values.S) return null;
   if (/^(?:none|off)$/u.test(control ?? '')) return null;
   if (/^(?:numbered|t)$/u.test(control ?? '')) return { numbered: true };
   return { suffix: o.values.S?.at(-1) || '~' };
@@ -2256,21 +2265,29 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // it without refusing (refuses in src/cli.mjs), since it can name no file to read first.
     missing({ part, word: part, why: `${part} changes the tracked files it brings, known only when it runs`, prefix: under, ...(sub === 'clean' ? {} : { moves: true }) });
   };
-  // cp, mv and install write their destination, or the folder -t names (what lands in a folder is not looked up). mv
+  // cp, mv and install write what lands at their destination: the destination itself, or, when it is a folder, each
+  // source's name in it (`cp x src/` writes src/x). The destination is a folder with -t, with more than one source,
+  // when it ends in `/` or when it is a folder here; -T (--no-target-directory) makes it the file whatever it is. Until
+  // 2026-11-16 a folder was named as the folder, so `cp a.js src/` over a file the map holds went through the gate. mv
   // takes its sources away as rm does: `mv a.txt b.txt` named only b.txt until 2026-11-15, so a file the map holds was
   // moved off without its notes. With a backup (backupSuffix) a file there already that one lands on is kept under its
-  // name and the suffix: `cp -b a b` writes b~ when b is there, `mv -b a d` writes d/a~ when d/a is.
+  // name and the suffix: `cp -b a b` writes b~ when b is there, `mv -b a d` writes d/a~ when d/a is. A source that is a
+  // folder (`cp -r sub d`) is named as the folder it makes (d/sub); the files copied below it are not looked up.
+  // `install -d` makes each folder it is given.
   const isFolder = (w) => { try { return (isAbsolute(w) || state.base != null) && statSync(isAbsolute(w) ? w : resolve(state.base, w)).isDirectory(); } catch { return false; } };
   const copies = (cmd, args, o) => {
     const files = o.files.map(operand);
+    if (cmd === 'install' && flagGiven(args, OPTIONS[cmd], 'd', 'directory')) { files.forEach(add); return; }
     const into = o.values.t ? operand(o.values.t.at(-1)) : files.at(-1);
     const sources = o.values.t ? files : files.slice(0, -1);
     if (cmd === 'mv') sources.forEach(add);
-    add(into);
+    const folder = !flagGiven(args, OPTIONS[cmd], 'T', 'no-target-directory') && (Boolean(o.values.t) || sources.length > 1 || into.endsWith('/') || isFolder(into));
+    // operand after join: join takes the ./ off `./-d`, and add() would leave out `-d/a.txt`.
+    const targets = folder ? sources.map((s) => operand(join(into, basename(s)))) : [into];
+    targets.forEach(add);
     const backup = backupSuffix(args, OPTIONS[cmd]);
     if (backup == null) return;
-    const folder = Boolean(o.values.t) || sources.length > 1 || isFolder(into);
-    for (const target of folder ? sources.map((s) => join(into, basename(s))) : [into]) {
+    for (const target of targets) {
       if (!here(target)) continue;
       if (backup.suffix !== undefined) { add(`${target}${backup.suffix}`); continue; }
       // A numbered backup: a new name beside the target, known only when the command runs (review of #239: it was left
@@ -2566,7 +2583,14 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     else if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') packages(cmd, args);
     else if (['cp', 'mv', 'install'].includes(cmd) && (o.values.t || o.files.length >= 2)) copies(cmd, args, o);
     else if (cmd === 'rsync' && (args.some((w) => w === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/u.test(w)) || /^(?:[\w.@-]+:|rsync:\/\/)/u.test(o.files.at(-1) ?? ''))) { /* a dry run or a remote destination */ }
-    else if (cmd === 'rsync' && o.files.length >= 2) add(operand(o.files.at(-1)));
+    // rsync into a folder (more than one source, a destination ending in `/` or a folder here) writes each source's name
+    // in it; a source ending in `/` copies what is in it, which is not looked up: the folder is named.
+    else if (cmd === 'rsync' && o.files.length >= 2) {
+      const into = operand(o.files.at(-1));
+      const sources = o.files.slice(0, -1).map(operand);
+      const folder = sources.length > 1 || into.endsWith('/') || isFolder(into);
+      for (const s of sources) add(folder && !s.endsWith('/') ? operand(join(into, basename(s))) : into);
+    }
     else if (cmd === 'git') {
       // git's own options before the subcommand: -C <dir> runs it in that folder, -c <k=v> and --no-pager change nothing.
       let i = 0;
@@ -2603,7 +2627,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
         const gr = args.slice(i + 1);
         if (!(sub === 'rm' && gr.includes('--cached')) && !gr.some((w) => /^(?:-n|--dry-run)$/u.test(w))) {
           const dd = gr.indexOf('--');
-          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => add(operand(foldDirs([dir, p]))));
+          const paths = gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).map((p) => operand(foldDirs([dir, p])));
+          // git mv into a folder (more than one source, or a folder here) puts each source's name in it, as mv does.
+          const into = paths.at(-1);
+          const folder = sub === 'mv' && paths.length >= 2 && (paths.length > 2 || into.endsWith('/') || isFolder(into));
+          (folder ? [...paths.slice(0, -1), ...paths.slice(0, -1).map((p) => operand(join(into, basename(p))))] : paths).forEach(add);
         }
       } else if (sub !== undefined) gitMoves(sub, args.slice(i + 1), dir);
       for (const m of made ? perTurn(made) ?? [made] : []) {
