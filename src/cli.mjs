@@ -48,7 +48,7 @@ import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
 import { mcpHandler, serveMcp } from './mcp.mjs';
 import { cityData, viewHtmlCity } from './view-city.mjs';
-import { emptyList, readList, toMarkdown } from './readlist.mjs';
+import { emptyList, isTest, readList, toMarkdown } from './readlist.mjs';
 import { brokeBefore, readScarLog } from './history.mjs';
 import { cachedBrokeBefore, cachedEdges } from './hook-cache.mjs';
 
@@ -91,6 +91,29 @@ Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; de
 // error: an unknown option used to take the next word as its value, so `hook --new-flag --stop` quietly ran the wrong hook.
 const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', git: 'git', ci: 'ci', stop: 'stop', gate: 'gate', report: 'report', help: 'help', version: 'version' };
 const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
+// The options each command reads (by their key in args), besides --root, --help and --version, which every command
+// takes. parse() takes every option for every command, so one a command did not read did nothing with no word: `fix
+// --dry-run` wrote the map (2026-11-14). main() refuses an option the command does not read, naming it. The plain
+// `hook` is not checked here: a hook never fails on its own arguments (letThrough).
+const COMMAND_OPTIONS = {
+  hook: ['install', 'verify'],
+  mcp: [],
+  answer: [],
+  init: ['force', 'agent', 'for', 'ci'],
+  prompt: ['labels'],
+  view: ['out'],
+  pending: ['json'],
+  check: ['strict', 'json'],
+  setup: ['git', 'for'],
+  fix: ['json', 'dryRun'],
+  find: ['limit', 'json'],
+  export: ['cursor', 'check'],
+  scan: ['json'],
+  audit: ['json'],
+  read: ['base', 'json', 'limit', 'lang'],
+  diff: ['base', 'json', 'limit', 'lang'],
+  verify: ['base', 'dryRun', 'json', 'timeout', 'record'],
+};
 export function parse(argv) {
   const args = { _: [], json: false };
   for (let i = 0; i < argv.length; i++) {
@@ -722,12 +745,17 @@ function findAsked(seen, keys, name) {
     return Object.keys(seen).some((k) => k.startsWith(prefix) && k.slice(prefix.length).split(' ').some((q) => (q.startsWith('=') ? plain.includes(q.slice(1)) : mine.some((w) => meets(q, w)))));
   });
 }
-export function newCode(tool, input, abs) {
-  const names = (text) => new Set(definitions(abs, String(text ?? '')).map((d) => d.name));
+// Only names another file could use count (2026-11-14: a const local to a function, an inner function and a test's own
+// helper were asked about too): what definitions reads as reusable (the file's top level, a class's member, an export),
+// and in a test file (isTest, on `rel`, the path in its repository) only what it exports. A language read by line
+// patterns alone says neither, and all its names count, as before.
+export function newCode(tool, input, abs, rel = abs) {
   const texts = editTexts(tool, input, abs);
   if (!texts) return [];
-  const was = names(texts.before);
-  return [...names(texts.after)].filter((n) => !was.has(n));
+  const test = isTest(rel);
+  const was = new Set(definitions(abs, texts.before).map((d) => d.name));
+  const asked = definitions(abs, texts.after).filter((d) => d.reusable !== false && (!test || d.exported !== false));
+  return [...new Set(asked.map((d) => d.name))].filter((n) => !was.has(n));
 }
 // The file an Edit, MultiEdit or Write is about to change, before and after it: { before, after }, or null for any
 // other tool. An edit's old and new strings are fragments (a method's lines without its class, half a statement, a
@@ -874,7 +902,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const askLine = asks.length ? `readfirst: answer each of these before this change, as one quoted JSON argument, then make the same call again: ${ANSWER_HOW} (answer: ${ANSWER_KINDS_LINE}). An answer holds for this session while the change touches the item by the same names.\n- ${asks.map((i) => `\`${i.id}\` (${i.state})${i.shown ? '' : `: ${i.text}`}`).join('\n- ')}` : null;
     const waiting = pendingNotes(targets, seen, now);
     const known = new Map();
-    const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => ({ abs, root: rootOf(abs, known), names: newCode(tool, event.tool_input, abs) }))
+    const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => { const root = rootOf(abs, known); return { abs, root, names: newCode(tool, event.tool_input, abs, root ? relative(root, abs) : abs) }; })
       .filter((f) => f.names.length && f.root && existsSync(join(f.root, MAP_PATH))) : [];
     // The names no find asked about; the ask is kept with them, so the same file given other new names later is asked again.
     // A find is looked for by the repository's id (repoIdOf) and by the file's top level, which state files kept until
@@ -1775,6 +1803,13 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   const [cmd, ...rest] = args._;
   if (args.version) { io.out(`${VERSION()}\n`); return 0; }
   if (args.help || !cmd) { io.out(`${HELP}\n`); return cmd || args.help ? 0 : 2; }
+  // An option the command does not read is refused by its name (COMMAND_OPTIONS), never ignored.
+  const takes = cmd === 'hook' && !args.install ? null : COMMAND_OPTIONS[cmd];
+  if (takes) {
+    const nameOf = Object.fromEntries(Object.entries(FLAGS).map(([n, k]) => [k, n]));
+    const extra = Object.keys(args).filter((k) => k !== '_' && k !== 'root' && args[k] !== false && args[k] !== undefined && !takes.includes(k));
+    if (extra.length) throw new Error(`${extra.map((k) => `--${nameOf[k] ?? k}`).join(', ')} does nothing for readfirst ${cmd}${takes.length ? ` (it takes ${takes.map((k) => `--${nameOf[k] ?? k}`).join(', ')})` : ''}`);
+  }
   if (cmd === 'hook' && !args.install) {
     try {
       // --timeout (seconds per check) reaches the Stop hook too: it was accepted and ignored until 0.29.0, so a check
@@ -1892,7 +1927,8 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     // Evidence lines outside what their item names (2026-11-10): the line judges the item against a change, so
     // one the code moved away from judges by the wrong code. Listed, failed with --strict; `fix` moves those git traces.
     const { drift, unanchored } = evidenceDrift(map, { files, read, history: evidenceHistory(root) });
-    const driftLine = (d) => `${d.where}: ${d.ref} is outside ${d.names.map((n, i) => `\`${n}\` (line ${d.lines[i]})`).join(', ')}${d.now ? `: it moved to ${d.path}:${d.now}, \`readfirst fix\` writes that` : ': git does not show it moving there, so check it by hand (wrong from the start, or pointing elsewhere on purpose)'}`;
+    // A line still inside one declaration the item names, written for another (`inside`), is said as that.
+    const driftLine = (d) => (d.inside ? `${d.where}: ${d.ref} is in \`${d.inside}\`, but the line it was written for moved with \`${d.movedWith}\` to ${d.path}:${d.now}, \`readfirst fix\` writes that` : `${d.where}: ${d.ref} is outside ${d.names.map((n, i) => `\`${n}\` (line ${d.lines[i]})`).join(', ')}${d.now ? `: it moved to ${d.path}:${d.now} with \`${d.movedWith}\`, \`readfirst fix\` writes that` : ': git does not show it moving there, so check it by hand (wrong from the start, or pointing elsewhere on purpose)'}`);
     const problems = [...settledMap.problems, ...pinProblems(map, pinnedReadfirst(new Map(pinFiles(files).map((f) => [f, read(f)])))), ...(args.strict ? [...about, ...drift.map(driftLine)] : [])];
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems, settled, unshown, drift, unanchored }, null, 2)}\n`);
     else {
@@ -1950,12 +1986,13 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       const key = gid !== undefined ? 'text' : 'rule';
       if (!item || typeof item[key] !== 'string') continue;
       item[key] = moveEvidence(item[key], d.ref, d.path, d.now);
-      changes.push(`${d.where}: ${d.ref} -> ${d.path}:${d.now} (\`${d.names[0]}\` moved)`);
+      changes.push(`${d.where}: ${d.ref} -> ${d.path}:${d.now} (\`${d.movedWith}\` moved)`);
     }
-    if (changes.length) { mustBeInside(root, MAP_PATH); writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`); }
-    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, changes, problems }, null, 2)}\n`);
+    // --dry-run: what fix would change, and nothing written (until 2026-11-14 it was taken and ignored: the map was written).
+    if (changes.length && !args.dryRun) { mustBeInside(root, MAP_PATH); writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`); }
+    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, changes, problems, ...(args.dryRun ? { dryRun: true } : {}) }, null, 2)}\n`);
     else {
-      io.out(changes.length ? `updated ${MAP_PATH}:\n- ${changes.join('\n- ')}\n` : 'nothing to fix automatically.\n');
+      io.out(changes.length ? `${args.dryRun ? 'would update' : 'updated'} ${MAP_PATH}:\n- ${changes.join('\n- ')}\n` : 'nothing to fix automatically.\n');
       io.out(problems.length ? `still to fix by hand:\n- ${problems.join('\n- ')}\n` : `${MAP_PATH} is good: ${files.length} files.\n`);
     }
     return problems.length ? 1 : 0;

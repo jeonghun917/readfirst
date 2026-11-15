@@ -45,7 +45,7 @@ test('check lists a line the code moved away from, fix writes where git carried 
   git('commit', '-qam', 'imports');
   const c = run(root, 'check');
   assert.equal(c.code, 0, 'listed, not failed');
-  assert.match(c.out, /groups\.pay\.risks\[0\]: src\/pay\.js:2 is outside `charge` \(line 4\): it moved to src\/pay\.js:5, `readfirst fix` writes that/u);
+  assert.match(c.out, /groups\.pay\.risks\[0\]: src\/pay\.js:2 is outside `charge` \(line 4\): it moved to src\/pay\.js:5 with `charge`, `readfirst fix` writes that/u);
   assert.match(c.out, /groups\.pay\.risks\[1\]: src\/pay\.js:5 is outside `refund` \(line 9\): it moved to src\/pay\.js:8/u);
   assert.equal(run(root, 'check', '--strict').code, 1, '--strict fails on them');
   const f = run(root, 'fix');
