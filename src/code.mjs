@@ -642,6 +642,11 @@ function scanJs(toks, lastLine, wantParams = false) {
     // A `=>` right after the parameters a member waits with (`{async () => {`, in an object or a JSX `{ }`) makes them
     // an arrow's: no member is waiting, and the brace after the `=>` is the arrow's body, not a type.
     if (punct(t, '=>') && f.pend && f.pendClose === i - 1) f.pend = null;
+    // So does the `=>` after a return type there (`{async (): Promise<void> => {`): the first one in this frame that
+    // does not follow a `)`, as a function type's does (`m(): () => void {` and `m(): Promise<() => void> {` are
+    // still methods). A type in parentheses before the arrow's `=>` (`(): (A | B) => {`) is read as a function type.
+    if (f.pend && f.pendClose === i - 1 && punct(t, ':')) f.pendType = true;
+    else if (punct(t, '=>') && f.pend && f.pendType && !punct(prev, ')')) f.pend = null;
     if (punct(t, '(')) push('paren', f.pend?.open === i ? { moduleOwn, pendParams: true } : { moduleOwn });
     else if (punct(t, '[')) push('bracket');
     else if (punct(t, '{')) {
