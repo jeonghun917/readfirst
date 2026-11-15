@@ -6,11 +6,35 @@
 // No parser and no dependency; the work is linear in the text. JavaScript, TypeScript (JSX and TSX too), Python, and
 // the <script> blocks of .vue and .svelte files.
 //
-// What it does not know, each a guess that test/code.test.mjs pins: JSX text on a line of its own outside
-// parentheses; whether `/` after `)` divides or opens a regular expression; whether a `{` after something unusual
-// opens a block or an object (a block taken for an object costs a declaration not read, never a false one).
+// JSX is read where a file may hold it (`lexLang`: not .ts, .mts, .cts): an element's text is a literal, and a line
+// break inside a tag or the children does not end a statement.
+//
+// What it does not know, each a guess that test/code.test.mjs pins: whether `/` after `)` divides or opens a regular
+// expression; whether a `{` after something unusual opens a block or an object (a block taken for an object costs a
+// declaration not read, never a false one).
 
 const REGEX_KEYWORD = /(?:^|[^\w$.])(?:return|typeof|case|in|of|do|else|void|delete|throw|yield|await|instanceof|new)$/u;
+// Whether the code of a line so far ends in one of those words, from `tail`: the line's last 11 code characters up to
+// its last one that is not a space (the longest word, instanceof, and the character before it), which lex keeps as it
+// goes. Reading the line's code itself for each `/`, `!` or `<` (`code.trimEnd()`, or any slice of it, which first
+// joins the whole string built so far) made a long line's work grow with its square.
+const endsInKeyword = (tail) => REGEX_KEYWORD.test(tail);
+// Whether the `<` at text[i] opens a JSX element (lex in 'jsx'): where a value can start (after an operator, a bracket,
+// `=>` or a word like `return`), before a name or `>` (a fragment). Not where TypeScript reads a generic in .tsx:
+// `<T,>`, `<T extends …>`, `<T = unknown>`. A `<` after a name or a `)` compares. `<T>(` is JSX, as TypeScript reads
+// it (`<b>(optional)</b>`); where it is a Flow generic (`<T>(x: T): T => x`), the element never closes and the file is
+// lexed again as before JSX was read (`lexFile`).
+const JSX_TAG = /<([A-Za-z_$][\w$.:-]*)(\s*)/uy;
+function jsxOpensAt(text, i, last, tail) {
+  if (!(last === '' || /[(,=:[!&|?{};>]/u.test(last) || endsInKeyword(tail))) return false;
+  if (text[i + 1] === '>') return true; // a fragment
+  JSX_TAG.lastIndex = i;
+  const m = JSX_TAG.exec(text);
+  if (!m) return false;
+  const after = i + m[0].length;
+  if (text[after] === ',' || text[after] === '=') return false;
+  return !(m[2] && text.startsWith('extends', after));
+}
 // The steps the reader takes: one for each character, token or bracket a loop of it passes. Off unless a test turns
 // it on, and then a measure of the work that does not depend on the machine's speed (test/code.test.mjs reads it to
 // see that the work grows with the text, not with its square). Work done inside a builtin (a slice, a regular
@@ -29,7 +53,8 @@ export function countStep() { if (counting) steps++; }
 //   its string is, so what reads `code` sees the line it saw before f-strings were read.
 // - startsIn: '' or what the line begins inside: 'block' (a /* */ comment), 'template', 'string3' (Python's triple quotes),
 //   'string' (a quoted string the line above carried on with a backslash at its end).
-// - comment: part of the line is a comment. tplOpen: the line ends inside a template's `${ }`.
+// - comment: part of the line is a comment. tplOpen: the line ends inside a template's `${ }`. jsxOpen: the line
+//   ends inside a JSX element's tag or children (not in one of its `{ }`), so the next line goes on with it.
 // - state: the state after the line. Passing it as the third argument goes on from the next line, so a hunk or a
 //   file's second half reads as it does in the whole file.
 const NO_TEMPLATES = Object.freeze([]);
@@ -42,6 +67,13 @@ export function lex(lines, lang, state = null) {
   const fs = state?.fs ? state.fs.map((f) => ({ ...f })) : [];
   let fq = state?.fq ?? false;
   let raw = state?.raw ?? false;
+  // JSX (lang 'jsx'): the elements open around, as a list of frames that are never changed (the innermost first, `up`
+  // the next out), so a line's state keeps it as it is without a copy: 'open' (in an opening tag, with the `<` of its
+  // type arguments open), 'kids' (in its children), 'close' (in its closing tag), or 'expr' (in a `{ }` of a tag or of
+  // children, with its brace depth).
+  // Children text is a literal (spaces in `code`, 'l' in `mark`), so nothing in it opens a comment, a string, a
+  // template or a regular expression, and no bracket or `;` in it is code: `<p>see /* here (</p>` is text.
+  let jsx = state?.jsx ?? null;
   const out = [];
   for (const text of lines) {
     const startsIn = q === 'block' ? 'block' : q === '`' ? 'template' : q && q.length === 3 ? 'string3' : q === "'" || q === '"' ? 'string' : '';
@@ -50,8 +82,17 @@ export function lex(lines, lang, state = null) {
     let mark = '';
     let comment = false;
     let i = 0;
-    const blank = (n = 1, m = ' ') => { code += ' '.repeat(n); mark += m.repeat(n); i += n; };
-    const keep = (n = 1, m = 'c') => { code += text.slice(i, i + n); mark += m.repeat(n); i += n; };
+    // tail: the last 11 characters of `code` up to its last that is not a space; gap: the spaces after it.
+    let tail = '';
+    let gap = 0;
+    const blank = (n = 1, m = ' ') => { code += ' '.repeat(n); mark += m.repeat(n); i += n; gap += n; };
+    const keep = (n = 1, m = 'c') => {
+      for (let k = i; k < i + n && k < text.length; k++) {
+        // cut: endsInKeyword needs no more than the longest keyword and the character before it
+        if (/\s/u.test(text[k])) gap++; else { tail = (tail + ' '.repeat(Math.min(gap, 11)) + text[k]).slice(-11); gap = 0; }
+      }
+      code += text.slice(i, i + n); mark += m.repeat(n); i += n;
+    };
     while (i < text.length) {
       if (counting) steps++;
       const c = text[i];
@@ -123,20 +164,46 @@ export function lex(lines, lang, state = null) {
         continue;
       }
       if (q) { if (c === '\\') { carriesOn = i === text.length - 1; blank(Math.min(2, text.length - i), 'l'); } else if (c === q) { q = null; last = 'x'; keep(1, 'l'); } else blank(1, 'l'); continue; }
+      const el = jsx;
+      if (el && el.k !== 'expr') {
+        // The element is done: what follows it is read as after a value.
+        const done = () => { jsx = el.up; if (!jsx || jsx.k === 'expr') last = 'x'; };
+        if (c === '{' && el.k !== 'close') { jsx = { k: 'expr', depth: 0, up: el }; last = '{'; keep(); continue; }
+        if (el.k === 'kids') {
+          if (c === '<' && text[i + 1] === '/') { jsx = { ...el, k: 'close' }; keep(2); continue; }
+          if (c === '<' && (text[i + 1] === '>' || /[A-Za-z_$]/u.test(text[i + 1] ?? ''))) { jsx = { k: 'open', angles: 0, up: el }; keep(); continue; }
+          if (/\s/u.test(c)) blank(); else blank(1, 'l'); // text: a literal, never code
+          continue;
+        }
+        if (el.k === 'open' && c === '/' && text[i + 1] === '>') { keep(2); done(); continue; }
+        // A comment in a tag (`<div /* it's */ a="1">`, `<div // a note`): the tag goes on after it.
+        if (c === '/' && text[i + 1] === '*') { q = 'block'; comment = true; blank(2); continue; }
+        if (c === '/' && text[i + 1] === '/') { comment = true; blank(text.length - i); break; }
+        // Type arguments in a TSX tag (`<Box<string> v="a" />`): their `>` does not end the tag.
+        if (el.k === 'open' && c === '<') { jsx = { ...el, angles: el.angles + 1 }; keep(); continue; }
+        if (el.k === 'open' && c === '>' && el.angles) { jsx = { ...el, angles: el.angles - 1 }; keep(); continue; }
+        if (c === '>') { keep(); if (el.k === 'open') jsx = { ...el, k: 'kids' }; else done(); continue; }
+        if (c === '"' || c === "'") { q = c; keep(1, 'l'); continue; } // an attribute's value
+        keep(); continue;
+      }
       if (c === '/' && text[i + 1] === '/') { comment = true; blank(text.length - i); break; }
       if (c === '/' && text[i + 1] === '*') { q = 'block'; comment = true; blank(2); continue; }
-      if (c === '/' && text[i - 1] !== '<' && !(last === '}' && text[i + 1] === '>') && (last === '' || /[(,=:[!&|?{};+\-*%<>~^]/u.test(last) || REGEX_KEYWORD.test(code.trimEnd()))) { q = 're'; keep(1, 'l'); continue; }
+      if (c === '/' && text[i - 1] !== '<' && !(last === '}' && text[i + 1] === '>') && (last === '' || /[(,=:[!&|?{};+\-*%<>~^]/u.test(last) || endsInKeyword(tail))) { q = 're'; keep(1, 'l'); continue; }
       if (c === '"' || c === "'" || c === '`') { q = c; keep(1, c === '`' ? 't' : 'l'); continue; }
       if (tpl.length) {
         if (c === '{') tpl[tpl.length - 1]++;
         else if (c === '}') { if (tpl[tpl.length - 1] === 0) { tpl.pop(); q = '`'; blank(1, 'e'); continue; } tpl[tpl.length - 1]--; }
+      } else if (el) { // in a JSX `{ }`: its own `}` goes back to the tag or the children
+        if (c === '{') jsx = { ...el, depth: el.depth + 1 };
+        else if (c === '}') { if (el.depth === 0) { jsx = el.up; keep(); continue; } jsx = { ...el, depth: el.depth - 1 }; }
       }
-      if (!/\s/u.test(c) && !(c === '!' && last === 'x' && text[i + 1] !== '=' && !REGEX_KEYWORD.test(code.trimEnd()))) last = /[A-Za-z0-9_$)\]]/u.test(c) ? 'x' : c;
+      if (lang === 'jsx' && c === '<' && !tpl.length && jsxOpensAt(text, i, last, tail)) { jsx = { k: 'open', angles: 0, up: jsx }; keep(); continue; }
+      if (!/\s/u.test(c) && !(c === '!' && last === 'x' && text[i + 1] !== '=' && !endsInKeyword(tail))) last = /[A-Za-z0-9_$)\]]/u.test(c) ? 'x' : c;
       keep(1, tpl.length ? 'p' : 'c'); // code inside a template's ${ } is part of that literal for the token walk
     }
     if (q === 're' || ((q === "'" || q === '"') && !carriesOn)) q = null;
     if (startsIn === 'block') comment = true;
-    out.push({ code, mark, startsIn, comment, text, tplOpen: tpl.length > 0 || fs.length > 0, state: { q, tpl: tpl.length ? [...tpl] : NO_TEMPLATES, last, fs: fs.length ? fs.map((f) => ({ ...f })) : NO_TEMPLATES, fq, raw } });
+    out.push({ code, mark, startsIn, comment, text, tplOpen: tpl.length > 0 || fs.length > 0, jsxOpen: Boolean(jsx) && jsx.k !== 'expr', state: { q, tpl: tpl.length ? [...tpl] : NO_TEMPLATES, last, fs: fs.length ? fs.map((f) => ({ ...f })) : NO_TEMPLATES, fq, raw, jsx } });
   }
   return out;
 }
@@ -155,7 +222,8 @@ export function tokens(rows, from = 0, to = rows.length, { placeholders = false 
   const lits = []; // per depth of open placeholders, the literal read there: its rest after a placeholder joins it
   for (let l = from; l < to; l++) {
     const { code, mark, startsIn, text } = rows[l];
-    let first = true;
+    // A line that begins inside a JSX element's tag or children goes on with the line above: no token on it is first.
+    let first = !(l > from && rows[l - 1].jsxOpen);
     let carried = startsIn === 'template' || startsIn === 'string3' || startsIn === 'string' || (l > from && rows[l - 1].tplOpen);
     for (let i = 0; i < code.length;) {
       if (counting) steps++;
@@ -571,7 +639,10 @@ function scanJs(toks, lastLine, wantParams = false) {
     if (punct(t, '=') && f.cur?.rec) f.cur.rec.assigned = true;
     // moduleOwn: the bracket is the value the module exports as a whole, or inside it (`export default wrap({ ... })`).
     const moduleOwn = (isStmt(f) && Boolean(f.cur?.module)) || Boolean(f.moduleOwn);
-    if (punct(t, '(')) push('paren', { moduleOwn });
+    // A `=>` right after the parameters a member waits with (`{async () => {`, in an object or a JSX `{ }`) makes them
+    // an arrow's: no member is waiting, and the brace after the `=>` is the arrow's body, not a type.
+    if (punct(t, '=>') && f.pend && f.pendClose === i - 1) f.pend = null;
+    if (punct(t, '(')) push('paren', f.pend?.open === i ? { moduleOwn, pendParams: true } : { moduleOwn });
     else if (punct(t, '[')) push('bracket');
     else if (punct(t, '{')) {
       const before = prev ? prev.v : '';
@@ -598,6 +669,7 @@ function scanJs(toks, lastLine, wantParams = false) {
       if (g.member) g.member.end = prev.endLine;
       if (isStmt(g) && g.cur) endStatement(g, prev.endLine);
       f = frames.at(-1);
+      if (g.pendParams) f.pendClose = i; // where the waiting member's parameters close
       if (g.decl) {
         g.decl.end = t.line;
         // A declaration that is the whole statement ends the statement with its body.
@@ -696,11 +768,24 @@ export function scriptBlocks(raw) {
 // The files this reader has a grammar for. Any other language is read by its callers with their own, rougher means.
 const READS = /\.(?:m?js|cjs|jsx|tsx?|mts|cts|vue|svelte|py)$/u;
 export const reads = (path) => READS.test(path);
+// The language lex reads a file in: 'py', 'js' for TypeScript without JSX (.ts, .mts, .cts: `<T>x` is an assertion),
+// 'jsx' for the rest (JavaScript, .jsx, .tsx), where an element's text is no code to read strings or comments in.
+export const lexLang = (path) => (/\.py$/u.test(path) ? 'py' : /\.[mc]?ts$/u.test(path) ? 'js' : 'jsx');
 
 // The lexed lines of a whole file. In a .vue or .svelte file only the lines of its <script> blocks are code, each
 // block lexed on its own; every other line has no code (`outside`). blocks: those blocks, or null for other files.
+// The lexed lines of a file in its language (lexLang). An element still open at the end means a `<` was not JSX (a
+// generic, a comparison, an edit cut short): the lines are lexed again as before JSX was read, so a wrong guess costs
+// no more than not reading JSX did. rows.lang: the language they are lexed in, for whoever lexes more of them.
+export function lexFile(lines, path) {
+  let lang = lexLang(path);
+  let rows = lex(lines, lang);
+  if (lang === 'jsx' && rows.at(-1)?.state.jsx) { lang = 'js'; rows = lex(lines, lang); }
+  rows.lang = lang;
+  return rows;
+}
 function rowsOf(path, raw) {
-  if (!/\.(?:vue|svelte)$/u.test(path)) return { rows: lex(raw, /\.py$/u.test(path) ? 'py' : 'js'), blocks: null };
+  if (!/\.(?:vue|svelte)$/u.test(path)) return { rows: lexFile(raw, path), blocks: null };
   const rows = raw.map((text) => ({ code: '', mark: '', startsIn: 'outside', comment: false, text, outside: true, state: null }));
   const blocks = scriptBlocks(raw);
   for (const b of blocks) lex(raw.slice(b.from, b.to), 'js').forEach((r, i) => { rows[b.from + i] = r; });
@@ -783,7 +868,7 @@ export function scopeOf(decls, line) {
 export function entryAt(path, body, d, line) {
   if (!reads(path) || line < d.line || line > d.end) return null;
   const off = d.line - 1;
-  const toks = tokens(lex(String(body).split('\n').slice(off, d.end), /\.py$/u.test(path) ? 'py' : 'js'));
+  const toks = tokens(lexFile(String(body).split('\n').slice(off, d.end), path));
   let k = toks.findIndex((t) => isPunct(t, '='));
   if (k < 0 || !(isPunct(toks[k + 1], '[') || isPunct(toks[k + 1], '{'))) return null;
   k++;

@@ -50,6 +50,36 @@ const SHAPES = [
   ['asi: decorators', 'a.ts', ['const a = 1', '@Injectable()', 'export class Svc {', '  @Input() name = 1', '  @HostListener("x")', '  onX() {', '    return 1', '  }', '}', 'const z = 1'], 'a:1-1 Svc:3-9 onX:6-8 z:10-10'],
   ['asi: JSX in parentheses', 'a.tsx', ['const el = (', '  <div className="a">', '    it\'s {count} of {total}', '  </div>', ')', 'const z = 1'], 'el:1-5 z:6-6'],
   ['asi: JSX by ternary', 'a.tsx', ['const el = ok', '  ? <A value={1} />', '  : <B />', 'const z = 1'], 'el:1-3 z:4-4'],
+  ['asi: JSX without parentheses over lines', 'a.tsx', ['const el = <div>', '  text', '</div>', 'const z = 1'], 'el:1-3 z:4-4'],
+  // JSX text is text: what opens a comment, a string, a template or a regular expression in code does not in it, and
+  // no bracket or `;` in it is code. Not in a .ts file, where `<T>x` is an assertion, nor after a value (`b < c`).
+  ['jsx: a block comment opener in JSX text', 'a.jsx', ['const e = <p>see /* here</p>;', 'const x = 1;', 'function g() {', '  return 2;', '}'], 'e:1-1 x:2-2 g:3-5'],
+  ['jsx: a line comment opener in JSX text', 'a.jsx', ['const a = <a href="/x">http://example.com</a>; const b = 1;', 'const c = 2;'], 'a:1-1 b:1-1 c:2-2'],
+  ['jsx: an apostrophe in JSX text before a placeholder', 'a.tsx', ["const el = <p>it's {count}</p>; const z = 1;", 'const y = 2;'], 'el:1-1 z:1-1 y:2-2'],
+  ['jsx: a backtick in JSX text', 'a.jsx', ['const el = <p>run ` first</p>;', 'const x = 1;', 'const y = 2;'], 'el:1-1 x:2-2 y:3-3'],
+  ['jsx: a block comment opener in JSX text over lines', 'a.tsx', ['const el = (', '  <div className="a">', '    a /* b', '    <b>bold</b> c', '  </div>', ')', 'function f() {', '  return 1', '}'], 'el:1-6 f:7-9'],
+  ['jsx: JSX in a placeholder, with an apostrophe in its text', 'a.jsx', ["const el = <ul>{items.map((i) => <li key={i}>don't {i}</li>)}</ul>;", 'const z = 1;'], 'el:1-1 z:2-2'],
+  ['jsx: JSX in a placeholder over lines, its text holding a quote', 'a.jsx', ['const el = <ul>', '  {items.map((i) => (', "    <li key={i}>don't</li>", '  ))}', '</ul>', 'function after() {}'], 'el:1-5 after:6-6'],
+  ['jsx: a real comment in a JSX placeholder, and a fragment', 'a.jsx', ['const el = <>{/* a real comment */ x} and /* text</>;', 'const z = 1;'], 'el:1-1 z:2-2'],
+  ['jsx: a self-closing element and a closing tag in text', 'a.tsx', ['const el = <div>a <br /> b // c</div>;', 'const z = 1;'], 'el:1-1 z:2-2'],
+  ['jsx: a TSX tag with type arguments over lines', 'a.tsx', ['const el = <Box<string>', '  value="a /* b"', '>text // c</Box>', 'const z = 1'], 'el:1-3 z:4-4'],
+  ['jsx: a type assertion in .ts is no JSX', 'a.ts', ['const a = <T>b; /* a real', 'comment */ const d = 1;', 'const z = 2;'], 'a:1-1 d:2-2 z:3-3'],
+  ['jsx: a comparison is no JSX', 'a.jsx', ['const a = b < c; /* a real', 'comment */ const d = 1;', 'const z = 2;'], 'a:1-1 d:2-2 z:3-3'],
+  ['jsx: a comparison with no space is no JSX', 'a.jsx', ['const a = b <c; /* a real', 'comment */ const d = 1;', 'const z = 2;'], 'a:1-1 d:2-2 z:3-3'],
+  ['jsx: brackets and a semicolon in JSX text over lines', 'a.jsx', ['const el = <p>a (', '  ; [ b {', 'x', '}</p>', 'const z = 1'], 'el:1-4 z:5-5'],
+  ['jsx: an attribute string holding > and a comment opener', 'a.tsx', ['const el = <a title="a > b /* c">t</a>;', 'const z = 1;'], 'el:1-1 z:2-2'],
+  ['jsx: an attribute string holding > in a self-closing tag', 'a.jsx', ['const el = <input title="a > b" />;', 'const z = 1;'], 'el:1-1 z:2-2'],
+  ['jsx: a TSX generic arrow with a default is no JSX', 'a.tsx', ['const f = <T = unknown>(x: T) => x;', 'const el = <p>see /* here</p>;', 'const z = 1;'], 'f:1-1 el:2-2 z:3-3'],
+  ['jsx: a comment holding a quote inside a tag', 'a.tsx', ["const a = <div /* it's */ x=\"1\">t</div>;", 'const el = <p>see /* here</p>;', 'const z = 1;'], 'a:1-1 el:2-2 z:3-3'],
+  ['jsx: a line comment inside a tag over lines', 'a.jsx', ['const a = (', '  <div // a note {see below', '    x="1"', '  >t</div>', ');', 'const el = <p>see /* here</p>;', 'const z = 1;'], 'a:1-5 el:6-6 z:7-7'],
+  // What the TypeScript compiler does not parse: Flow's generics in .js, an element never closed (an edit cut short),
+  // `<T>(` in .tsx. Its JSX never closes, and the file is read as it was before JSX was read: these bounds are that
+  // reading's, never worse.
+  ['jsx: a Flow generic arrow in .js', 'a.js', ['// @flow', 'const id = <T>(x: T): T => x;', 'const after1 = 1;', 'const after2 = 2;'], 'id:2-2 after1:3-3 after2:4-4'],
+  ['jsx: a Flow generic function type in .js', 'a.js', ['// @flow', 'type F = <T>(x: T) => T;', 'const after1 = 1;'], 'F:2-2 after1:3-3'],
+  ['jsx: an element never closed', 'a.jsx', ['const el = <p>never closed;', 'const after = 1;', 'function g() {}'], 'el:1-1 after:2-2 g:3-3'],
+  ['jsx: a generic arrow without a comma in .tsx', 'a.tsx', ['const f = <T>(x: T) => x;', 'const after1 = 1;'], 'f:1-1 after1:2-2'],
+  ['jsx: text that begins with a parenthesis', 'a.jsx', ['const el = <a>(optional) ; [</a>;', 'const z = 1;'], 'el:1-1 z:2-2'],
   ['asi: `as` at a line end', 'a.ts', ['const a = b as', '  Listener | null', 'const z = 1'], 'a:1-2 z:3-3'],
   ['asi: `satisfies` starting a line does not continue (no line break is allowed before it)', 'a.ts', ['const c = {', '  d: 1,', '}', '  satisfies Shape', 'const z = 1'], 'c:1-3 z:5-5'],
   ['asi: class fields without semicolons', 'a.ts', ['class Abc {', '  count = 1', '  items = []', '  static make = () => new Abc()', '  run() {', '    return 1', '  }', '}', 'const z = 1'], 'Abc:1-8 run:5-7 z:9-9'],
@@ -79,17 +109,27 @@ const SHAPES = [
 ];
 for (const [name, path, lines, want] of SHAPES) test(`shape: ${name}`, () => assert.equal(bounds(path, lines.join('\n')), want));
 
-// Known and not read right, each with the parser's answer: JSX text on its own line outside parentheses is not known
-// to the lexer; `await` at a line's end is not among the words that need more; a method named `catch` or `with` in
-// an object is taken for the statement; a callee that begins with a parenthesis is not seen as the one call it is.
-// They are listed so that a change that fixes one is seen, and so that none is fixed by a rule for its one line.
+// Known and not read right, each with the parser's answer: `await` at a line's end is not among the words that need
+// more; a method named `catch` or `with` in an object is taken for the statement; a callee that begins with a
+// parenthesis is not seen as the one call it is. They are listed so that a change that fixes one is seen, and so that
+// none is fixed by a rule for its one line.
 const NOT_YET = [
-  ['asi: JSX without parentheses over lines', 'a.tsx', ['const el = <div>', '  text', '</div>', 'const z = 1'], 'el:1-3 z:4-4'],
   ['await at a line end, its call on the next line', 'a.ts', ['import \'x\'', 'const stats =', '  await // a note', '  repository.stats()', 'const z = 1'], 'stats:2-4 z:5-5'],
   ['methods named catch and with in an object', 'a.ts', ['const api = {', '  catch(e: Error) {', '    return e', '  },', '  with(x: number) {', '    return x', '  },', '}', 'const z = 1'], 'api:1-8 catch:2-4 with:5-7 z:9-9'],
   ['a value whose callee begins with a parenthesis', 'a.ts', ['function outer(plan: Plan) {', '  const kept = (plan.ops as Op[]).filter((op) => {', '    return op.ok', '  })', '  return kept', '}', 'const z = 1'], 'outer:1-6 kept:2-4 z:7-7'],
 ];
 for (const [name, path, lines, want] of NOT_YET) test(`not read right yet: ${name}`, { todo: 'a guess of the reader, named in its header' }, () => assert.equal(bounds(path, lines.join('\n')), want));
+
+// With members: an async arrow in a JSX attribute's `{ }` or an object (`{async () => {`) is no method named async:
+// its body is a block, so the first call in it (`setOpen(false);` in formbricks' webhook-settings-tab.tsx) is no member
+// whose body is the next block. A method named async, and one whose return type holds an arrow, stay methods. The bounds
+// are the TypeScript compiler's; `run`, a property set to a function, is a member as members gives it.
+test('members: an async arrow in braces is an arrow, not a method named async', () => {
+  assert.equal(bounds('a.tsx', L('const el = (', '  <DeleteDialog', '    onDelete={async () => {', '      setOpen(false);', '      if (done) {', '        refresh();', '      }', '    }}', '  />', ');', 'const z = 1;'), { members: true }), 'el:1-10 z:11-11');
+  assert.equal(bounds('a.ts', L('const o = {', '  run: async (e) => {', '    setUploading(true);', '    if (e) {', '    }', '  },', '};', 'const z = 1;'), { members: true, params: true }), 'o:1-7 run:2-6 z:8-8');
+  assert.equal(bounds('a.js', L('const o = {', '  async() {', '    return 1;', '  },', '  async m() {', '    return 2;', '  },', '};'), { members: true }), 'o:1-8 async:2-4 m:5-7');
+  assert.equal(bounds('a.ts', L('const o = {', '  m(): () => void {', '    return () => {};', '  },', '};'), { members: true }), 'o:1-5 m:2-4');
+});
 
 // ---- The comment and decorators above a declaration (top), and what is around it (parent).
 const around = (path, body, opts) => declarations(path, body, opts).map((d) => `${d.name}:${d.top}/${d.parent ?? '-'}`).join(' ');
@@ -429,4 +469,29 @@ test('params: linear steps in the length of a parameter list, its nesting and it
 test('params: linear time in the length of a parameter list, its nesting and its file', async () => {
   const { done, said } = await timeShapes(LONG_SHAPES, new URL('../src/code.mjs', import.meta.url).href, 'declarations', (fn, text) => fn('a.ts', text, { params: true }));
   assert.ok(linearIn(done, LONG_SHAPES), said);
+});
+
+// JSX, read in a .jsx file: the elements open around are kept for each line without a copy (a copy per line took 16
+// times the time for 4 times the text, nested over lines), and text holding what opens a comment or a string is read
+// once.
+const JSX_SHAPES = {
+  'deep JSX over lines': (n) => `const e = (\n${'<div>\n'.repeat(n / 12)}x\n${'</div>\n'.repeat(n / 12)})\n`,
+  'long JSX text with comment and quote openers': (n) => `const e = <p>${'a /* b // c \' d ` e '.repeat(n / 24)}</p>\nconst z = 1\n`,
+  'many JSX elements with placeholders': (n) => `const e = <ul>${'<li a={x}>t {y}</li>\n'.repeat(n / 22)}</ul>\n`,
+  // A minified bundle: one long line, with a `<`, a `/` or a `!` after a name again and again. Whether the line so far
+  // ends in a keyword is read from its last characters (`tail` in lex), not from the line again (30 times the time for
+  // 4 times a line of `for(i=0;i<n;i++)`, before).
+  'one long line of comparisons': (n) => 'for(i=0;i<n;i++)s+=i;'.repeat(n / 21),
+  'one long line of divisions and regular expressions': (n) => 'x = a/b; return /x/.test(a);'.repeat(n / 27),
+  'one long line of negations and non-null assertions': (n) => 'y = !a && b!.c;'.repeat(n / 15),
+};
+
+test('jsx: linear steps and time in the depth of elements over lines and the length of their text', async () => {
+  for (const [name, make] of Object.entries(JSX_SHAPES)) {
+    const count = (n) => { const text = make(n); countSteps(true); declarations('a.jsx', text); return countSteps(false); };
+    const [small, big] = [count(2_000), count(32_000)];
+    assert.ok(small > 0 && big < small * 20, `${name}: ${small} steps at 2,000 characters, ${big} at 32,000 (${(big / small).toFixed(1)} times)`);
+  }
+  const { done, said } = await timeShapes(JSX_SHAPES, new URL('../src/code.mjs', import.meta.url).href, 'declarations', (fn, text) => fn('a.jsx', text));
+  assert.ok(linearIn(done, JSX_SHAPES), said);
 });

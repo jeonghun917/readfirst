@@ -262,6 +262,35 @@ function patchFiles(args) {
   // cut: not a list: patch writes its first positional argument; a second one is the patch it reads
   return out.slice(0, 1);
 }
+// The files a unified diff changes, made, or removes, from its `--- ` and `+++ ` lines (the new name; the old one when
+// the new is /dev/null, as for a removal), each with its first `strip` folders taken off as patch -pN and git apply
+// -pN take them (git's default is 1: `b/src/x.js` is src/x.js). A name with fewer folders than that stays out, as
+// patch skips it. Its own reader: trigger.mjs's parsePatch reads one file's hunks, not the names.
+function diffPaths(text, strip) {
+  const out = new Set();
+  let old = null;
+  for (const line of String(text).split('\n')) {
+    // A git diff that only renames or copies a file, or changes a binary one, has no ---/+++ lines: its
+    // `diff --git a/x b/y` header names both (a rename-only patch was missed, review of #225). The names in it are
+    // taken as git takes them, with strip folders off.
+    const g = line.match(/^diff --git ("[^"]*"|\S+) ("[^"]*"|\S+)\s*$/u);
+    if (g) {
+      for (const n of [g[1], g[2]]) { const parts = n.replace(/^"|"$/gu, '').split('/'); if (parts.length > strip) out.add(parts.slice(strip).join('/')); }
+      continue;
+    }
+    const m = line.match(/^(---|\+\+\+) ("[^"]*"|[^\t\n]+?)(?:\t.*)?\s*$/u);
+    if (!m) continue;
+    const name = m[2].replace(/^"|"$/gu, '');
+    if (m[1] === '---') { old = name; continue; }
+    const path = name === '/dev/null' ? old : name;
+    old = null;
+    if (!path || path === '/dev/null') continue;
+    const parts = path.split('/').filter((p, k) => p !== '' || k === 0);
+    if (parts.length <= strip) continue;
+    out.add(parts.slice(strip).join('/'));
+  }
+  return [...out];
+}
 function unwrap(ws) {
   let i = 0;
   for (;;) {
@@ -750,6 +779,10 @@ const OPTIONS = {
   mv: { next: 'tS', long: { 'target-directory': 't', suffix: 'S' } },
   install: { next: 'tSmog', long: { 'target-directory': 't', suffix: 'S', mode: 'm', owner: 'o', group: 'g' } },
   rsync: { next: 'eTf', long: { rsh: 'e', 'temp-dir': 'T', filter: 'f', exclude: 'x', include: 'x' } },
+  touch: { next: 'rdt', long: { reference: 'r', date: 'd' } },
+  rm: { next: '', long: {} },
+  unlink: { next: '', long: {} },
+  sort: { next: 'oSTkt', long: { output: 'o', 'buffer-size': 'S', 'temporary-directory': 'T', key: 'k', 'field-separator': 't', parallel: 'p', 'files0-from': 'F' } },
   awk: { next: 'fEvFWil', long: { file: 'f', exec: 'E', assign: 'v', 'field-separator': 'F', include: 'i', load: 'l' } },
 };
 // { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given }
@@ -1284,11 +1317,13 @@ function mayCd(state, name) {
 // A function definition at the start of some words (`f()`, `f ()`, `f ( )`, `f(){`, `function f`, `function f ()`):
 // its name and the words after the `()`, or null. Until 2026-11-13 `f ( )` was not one: `f ( ) { cd /a; }; f` was
 // read as a call of f and a group that runs where it is written.
+// A name is any word bash takes for one, not only an identifier: `:() { return 1; }` makes `:` fail (review of
+// ae3fea9: the constant results of eachCommand ask whether the command defined the name).
 function definition(ws) {
   const named = ws[0] === 'function' ? 1 : 0;
-  const m = (ws[named] ?? '').match(/^([A-Za-z_][\w-]*)(.*)$/su);
+  const m = (ws[named] ?? '').match(/^([^\s()<>|&;'"$`\\=]+)(\(.*)?$/su);
   if (!m) return null;
-  let tail = m[2];
+  let tail = m[2] ?? '';
   let j = named + 1;
   while (tail.length < 2 && j < ws.length) {
     const joined = tail + ws[j];
@@ -1301,9 +1336,19 @@ function definition(ws) {
 }
 // The text of a definition after its head (`f()`, `f ( )`, `function f`): the body, a { } group or a ( ) subshell,
 // read again where f is called (eachCommand).
+// The name is found as a string, never put in a pattern: a name is any word bash takes for one (`[`, `p?`, `a*`), and
+// in a RegExp `[` threw and `p?` matched `p` (review of 05c537f).
 function bodyText(text, name) {
-  const m = blank(text).match(new RegExp(`(?:^|[\\s;&|({])(?:function\\s+)?${name}(?:\\s*\\(\\s*\\))?`, 'u'));
-  return m ? text.slice(m.index + m[0].length) : '';
+  const b = blank(text);
+  for (let i = b.indexOf(name); i >= 0 && name; i = b.indexOf(name, i + 1)) {
+    if (i > 0 && !/[\s;&|({]/u.test(b[i - 1])) continue;
+    const after = i + name.length;
+    // A whole word: not the f of `function f`.
+    if (after < b.length && !/[\s({]/u.test(b[after])) continue;
+    const parens = b.slice(after).match(/^\s*\(\s*\)/u);
+    return text.slice(after + (parens ? parens[0].length : 0));
+  }
+  return '';
 }
 // The name a command calls as a function: its first word after NAME=value words, `time` (and -p) and `!`, which run it
 // in this shell. Not after env, nohup, sudo, timeout, nice, command and the other wrappers (unwrap): they run a program
@@ -1418,7 +1463,11 @@ const CHAINED = /^(?:&&|\|\||\|&?)$/u;
 // A call of a function from inside its own body is not read again, and the bodies read for one text are capped
 // (CALL_BUDGET and 8 per segment of it): such a call is given as `unread`, with why.
 const CALL_BUDGET = 20000;
-function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}) {
+// skip: leave out the commands that never run (bashReads and commandWords, whose readers credit a read, an answer or a
+// find: a wrong guess there credits less). shellWrites and stateAt never skip: a write that may not run is still
+// named, so a wrong guess can only refuse once more, never let a write through (2026-11-15, after three reviews found
+// guesses that hid writes).
+function eachCommand(text, state, visit, tail = () => {}, { calls = false, skip = false } = {}) {
   // Here-documents first, then comments, in one place for every walk (hereDocs): a body's lines are no commands, and a
   // ' in a body (`it's`) would otherwise open a quote for the comment reader. Both are no change on text without them.
   // Each is skipped where it has nothing to find (no << or no #). (stateAt walked the text before each here-document
@@ -1434,6 +1483,19 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
   const outer = [];
   let before = '';
   let ticks = false;
+  // Commands the shell never runs (2026-11-15), decided here once for every walk: one is `never` after `false &&` or
+  // `true ||` / `: ||` (`status`: the constant result of the list so far, 'true' or 'false', null when it depends on
+  // what runs; a command skipped keeps it), inside a block, group or subshell such a command opens (`dead`: how deep it
+  // stood; never while deeper), and after an `exit` of this shell itself (top level, not after && or ||, not in a
+  // pipeline or the background; dead: -1). Any other && or || may run, as before. A never command is not visited.
+  let status = null;
+  let dead = null;
+  // A command that runs eval, source, `.`, alias, enable or shopt anywhere can redefine a name where readfirst does not
+  // see it (`eval 'true() { return 1; }'`, `enable -n exit`): no result in it is constant (review of 05c537f).
+  // A command name not written out plainly (`$e`, `\eval`, `"eval"`, `e''val`) may be any of those: from there on no
+  // result is constant either (review of 2def059: `e=eval; $e "true() { return 1; }"; true || cd a; readfirst read y`
+  // credited y in the wrong folder).
+  let aliased = /(?:^|[\s;&|({])(?:eval|source|\.|alias|enable|shopt)(?=[\s;&|)}]|$)/u.test(blank(shell));
   const inSub = (list) => list.some((o) => o.sub);
   // `case W in a) cd /a;;` is one segment up to the first `;`: its head `case W in` opens the block, and the rest is
   // the first arm. Until 2026-11-13 the arm was not read: `a)` stood where the command name should be, so a cd in an
@@ -1510,6 +1572,9 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
       }
     }
     const p = parens(text, outer.length);
+    const deep = (state.blocks?.length ?? 0) + groups.length + outer.length;
+    if (dead !== null && deep <= dead) dead = null;
+    const never = skip && (dead !== null || (before === '&&' && status === 'false') || (before === '||' && status === 'true'));
     const subBefore = ticks || inSub(outer);
     if ((blank(text).match(/(?<!\\)`/gu) ?? []).length % 2) ticks = !ticks;
     for (let k = 0; k < p.lead; k++) outer.push(snapshot(state));
@@ -1537,7 +1602,8 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     // return ends the body it is in: the rest of it is not read (`f() { cd a; return; cd b; }` stays in a). One that
     // may not run (after && or ||, in a block or a subshell of the body) leaves the rest read, and what it changes not
     // known after the call (review of #217).
-    if (calls && inside > 0 && !how.body && unquote(unwrap(opening(raw))[0] ?? '') === 'return') {
+    if (never) how.never = true;
+    if (calls && inside > 0 && !how.body && !never && unquote(unwrap(opening(raw))[0] ?? '') === 'return') {
       const top = reading.at(-1);
       const maybe = before === '&&' || before === '||' || (state.blocks?.length ?? 0) > top.blocksAt || outer.length > top.outerAt || p.lead > 0 || p.closes > 0 || ticks;
       if (maybe) top.returnAt ??= snapshot(state);
@@ -1549,7 +1615,7 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     }
     // A call of a function whose body was kept: read next, where it is called.
     let call = null;
-    if (calls && !how.body && state.fns?.size) {
+    if (calls && !how.body && !never && state.fns?.size) {
       const name = callee(raw);
       const ws = opening(raw).slice(opening(raw).findIndex((w) => unquote(w) === name));
       const info = state.fns?.has(name) ? state.fnInfo?.get(name) : null;
@@ -1569,14 +1635,14 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
       }
     }
     const defined = state.fnBody;
-    visit(p, raw, how, op);
+    if (!never) visit(p, raw, how, op);
     // A ( ) closing puts back what the shell held, not how deep a function's body is (the text's syntax): put back, the
     // depth of `f() { cd a; ( echo ) }` went back to 1 at the ), so the body never ended (review of #217).
     for (let k = 0; k < p.closes; k++) Object.assign(state, outer.pop(), { fnDepth: state.fnDepth });
     const apart = op === '&' || op === '|' || op === '|&';
     for (const g of closed) if (apart || g.piped) Object.assign(state, g.at);
     // A function's body: its redirects (`f() { ...; } > log`) are read where it is called.
-    if (!how.body) tail(p.tail);
+    if (!how.body && !never) tail(p.tail);
     if (call) { spent += call.segs.length; putFront([{ call, begins: true }, ...call.segs, { call }]); }
     // Its body's segments kept as they come, up to the } or ) that ends it (the first with its head taken off).
     // A body that is an if, a loop or a case (`f() if true; then cd a; fi`) ends where that block does (it ran where it
@@ -1599,6 +1665,23 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     // feeds, inside the list (`cd $S && python3 - <<E` lost its folder for a while on 2026-11-13).
     if (!subAfter && state.chain && op && !CHAINED.test(op) && (state.blocks?.length ?? 0) <= state.chain.depth) { const from = state.chain; state.chain = null; unsure(state, from, 'is set only on some paths through the command (after && or ||)'); }
     for (let k = 0; k < p.opened; k++) outer.push({ ...snapshot(state), sub: true });
+    // What a command that ran leaves for the next of its list: a constant result (true, :, false, not negated, not in a
+    // pipeline or a subshell), or an exit that ends this shell. One that never ran keeps the status, and makes what it
+    // opens never run. Never with a redirect (`true < missing` fails, and bash goes on after `exit < missing`) or a
+    // name the command defines as a function (`true() { return 1; }`): review of ae3fea9, which let a write through.
+    if (never) { if (dead === null && (state.blocks?.length ?? 0) + groups.length + outer.length > deep) dead = deep; }
+    else {
+      // The name is the command's first word, or the word after a bare `command` or `builtin` (which run the builtin);
+      // after NAME=value, env, exec or any other wrapper it is not read as constant (nor anywhere in a command that can
+      // redefine names: `aliased`).
+      if (/[$`\\'"]/u.test(unwrap(opening(raw))[0] ?? '')) aliased = true;
+      const ow = opening(raw).map(unquote);
+      const k = /^(?:command|builtin)$/u.test(ow[0] ?? '') ? 1 : 0;
+      const name = ow[k] ?? '';
+      const plain = !aliased && !p.lead && !p.closes && !p.opened && !ticks && !raw.includes('!') && !how.pipe && op !== '|' && op !== '|&' && withoutRedirects(raw).length === raw.length && !state.fns?.has(name);
+      status = plain && (name === 'true' || name === ':') ? 'true' : plain && name === 'false' ? 'false' : null;
+      if (name === 'exit' && plain && deep === 0 && !subBefore && op !== '&' && before !== '&&' && before !== '||' && !how.body && !keeping && inside === 0) dead = -1;
+    }
     before = op;
   }
   return state;
@@ -2024,6 +2107,83 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   const scriptsRead = new Map();
   let scriptBytes = 0;
   const exportedOnly = (v) => new Map([...v].filter(([, x]) => x.exported));
+  // The text of a file a command reads (a patch), as dq gives its path: null when it is not there, cannot be read, or
+  // is known only when the command runs.
+  const readText = (w) => {
+    if (!w || w.includes(HOLE) || (!isAbsolute(w) && state.base == null)) return null;
+    try { return readFileSync(isAbsolute(w) ? w : resolve(state.base, w), 'utf8'); } catch { return null; }
+  };
+  // A patch applied to the files it names (by: what applies it; text: the patch, null when it is not read; strip: the
+  // -p count, undefined when the command gives none; dir: the folder the paths are under). Without -p, patch reads a
+  // name in ways that depend on which files are there, and a patch not read names nothing: either is not known, with
+  // why, under where the command runs.
+  const applyPatch = (by, text, strip, dir) => {
+    const under = state.base == null ? state.why?.prefix ?? '' : `${resolve(state.base, dir)}/`;
+    if (text == null) { missing({ part: by, word: by, why: `${by} changes the files the patch names, and readfirst does not read the patch`, prefix: under }); return; }
+    if (strip === undefined) { missing({ part: by, word: by, why: `${by} without -p takes the names in the patch in ways that depend on the files there`, prefix: under }); return; }
+    diffPaths(text, strip).forEach((p) => add(join(dir, p)));
+  };
+  // A git command that changes tracked files the command does not name (sub: the subcommand; rest: its words; dir:
+  // where it runs, as `-C` gives it): merge, rebase, pull, cherry-pick, revert, am, a stash put back (pop, apply,
+  // branch) or made (push, save, or no subcommand: it puts the files back as they were), reset --hard / --merge /
+  // --keep, clean -f, and a checkout or switch to another commit. Which files is known only when it runs: not known,
+  // under the repository. A checkout that only makes a branch where HEAD is (`checkout -b x`, `switch -c x`), and
+  // `stash list`, `show`, `drop` or `clear`, change no file. Until 2026-11-14 none of these was read.
+  const gitMoves = (sub, rest, dir) => {
+    const words = rest.filter((w) => !w.startsWith('-'));
+    const flag = (re) => rest.some((w) => re.test(w));
+    let moves = false;
+    if (/^(?:merge|rebase|pull|cherry-pick|revert|am)$/u.test(sub)) moves = !flag(/^--(?:abort|quit|show-current-patch)$/u);
+    else if (sub === 'stash') moves = !/^(?:list|show|drop|clear|create|store)$/u.test(words[0] ?? '');
+    else if (sub === 'reset') moves = flag(/^--(?:hard|merge|keep)$/u);
+    else if (sub === 'clean') moves = flag(/^(?:-[a-zA-Z]*f[a-zA-Z]*|--force)$/u) && !flag(/^(?:-[a-zA-Z]*n[a-zA-Z]*|--dry-run)$/u);
+    else if (sub === 'checkout' || sub === 'switch') {
+      if (rest.includes('--')) return;
+      const make = rest.findIndex((w) => /^(?:-[bBc]|-C|--orphan|--create|--force-create)$/u.test(w));
+      const others = rest.filter((w, k) => !w.startsWith('-') && !(make >= 0 && k === make + 1));
+      // A checkout of words that are files names those files (gitPaths, above); a word that is no file is a commit.
+      const commits = sub === 'checkout' ? others.filter((w) => !here(join(dir, w))) : others;
+      moves = commits.length > 0 || (rest.includes('-') && make < 0);
+    }
+    if (!moves) return;
+    const part = `git ${sub}`;
+    const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+    // `moves`: a move between commits (all of these but clean, which takes away files where they are): the hook shows
+    // it without refusing (refuses in src/cli.mjs), since it can name no file to read first.
+    missing({ part, word: part, why: `${part} changes the tracked files it brings, known only when it runs`, prefix: under, ...(sub === 'clean' ? {} : { moves: true }) });
+  };
+  // npm, pnpm and yarn. Installing, adding, removing or updating packages writes the lock file (package-lock.json,
+  // pnpm-lock.yaml, yarn.lock), package.json when the command names packages, and node_modules: given as not known,
+  // with what it writes, and `moves`, so the hook shows it without refusing (it could name no file to read first; the
+  // Stop hook checks what changed). `npm ci` writes node_modules only: the same. `npm version` and `npm pkg
+  // set|delete|fix` write package.json (and npm version the lock file): named. The folder: --prefix (npm), -C / --dir
+  // (pnpm), --cwd (yarn), or where the command runs; options that take a value (-w, --workspace, --filter, ...) are
+  // skipped with it (`npm -w pkg install x` took pkg for the subcommand, review of #225).
+  const LOCKS = { npm: 'package-lock.json', pnpm: 'pnpm-lock.yaml', yarn: 'yarn.lock' };
+  const PKG_VALUES = /^(?:-w|--workspace|--filter|-F|--registry|--tag|--cache|--userconfig|--loglevel|--omit|--include|--save-prefix)$/u;
+  const packages = (cmd, args) => {
+    let dir = '.';
+    const words = [];
+    for (let i = 0; i < args.length; i++) {
+      const w = args[i];
+      const m = w.match(/^--(prefix|dir|cwd)=(.*)$/u);
+      if (m) { dir = m[2]; continue; }
+      if (/^(?:--prefix|--dir|--cwd|-C)$/u.test(w)) { dir = args[++i] ?? '.'; continue; }
+      if (PKG_VALUES.test(w)) { i++; continue; }
+      if (!w.startsWith('-')) words.push(w);
+    }
+    const [sub, ...named] = words;
+    if (cmd === 'npm' && (sub === 'version' || (sub === 'pkg' && /^(?:set|delete|fix)$/u.test(named[0] ?? '')))) {
+      add(join(dir, 'package.json'));
+      if (sub === 'version') add(join(dir, LOCKS.npm));
+      return;
+    }
+    if (!(sub === undefined && cmd === 'yarn') && !/^(?:install|i|ci|add|uninstall|un|remove|rm|update|up|upgrade)$/u.test(sub ?? '')) return;
+    const what = sub === 'ci' ? 'node_modules' : `${LOCKS[cmd]}${named.length || /^(?:uninstall|un|remove|rm)$/u.test(sub ?? '') ? ', package.json' : ''} and node_modules`;
+    const part = `${cmd}${sub ? ` ${sub}` : ''}`;
+    const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+    missing({ part, word: part, why: `${part} writes ${what}, as the packages it installs make it`, prefix: under, moves: true });
+  };
   // find (raw: its words after the name as written, without redirects; args: the same as dq gives them). The command
   // after each -exec, -execdir, -ok or -okdir, up to its `;` (or a `+` after `{}`), runs for each file find finds:
   // it is read as commands, by a program, so with the exported variables only, once for each folder find starts from
@@ -2242,7 +2402,24 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // sed and perl write only in place; the script is the first file argument unless -e/-f gave it.
     if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
     else if (cmd === 'tee' || cmd === 'truncate') o.files.forEach(add);
-    else if (cmd === 'patch') patchFiles(args).forEach(add);
+    // patch: the file named first, or, with none (`patch -p1 < fix.diff`, missed until 2026-11-14), the files the
+    // patch it reads names.
+    else if (cmd === 'patch') {
+      const named = patchFiles(args);
+      // -o FILE writes the patched text there, not over the file (review of #225: nothing was named).
+      const out = args.find((w) => /^--output=/u.test(w))?.slice(9) ?? (args.includes('-o') ? args[args.indexOf('-o') + 1] : undefined);
+      if (out !== undefined && !args.includes('--dry-run')) add(out);
+      else if (named.length) named.forEach(add);
+      else if (!args.includes('--dry-run')) {
+        const p = args.find((w) => /^-p\d+$/u.test(w)) ?? (args.includes('-p') ? `-p${args[args.indexOf('-p') + 1]}` : undefined);
+        const input = args.find((w) => /^--input=/u.test(w))?.slice(8) ?? (args.includes('-i') ? args[args.indexOf('-i') + 1] : stdinFile(ws) && dq(stdinFile(ws)));
+        applyPatch('patch', input === undefined ? null : readText(input), p === undefined ? undefined : Number(p.slice(2)), '.');
+      }
+    }
+    // touch and rm write (or take away) the files they are given; sort -o writes its output file.
+    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.forEach(add);
+    else if (cmd === 'sort' && o.values.o) add(o.values.o.at(-1));
+    else if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') packages(cmd, args);
     else if (['cp', 'mv', 'install'].includes(cmd) && o.values.t) add(o.values.t.at(-1));
     else if (cmd === 'rsync' && (args.some((w) => w === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/u.test(w)) || /^(?:[\w.@-]+:|rsync:\/\/)/u.test(o.files.at(-1) ?? ''))) { /* a dry run or a remote destination */ }
     else if (['cp', 'mv', 'install', 'rsync'].includes(cmd) && o.files.length >= 2) add(o.files.at(-1));
@@ -2264,6 +2441,26 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       const sub = args[i];
       const rest = args.slice(i + 1).filter((w, k, all) => !w.startsWith('-') && !/^-(?:b|B|-reason|-template|-separate-git-dir|-origin|o|-branch|-depth|c|-config)$/u.test(all[k - 1] ?? ''));
       const made = sub === 'worktree' && rest[0] === 'add' ? rest[1] : sub === 'clone' ? rest[1] ?? (rest[0] ?? '').replace(/\/$/u, '').split(/[/:]/u).pop().replace(/\.git$/u, '') : sub === 'init' ? rest[0] ?? '.' : undefined;
+      // git apply writes the files its patches name (-p1 unless -p gives another; --directory puts them under a
+      // folder); --check, --stat, --numstat, --summary and --cached write no file. A patch it reads from stdin is read
+      // from the file there; from a pipe, it is not known.
+      if (sub === 'apply') {
+        const ap = args.slice(i + 1);
+        if (!ap.some((w) => /^--(?:check|stat|numstat|summary|cached)$/u.test(w))) {
+          const p = ap.find((w) => /^-p\d+$/u.test(w));
+          const into = ap.find((w) => w.startsWith('--directory='))?.slice(12) ?? '';
+          const patches = ap.filter((w, k) => !w.startsWith('-') && !/^-[pCx]$/u.test(ap[k - 1] ?? ''));
+          const input = patches.length ? patches : stdinFile(ws) ? [dq(stdinFile(ws))] : [null];
+          for (const f of input) applyPatch('git apply', f == null ? null : readText(f), p === undefined ? 1 : Number(p.slice(2)), join(dir, into));
+        }
+      } else if (sub === 'rm' || sub === 'mv') {
+        // git rm takes its paths away (not with --cached: the index only); git mv names where they were and go.
+        const gr = args.slice(i + 1);
+        if (!(sub === 'rm' && gr.includes('--cached')) && !gr.some((w) => /^(?:-n|--dry-run)$/u.test(w))) {
+          const dd = gr.indexOf('--');
+          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => add(join(dir, p)));
+        }
+      } else if (sub !== undefined) gitMoves(sub, args.slice(i + 1), dir);
       for (const m of made ? perTurn(made) ?? [made] : []) {
         const at = !m.includes(HOLE) && (state.base != null || isAbsolute(m)) ? resolve(state.base ?? '/', ...cs, m) : null;
         repos.add(at ?? (m.includes(HOLE) ? knownPrefix(m.slice(0, m.indexOf(HOLE))) : ''));
@@ -2381,13 +2578,15 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
 // The command runs readfirst as `readfirstRun` reads it, with `read` as its subcommand; a -c string is read the same
 // way (three deep); any other way of running it (an alias, a script, inside $( )) is not seen here. Relative paths
 // start where the cds before it moved to, or at --root when it is given, as `readfirst read` resolves them.
-const READ_VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
+// readfirst's options that take a value: the one list, for parse() in src/cli.mjs and every reader of a readfirst
+// command here (until 2026-11-15 the two kept a copy each).
+export const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
 // Where one command's words run readfirst, for every reader of a readfirst command (bashReads, answerRuns and
 // findQueries through readfirstAt, readfirstHookOf; until 2026-11-15 each had a spelling pattern of its own, and each
 // missed forms another knew): the words that launch it (a shell, node, npx, npm exec or x, pnpm or yarn dlx, bun x,
 // bunx, env, `--`, NAME=value and their options, skipping the value of one that takes a value such as -p <package>),
 // then the readfirst program (readfirst, readfirst@<any version>, a path ending in readfirst or readfirst.mjs, read as
-// written so a backslash stays a separator), then its own options (READ_VALUES take a value) up to its subcommand.
+// written so a backslash stays a separator), then its own options (VALUES take a value) up to its subcommand.
 // words: [{ text, raw }]. { program, sub }: the indexes of the program and of its subcommand (words.length when there
 // is none); { code }: the text of a -c string (sh -c, bash -lc, npx -c or --call), to be read as a command of its own;
 // null: no readfirst is run here.
@@ -2405,7 +2604,7 @@ export function readfirstRun(words) {
   }
   if (!/^readfirst(?:@\S+)?(?:\.mjs)?$/u.test(said(i).split(/[\\/]/u).pop())) return null;
   let j = i + 1;
-  while (j < words.length && String(words[j].text).startsWith('-')) j += !words[j].text.includes('=') && READ_VALUES.has(words[j].text.replace(/^--?/u, '')) ? 2 : 1;
+  while (j < words.length && String(words[j].text).startsWith('-')) j += !words[j].text.includes('=') && VALUES.has(words[j].text.replace(/^--?/u, '')) ? 2 : 1;
   return { program: i, sub: Math.min(j, words.length) };
 }
 // Each command of a shell text as commandWords gives it, with the commands of a -c string (readfirstRun's code) read
@@ -2469,7 +2668,7 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map(), dept
         if (names) { files.push(w); continue; }
         if (w === '--') { names = true; continue; }
         const opt = w.match(/^--([\w-]+)(=.*)?$/u);
-        if (opt && READ_VALUES.has(opt[1])) {
+        if (opt && VALUES.has(opt[1])) {
           const value = opt[2] !== undefined ? opt[2].slice(1) : args[++i];
           if (opt[1] === 'root') root = value ?? null;
           if (opt[1] === 'limit') limit = true;
@@ -2482,7 +2681,7 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map(), dept
       const abs = files.filter((f) => !f.includes(HOLE) && !/[*?]/u.test(f)).map((f) => (isAbsolute(f) ? f : from == null ? null : resolve(from, f))).filter(Boolean);
       if (abs.length) out.push({ files: abs, seen: !thrown && !limit, why: thrown ? 'its output was sent elsewhere' : limit ? '--limit cut the list' : null });
     }
-  }); } finally { liftDone(); }
+  }, undefined, { skip: true }); } finally { liftDone(); }
   return out;
 }
 
@@ -2545,7 +2744,7 @@ export function commandWords(command, cwd = process.cwd(), { vars = new Map() } 
       const at = state.base;
       follow(state, opened, how);
       if (words.length) out.push({ words, op, pipe: how.pipe, body, at });
-    });
+    }, undefined, { skip: true });
   } finally { liftDone(); }
   return out;
 }

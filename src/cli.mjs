@@ -33,7 +33,7 @@ import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom, unshownRisks } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
-import { bashReads, commandWords, readfirstCommands, readfirstRun, shellWrites } from './bash-writes.mjs';
+import { bashReads, commandWords, readfirstCommands, readfirstRun, shellWrites, VALUES } from './bash-writes.mjs';
 import { ANSWER_HOW, ANSWER_KINDS, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, itemTally, lastAnswers, openUnsure, parseAnswer, readfirstAt, wideItems } from './answers.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
@@ -87,10 +87,10 @@ Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; de
          --agent (init: also run setup), --for (setup: the agents to wire, e.g. cursor,codex),
          --ci (init: add .github/workflows/readfirst.yml, the Action with auto-fix)`;
 
-// The on/off flags (name -> key in args) and the options that take a value. Anything else that starts with `--` is an
+// The on/off flags (name -> key in args); the options that take a value are `VALUES`, kept in src/bash-writes.mjs
+// with the readers of a readfirst command that skip their values. Anything else that starts with `--` is an
 // error: an unknown option used to take the next word as its value, so `hook --new-flag --stop` quietly ran the wrong hook.
 const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', git: 'git', ci: 'ci', stop: 'stop', gate: 'gate', report: 'report', help: 'help', version: 'version' };
-const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
 // The options each command reads (by their key in args), besides --root, --help and --version, which every command
 // takes. parse() takes every option for every command, so one a command did not read did nothing with no word: `fix
 // --dry-run` wrote the map (2026-11-14). main() refuses an option the command does not read, naming it. The plain
@@ -867,7 +867,8 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos, Date.now() + budget / 5) : [];
     // Asked once per command and folder (commandKey): the same text run in another folder or repository is asked again.
     const unknownKey = unplaced.length ? `unknown:${keysOnce().here}` : null;
-    const askUnknown = Boolean(unknownKey) && !before[unknownKey] && !before[`unknown:${keys.old}`];
+    const newUnknown = Boolean(unknownKey) && !before[unknownKey] && !before[`unknown:${keys.old}`];
+    const askUnknown = newUnknown && refuses(unplaced);
     if (unknownKey) { seen[unknownKey] = now; for (const r of new Set(unplaced.flatMap((u) => u.roots))) { if (!seen[`start:${r}`]) seen[`start:${r}`] = now; markHead(seen, r, now); } }
     // Said once per command: made again, it goes through without the line.
     // Five repositories are named for a write and the rest counted with where they are (below its folder, or the ones
@@ -879,7 +880,8 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
       if (u.looked) return `could be in a repository below ${u.prefix}${u.roots.length ? ` (${some} and more: readfirst stopped looking at ${u.looked})` : ` (readfirst stopped looking at ${u.looked})`}`;
       return u.roots.length ? `could be in ${some}` : 'could be in any repository: none is known to this session';
     };
-    const unknownLine = askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${clip(u.word)}\` (${clip(u.part)}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.` : null;
+    const unknownLine = !newUnknown ? null : askUnknown ? `readfirst: this command writes where readfirst cannot tell before it runs: ${unplaced.map((u) => `\`${clip(u.word)}\` (${clip(u.part)}: ${u.why}; ${landIn(u)})`).join('; ')}. If one of these is a file in a repository, read its notes first (\`npx readfirst read <file>\`)${gate ? ', then make the same call again' : ''}; the Stop hook checks the files that change.`
+      : `readfirst: this command changes files readfirst cannot name before it runs: ${unplaced.map((u) => `\`${clip(u.part)}\` (${u.why}; ${landIn(u)})`).join('; ')}. Not refused: what it brings from a commit is committed code, not this session's edit, and the Stop hook does not check it (its checks are that commit's); what it leaves changed in the working tree (a stash pop, an install) is checked at the stop, and an edit made on top of either is asked about as usual.`;
     if (!targets.length) {
       const root = repoOf(cwd);
       if (root && !seen[`start:${root}`]) seen[`start:${root}`] = now;
@@ -1010,6 +1012,17 @@ function rootOf(abs, known = new Map()) {
 // A part not known inside one folder name (`within`: `/tmp/zz-$r/f`) narrows that to the folders whose name fits its
 // known letters (/tmp/zz-*) and what is below them: it walked all of /tmp, 12 s, and named every repository there
 // (2026-11-13). The walks share 2000 folders and the time until `until`.
+// Whether writes readfirst cannot place make the gate refuse the call once. Not those that only move between commits
+// or install packages (`moves`, from shellWrites: git checkout of a branch, merge, rebase, pull, a stash, npm
+// install...): the refusal could name no file to read. What a checkout, merge, reset or pull brings is committed code,
+// whose checks are the PR of its commit: the Stop hook does not check it (after the move the tree is clean against the
+// new HEAD; the HEAD reflog tells it from the session's own commits). What a move leaves changed in the working tree (a
+// stash pop) is checked at the stop, and an edit on top is asked about as any edit. Their line is shown, without
+// refusing (review of readfirst#225: `git checkout -q main` and `git pull` were each refused once, naming no file). Not
+// asked either: a cherry-pick or `stash branch`, which brings in changes no PR reviewed.
+function refuses(unplaced) {
+  return unplaced.some((u) => !u.moves);
+}
 // Returns [{ ...unknown, roots }], roots empty when no repository is known at all (it could be any).
 function couldLandIn(unknown, seen, cwd, made = [], until = Infinity) {
   const walk = { left: 2000, until };
