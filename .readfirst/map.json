@@ -127,12 +127,6 @@
           ]
         },
         {
-          "text": "long options in Bash commands (`options()` in src/bash-writes.mjs, since 2026-11-15): GNU getopt_long takes any unique prefix of a long option, so a spec in `OPTIONS` that lists `names` (every long option of the tool, from GNU sed 4.9 and coreutils 9.4 --help) reads `sed --in`, `sort --out=o` and `cp --t d` as --in-place, --output and --target-directory; a prefix of more than one name (`cp --p`) is refused by the tool and given as `ambiguous`, a write not known with no prefix; `takes` lists the names that need a value readfirst does not keep (touch --time, sort --sort), so that value is not a file. A spec without names (perl, rsync, awk, which were not measured) reads whole names only. Until then `sed --in s/a/b/ f` wrote and nothing was named, and `touch --r a.txt new.txt` named a.txt. A new tool in OPTIONS, or a new version of one, gets its names from its own --help, never by guess: a name the tool does not have makes a real prefix ambiguous.",
-          "files": [
-            "src/bash-writes.mjs"
-          ]
-        },
-        {
           "text": "src/pending.mjs reads the hosted upkeep branch (refs/remotes/*/readfirst/upkeep) from the clone's refs only, as of the last fetch (no-network-in-cli): `pending`, the MCP tool pending_map_edits and the PreToolUse hook (once per session per repository, after MIN_DAYS or MIN_MERGES) use it. The hook adds the line as context and never denies for it, even with --gate. The branch name is the hosted upkeep's: if the server renames it, this goes silent",
           "files": [
             "src/pending.mjs",
@@ -274,6 +268,30 @@
         },
         {
           "text": "the gate (`runHook` with --gate) sees one tool call at a time, never the other calls of the response it came in: an agent sends several, they run one after another, and when the gate refuses one, those before it have run and those after it are judged on their own, so a definition refused while the edits that use it went in leaves a file half changed (2026-11-14, three sessions). Every refusal opens by naming the call it refuses (`callWhat`: the tool, the files (`filesSaid`: with their checkout when it is not the session folder's, since another worktree's files have the same paths), an Edit by the first line of its old text; and the hook input's `tool_use_id`) and says the others were not refused by it (`BATCH_LINE`); an error read against the wrong call of a response sent that call twice. Each refusal is kept as `refused:<sig>:<JSON [call, files]>`; a later call let through that writes one of those files, by any tool (a Bash command by the files its write reader names), marks it `redone:<sig>`, so the change made again as a MultiEdit, a Write or a `sed -i` counts. The Stop hook names every refused call with no later `redone:`, once for that set (`refused:said:<hash>`), when the session changed files. The hook input has `transcript_path` and `tool_use_id`, from which the other calls of the response could be read; readfirst does not read it, so any later write of the same file counts as the change made again, whatever it changed.",
+          "files": [
+            "src/cli.mjs"
+          ]
+        },
+        {
+          "text": "long options in Bash commands (`longName`, which `options()` and the backup readers `inPlaceSuffix` and `backupSuffix` in src/bash-writes.mjs share, since 2026-11-15): GNU getopt_long takes any unique prefix of a long option, so a spec in `OPTIONS` that lists `names` (every long option of the tool, from GNU sed 4.9 and coreutils 9.4 --help) reads `sed --in`, `sort --out=o` and `cp --t d` as --in-place, --output and --target-directory, and `sed --in=.bak` and `cp --b` as the backup options; a prefix of more than one name (`cp --p`) is refused by the tool and given as `ambiguous`, a write not known with no prefix; `takes` lists the names that need a value readfirst does not keep (touch --time, sort --sort), so that value is not a file. A spec without names (perl, rsync, awk, which were not measured) reads whole names only. Until then `sed --in s/a/b/ f` wrote and nothing was named, and `touch --r a.txt new.txt` named a.txt. A new tool in OPTIONS, or a new version of one, gets its names from its own --help, never by guess: a name the tool does not have makes a real prefix ambiguous. A new reader of a long option goes through `longName`, not its own prefix match.",
+          "files": [
+            "src/bash-writes.mjs"
+          ]
+        },
+        {
+          "text": "Bash commands that change files with no redirect (src/bash-writes.mjs): touch, rm, unlink, sort -o, git rm and git mv name their files (git rm --cached and a dry run name none), git apply and patch the files their patch names (`diffPaths`, which reads the `---`/`+++` lines and also the `diff --git` header of a rename-only patch; patch -o names its output file instead; a patch not read, or patch without -p, is not known; patch -d DIR (--directory DIR) puts the file, -o, -i and every name in the patch under DIR, and each -d, as each git -C, moves on from the one before (`foldDirs`), missed until 2026-11-15), npm version (package.json and the lock file) / pkg set package.json, and a git command that changes tracked files it does not name (merge, rebase, pull, a stash, reset --hard, clean -f, a checkout to another commit: `gitMoves`) or a package install is not known under its folder, and but for clean is shown without refusing (`moves`; `refuses` in src/cli.mjs: what a checkout, merge, reset or pull brings is committed code, whose checks are its commit's PR, and the Stop hook does not check it; a stash pop leaves the tree changed and is checked; an edit on top is asked about) (all missed until 2026-11-14).",
+          "files": [
+            "src/bash-writes.mjs"
+          ]
+        },
+        {
+          "text": "`codeWrites` (src/bash-writes.mjs, since 2026-11-15) reads code from -c, -e, a here-document and a script file the same way, with no gate on the command's raw text (`CODE_WRITES`) and no fallback to the paths the code names: each write call found by its brackets names its target, and one it cannot place is not known, whatever else the code names. `codeTargets` keeps a target holding a part the shell left not known (`$X`, find's `{}`) so it is given as not known, and treats a `${ }` or f-string target as known only when it runs. A pathlib path made of a literal (`Path('p.txt')`, `pl.Path(...)`) is that file. Assignments are searched in code only (`inCode`), never in strings. A here-document under a tag not quoted passes `expands`: bash expands `$` and backticks in its body before the code runs, so a literal target holding one is not known, never that text; under a quoted tag it is the text. A new reader of code from -c, -e or a here-document goes through `codeWrites`, not a pattern on the raw command.",
+          "files": [
+            "src/bash-writes.mjs"
+          ]
+        },
+        {
+          "text": "`filesSaid` names a file's checkout only when it is not `here`, the checkout the session's folder is in (`runHook` finds it once). `here` undefined (a caller that gives none: `callWhat` and `notesFor` default to it) names no checkout; `here` null (a session folder in no repository) names every one. A new caller of `callWhat` or `notesFor` must pass `here`, or another worktree's files read as this checkout's again: a copy into a scratch worktree was refused as 'writing src, test, src/cli.mjs' (2026-11-15). The notes header (`readfirst notes for <files> in <root>`) is said the same way.",
           "files": [
             "src/cli.mjs"
           ]
@@ -665,6 +683,20 @@
           "files": [
             "src/bash-writes.mjs"
           ]
+        },
+        {
+          "text": "`endsInKeyword` (src/code.mjs) tells `lex` whether a `/` starts a regular expression, a `!` negates or a `<` opens JSX by reading `tail`, the last 11 code characters of the line that `lex` keeps as it goes, never `code` itself. Testing `REGEX_KEYWORD` against `code.trimEnd()` made a minified one-line bundle quadratic (4 times the line took 18 times the time). A new check in `lex` that reads the line so far for each character brings that back; the linear-steps and linear-time test in test/code.test.mjs (`JSX_SHAPES`) is what catches it.",
+          "files": [
+            "src/code.mjs",
+            "test/code.test.mjs"
+          ]
+        },
+        {
+          "text": "`lex` (src/code.mjs) keeps the `${ }` stack of templates (`tpl`) and the placeholder stack of Python f-strings (`fs`) as nodes that are never changed (innermost first, `up` the next out, `length` how many are open, bottom `NO_STACK`), like the JSX frames, and every line's `state` holds them without a copy. A change to the innermost (a brace depth `n`, a placeholder's `depth` or `spec`) must make a new node (`{ ...f, depth: f.depth + 1 }`), never `f.depth++` in place: that would change the state of every earlier line that shares the node, and going on from a line's state would no longer give what the whole file gives. A copy of a stack per line (`[...tpl]`, `fs.map(...)`) brings back time and memory by depth times lines, and f-strings nested 8,000 deep over lines ran out of heap, which cannot be caught. The test of linear time in test/code.test.mjs (`STACK_SHAPES`) catches a copy, and the test that goes on from each line's state catches a node changed in place.",
+          "files": [
+            "src/code.mjs",
+            "test/code.test.mjs"
+          ]
         }
       ]
     },
@@ -1025,9 +1057,57 @@
       "note": "Reads secrets or the environment"
     },
     {
+      "file": "src/bash-writes.mjs",
+      "symbol": "codeTargets",
+      "line": 343,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "no-silent-cut"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/bash-writes.mjs",
+      "symbol": "writesOf",
+      "line": 1965,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "no-silent-cut"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/bash-writes.mjs",
+      "symbol": "codeWrites",
+      "line": 2127,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "no-silent-cut"
+      ],
+      "note": "Writes files"
+    },
+    {
+      "file": "src/bash-writes.mjs",
+      "symbol": "writesIn",
+      "line": 2501,
+      "labels": [
+        "fs-write"
+      ],
+      "rules": [
+        "no-silent-cut"
+      ],
+      "note": "Writes files"
+    },
+    {
       "file": "src/cli.mjs",
       "symbol": "git",
-      "line": 127,
+      "line": 160,
       "labels": [
         "exec"
       ],
@@ -1040,7 +1120,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "addLineTo",
-      "line": 192,
+      "line": 233,
       "labels": [
         "fs-write"
       ],
@@ -1053,7 +1133,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "verifyChecks",
-      "line": 283,
+      "line": 339,
       "labels": [
         "secrets",
         "exec"
@@ -1066,29 +1146,33 @@
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "callSig",
-      "line": 419,
+      "symbol": "markHead",
+      "line": 654,
       "labels": [
-        "crypto"
+        "fs-write",
+        "exec"
       ],
       "rules": [
-        "no-silent-cut",
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-network-in-cli",
+        "no-silent-cut"
       ],
-      "note": "Hashes, signs or encrypts"
+      "note": "Writes files, runs commands"
     },
     {
       "file": "src/cli.mjs",
-      "symbol": "treeState",
-      "line": 858,
+      "symbol": "stopFor",
+      "line": 1504,
       "labels": [
+        "exec",
         "crypto"
       ],
       "rules": [
-        "no-silent-cut",
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-network-in-cli",
+        "no-silent-cut"
       ],
-      "note": "Hashes, signs or encrypts"
+      "note": "Runs commands, hashes, signs or encrypts"
     },
     {
       "file": "src/git-hooks.mjs",
@@ -1101,6 +1185,42 @@
         "no-silent-cut"
       ],
       "note": "Writes files; called from 1 other file read"
+    },
+    {
+      "file": "src/scopes.mjs",
+      "symbol": "readScript",
+      "line": 699,
+      "labels": [
+        "authz"
+      ],
+      "rules": [
+        "no-silent-cut"
+      ],
+      "note": "Checks a role"
+    },
+    {
+      "file": "src/scopes.mjs",
+      "symbol": "inForHead",
+      "line": 725,
+      "labels": [
+        "authz"
+      ],
+      "rules": [
+        "no-silent-cut"
+      ],
+      "note": "Checks a role"
+    },
+    {
+      "file": "src/scopes.mjs",
+      "symbol": "callableAt",
+      "line": 880,
+      "labels": [
+        "authz"
+      ],
+      "rules": [
+        "no-silent-cut"
+      ],
+      "note": "Checks a role"
     },
     {
       "file": "src/shapes.mjs",
