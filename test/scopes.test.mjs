@@ -445,6 +445,11 @@ test('scopes: a word that is a keyword only in its own construct is a name elsew
   assert.deepEqual(referenceAt(scopes('a.js', 'global.x = 1;\n'), 'global', 1).to, { builtin: true });
 });
 
+test('scopes: a rest parameter\'s name in a function type is no name', () => {
+  const t = scopes('a.ts', 'type A = 1;\nfunction f(g: (...xs: A[]) => A, h: (a: A, ...more: [A]) => void) { return [g, h]; }\n');
+  assert.deepEqual(resolved(t), ['A@2->type@1', 'A@2->type@1', 'A@2->type@1', 'A@2->type@1', 'g@2->parameter@2', 'h@2->parameter@2']);
+});
+
 test('scopes: every reason given is one of REASONS', () => {
   const t = scopes('a.js', "with (o) { a; }\neval('x');\nimport(name);\nrequire(name);\n");
   for (const r of [...t.references.filter((x) => x.to.unknown).map((x) => x.to.unknown), ...t.unknown.map((x) => x.reason)]) assert.ok(REASONS.includes(r), r);
