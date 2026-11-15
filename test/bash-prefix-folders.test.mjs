@@ -6,7 +6,8 @@
 //   repository's path starts with;
 // - `/a/b/../$X/f` gave `/a/b/../`, so a checkout the command makes under /a was left out (with no other repository
 //   known, the write went through unasked);
-// - `cd /a/$X/..` was under /a/, though it is / when $X is empty;
+// - `cd /a/$X/..` was under /a/, though it is / when $X is empty, and so were `patch -d`, `git -C` and `npm --prefix`
+//   given `sub/$X/..`;
 // - `cd $(mktemp -d)/../..` was a new name in the temporary folder, so the hook let its write through unasked.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync } from 'node:fs';
@@ -31,6 +32,12 @@ test('a prefix is the folder written once, for a write and for a cd', () => {
     ['git -C / pull', '/'],
     ['git -C .. pull', '/'],
     ['npm --prefix / install', '/'],
+    // A folder option climbs past a part not known as a path does (review of #244: `sub/$X/..` was under sub/, though
+    // with $X empty it is the folder itself).
+    ['patch -d sub/$X/.. -p0 < f', '/r/'],
+    ['git -C sub/$X/.. pull', '/r/'],
+    ['npm --prefix sub/$X/.. i', '/r/'],
+    ['npm --prefix sub/$X i', '/r/sub/'],
     ['cd /a/b/../$X && echo > f', '/a/'],
     ['cd /a/./$X && echo > f', '/a/'],
     ['cd /a/$X/.. && echo > f', '/'],
