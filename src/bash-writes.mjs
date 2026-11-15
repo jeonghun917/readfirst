@@ -1831,7 +1831,8 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // Each part and word once, looked up by key: searched through the list, every call past the budget of function bodies
   // (each one not known) took time by the number already there (8,000 functions each calling the next twice: 10.8 s).
   const listed = new Set();
-  const missing = (u) => { const key = `${u.part}\0${u.word}`; if (!listed.has(key)) { listed.add(key); unknown.push(u); } };
+  // The same part under another folder is another write (`find d e -exec cp {} {}.m \;`: `{}` under d and under e).
+  const missing = (u) => { const key = `${u.part}\0${u.word}\0${u.prefix ?? ''}`; if (!listed.has(key)) { listed.add(key); unknown.push(u); } };
   // repos: the checkouts the command makes (git worktree add, clone, init), as a folder or the known start of one;
   // madeAt: those whose folder is known in full.
   const repos = new Set();
@@ -2067,7 +2068,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
             ? shellWrites(text, null, { vars, why: { part: `find ${args[i]}`, why: `${args[i]} runs it in the folder of each file find finds, known only when it runs`, prefix: startAt ? `${startAt.replace(/\/$/u, '')}/` : '' } })
             : shellWrites(text, state.base, { vars, why: state.why });
         r.files.forEach((f) => found.add(f));
-        r.unknown.forEach(missing);
+        // What it gives is shown as the command was written: `{}` again, with the start folder put before it, never
+        // FOUND (`node ./$__readfirst_found_file` was the part of `find . -exec node {} \;`, review of #222).
+        const before = inDir ? './' : rootText.includes(HOLE) ? `${root}/` : `${rootText.replace(/\/+$/u, '')}/`;
+        const shown = (v) => (typeof v === 'string' ? v.replaceAll(`${before}$${FOUND}`, '{}').replaceAll(`\${${FOUND}}`, '{}').replaceAll(`$${FOUND}`, '{}') : v);
+        r.unknown.forEach((u) => missing(Object.fromEntries(Object.entries(u).map(([k, v]) => [k, shown(v)]))));
         r.repos.forEach((x) => repos.add(x));
       }
       i = j;
