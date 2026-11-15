@@ -15,6 +15,7 @@ const CODE_WRITES = /\bopen\([^)]*,\s*['"][wax]|\.write_text\(|\.write_bytes\(|w
 const PATHISH = /(?:\.{0,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z0-9]{1,6}\b/gu;
 const RUNNER = /^(?:python3?|node|ruby|perl|bash|sh|zsh|deno|bun)$/u;
 const SHELLS = /^(?:bash|sh|zsh|dash|ksh)$/u;
+const AWKS = /^(?:awk|gawk|mawk|nawk)$/u;
 // The script file a shell runs, from its arguments (dq'd, without -c): the first word after its options and their
 // values (-o/-O/+o/+O NAME, --rcfile/--init-file FILE), or after `--`. None when it reads its commands from stdin (-s,
 // no file) or runs none (-n, --version, --help).
@@ -314,6 +315,138 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
   return [...out].filter((p) => p && !p.includes('$') && !p.includes('{'));
 }
 
+// What an awk program writes and runs, read as awk reads it: { file, expr } for each `print`/`printf ... > f` or
+// `>> f`, and { run, expr } for each command it hands to sh (`print ... | "cmd"`, `|&`, `"cmd" | getline`,
+// system("cmd")). file and run are the text when the expression is string literals only ("o" "7" is o7, as awk joins
+// them), null when it is known only when the program runs (a variable, $2, a function call); expr is the expression as
+// written. A > or | is a redirect only in a print or printf statement and outside ( ): `print (a > b)`, `$1 > 5 {print}`
+// and `if (n > 3)` compare. Strings, regexes (`/a>b/`, where an operand cannot stand before the /) and # comments
+// are skipped. Its own reader: scanText reads shell quotes, and code.mjs's tokens read JS and Python, whose / and #
+// are not awk's. Until 2026-11-14 an awk program was not read at all: `awk '{print > "out"}' f` wrote out and
+// readfirst named nothing.
+export function awkOutputs(prog) {
+  const out = [];
+  const n = prog.length;
+  // The end of the string literal opening at i (the index after its closing quote).
+  const strEnd = (i) => { let j = i + 1; while (j < n && prog[j] !== '"' && prog[j] !== '\n') j += prog[j] === '\\' ? 2 : 1; return Math.min(j + 1, n); };
+  const regexEnd = (i) => {
+    let j = i + 1;
+    let inClass = false;
+    while (j < n && prog[j] !== '\n') {
+      if (prog[j] === '\\') { j += 2; continue; }
+      if (inClass) { if (prog[j] === ']') inClass = false; } else if (prog[j] === '[') { inClass = true; if (prog[j + 1] === ']') j++; } else if (prog[j] === '/') return j + 1;
+      j++;
+    }
+    return j;
+  };
+  const unescape = (s) => s.replace(/\\(.)/gu, (m, c) => ({ n: '\n', t: '\t', '"': '"', '\\': '\\', '/': '/' })[c] ?? m);
+  // The text of an expression made only of string literals and blanks, in ( ) or not (`> ("o" "4")`), or null.
+  const literal = (expr) => {
+    let t = expr.trim();
+    while (t.startsWith('(') && t.endsWith(')')) t = t.slice(1, -1).trim();
+    if (!t.startsWith('"')) return null;
+    let s = '';
+    for (let i = 0; i < t.length;) {
+      if (/\s/u.test(t[i])) { i++; continue; }
+      if (t[i] !== '"') return null;
+      let e = i + 1;
+      while (e < t.length && t[e] !== '"') e += t[e] === '\\' ? 2 : 1;
+      if (e >= t.length) return null;
+      s += unescape(t.slice(i + 1, e));
+      i = e + 1;
+    }
+    return s;
+  };
+  // Whether a / at i starts a regex: no operand (a name, a number, $x, a closing ) or ], a string) ends right before it.
+  const regexAt = (i) => {
+    let j = i - 1;
+    while (j >= 0 && (prog[j] === ' ' || prog[j] === '\t')) j--;
+    if (j < 0) return true;
+    if (/[)\]"]/u.test(prog[j])) return false;
+    if (/\w/u.test(prog[j])) {
+      let k = j;
+      while (k >= 0 && /\w/u.test(prog[k])) k--;
+      return /^(?:print|printf|return|in|getline)$/u.test(prog.slice(k + 1, j + 1));
+    }
+    return true;
+  };
+  // Where a statement's expression ends: a ; } newline or # outside ( ) and [ ], or a ) or ] that closes what it
+  // stands in.
+  const scanTo = (i) => {
+    let depth = 0;
+    for (let j = i; j < n; j++) {
+      const c = prog[j];
+      if (c === '"') { j = strEnd(j) - 1; continue; }
+      if (c === '/' && regexAt(j)) { j = regexEnd(j) - 1; continue; }
+      if (c === '\\' && prog[j + 1] === '\n') { j++; continue; }
+      if (c === '(' || c === '[') depth++;
+      else if (c === ')' || c === ']') { if (depth === 0) return j; depth--; } else if (depth === 0 && (c === ';' || c === '}' || c === '\n' || c === '#')) return j;
+    }
+    return n;
+  };
+  const word = (i) => { let j = i; while (j < n && /\w/u.test(prog[j])) j++; return prog.slice(i, j); };
+  for (let i = 0; i < n; i++) {
+    const c = prog[i];
+    if (c === '"') { i = strEnd(i) - 1; continue; }
+    if (c === '#') { while (i < n && prog[i] !== '\n') i++; continue; }
+    if (c === '/' && regexAt(i)) { i = regexEnd(i) - 1; continue; }
+    if (!/\w/u.test(c) || (i > 0 && /[\w$]/u.test(prog[i - 1]))) continue;
+    const w = word(i);
+    if (w === 'print' || w === 'printf') {
+      const end = scanTo(i + w.length);
+      // The first > or | at the statement's own level is its redirect.
+      let depth = 0;
+      for (let j = i + w.length; j < end; j++) {
+        const d = prog[j];
+        if (d === '"') { j = strEnd(j) - 1; continue; }
+        if (d === '/' && regexAt(j)) { j = regexEnd(j) - 1; continue; }
+        if (d === '(' || d === '[') depth++;
+        else if (d === ')' || d === ']') depth--;
+        else if (depth === 0 && d === '>') {
+          const from = prog[j + 1] === '>' ? j + 2 : j + 1;
+          const expr = prog.slice(from, scanTo(from)).trim();
+          out.push({ file: literal(expr), expr });
+          break;
+        } else if (depth === 0 && d === '|' && prog[j + 1] !== '|' && prog[j - 1] !== '|') {
+          const from = prog[j + 1] === '&' ? j + 2 : j + 1;
+          const expr = prog.slice(from, scanTo(from)).trim();
+          out.push({ run: literal(expr), expr });
+          break;
+        }
+      }
+      i = end - 1;
+      continue;
+    }
+    if (w === 'system') {
+      let j = i + w.length;
+      while (j < n && /\s/u.test(prog[j])) j++;
+      if (prog[j] === '(') {
+        const expr = prog.slice(j + 1, scanTo(j + 1)).trim();
+        out.push({ run: literal(expr), expr });
+      }
+    } else if (w === 'getline') {
+      // `cmd | getline`: what stands before the | at this level, back to the start of the expression.
+      let j = i - 1;
+      while (j >= 0 && /\s/u.test(prog[j])) j--;
+      if (prog[j] === '&' && prog[j - 1] === '|') j--;
+      if (prog[j] === '|' && prog[j - 1] !== '|') {
+        let k = j - 1;
+        let depth = 0;
+        for (; k >= 0; k--) {
+          const d = prog[k];
+          if (d === ')' || d === ']') depth++;
+          else if (d === '(' || d === '[') { if (depth === 0) break; depth--; } else if (depth === 0 && /[;{}\n,!&|]/u.test(d)) break;
+          else if (depth === 0 && d === '=' && !/[=!<>]/u.test(prog[k - 1] ?? '') && prog[k + 1] !== '=') break;
+        }
+        const expr = prog.slice(k + 1, j).trim();
+        out.push({ run: literal(expr), expr });
+      }
+    }
+    i += w.length - 1;
+  }
+  return out;
+}
+
 // Words of one command segment, quotes kept together; good enough for the shapes above, not a shell parser.
 // A command's words without its redirects: `< x`, `2>/dev/null`, `>&2` and the word after a bare operator. The
 // targets of > and >> are taken from the segment itself; the rest are not files this command's arguments name.
@@ -478,6 +611,7 @@ const OPTIONS = {
   rm: { next: '', long: {} },
   unlink: { next: '', long: {} },
   sort: { next: 'oSTkt', long: { output: 'o', 'buffer-size': 'S', 'temporary-directory': 'T', key: 'k', 'field-separator': 't', parallel: 'p', 'files0-from': 'F' } },
+  awk: { next: 'fEvFWil', long: { file: 'f', exec: 'E', assign: 'v', 'field-separator': 'F', include: 'i', load: 'l' } },
 };
 // { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given }
 function options(args, spec) {
@@ -1729,6 +1863,36 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
     missing({ part, word: part, why: `${part} writes ${what}, as the packages it installs make it`, prefix: under, moves: true });
   };
+  // awk (args: its words after the name, as dq gives them; options read by options() with OPTIONS.awk): the program
+  // is the first word that is no option, or the text of each -f / --file / -E file (one not there runs nothing and is
+  // quiet; one whose path is known only when the command runs is not known). What it writes and runs is read from the
+  // program (awkOutputs): a file it names is written where the command runs, a command it hands to sh is read as
+  // `sh -c` would be, and either known only when the program runs is not known, with why. gawk's `-i inplace` writes
+  // back each input file it is given (operands that are not NAME=value assignments).
+  const awkRun = (cmd, args) => {
+    const o = options(args, OPTIONS.awk);
+    const progs = [...(o.values.f ?? []), ...(o.values.E ?? [])];
+    const operands = progs.length ? o.files : o.files.slice(1);
+    const texts = progs.length || !o.files.length ? [] : [o.files[0]];
+    for (const path of progs) {
+      if (path.includes(HOLE) || (!isAbsolute(path) && state.base == null)) {
+        missing({ part: `${cmd} -f ${path.replaceAll(HOLE, '')}`, word: path.replaceAll(HOLE, ''), why: `${cmd} runs the program in that file, and where it is is known only when the command runs`, prefix: '' });
+        continue;
+      }
+      try { texts.push(readFileSync(isAbsolute(path) ? path : resolve(state.base, path), 'utf8')); } catch { /* not there: awk runs nothing */ }
+    }
+    for (const prog of texts) {
+      for (const out of awkOutputs(prog)) {
+        const shown = out.expr.replaceAll(HOLE, '');
+        if ('file' in out) {
+          if (out.file != null) add(out.file);
+          else missing({ part: `${cmd}: > ${shown}`, word: shown, why: `${cmd} writes to the file the program names, known only when it runs`, prefix: '' });
+        } else if (out.run != null) runString(out.run, `${cmd}'s sh`, exportedOnly(state.vars));
+        else missing({ part: `${cmd}: ${shown}`, word: shown, why: `${cmd} hands sh a command the program makes, known only when it runs`, prefix: '' });
+      }
+    }
+    if ((o.values.i ?? []).some((v) => /^inplace(?:\.awk)?$/u.test(v))) operands.filter((w) => !/^[A-Za-z_]\w*=/u.test(w) && w !== '-').forEach(add);
+  };
   // Here-documents: their body is code (its write calls name their targets) or data (only the redirect counts).
   // Their paths start where the commands before them moved to: `cd repo && python3 - <<E` writes in repo (2026-11-08:
   // the hook showed another repository's notes for a relative path after a cd).
@@ -1946,6 +2110,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       else if (piped) missing({ part: `| ${cmd}`, word: cmd, why: `${cmd} runs the commands the command before it prints, and readfirst does not read them`, prefix: '' });
     }
     // A path in the command's place runs that file (`./build.sh`, `exec ./build.sh`): a script, as `bash x.sh` does.
+    else if (AWKS.test(cmd)) awkRun(cmd, args);
     else if (dq(ws[0] ?? '').includes('/')) runFile(dq(ws[0]), 'the command', { part: dq(ws[0]).replaceAll(HOLE, ''), script: true });
     else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e') && CODE_WRITES.test(segment)) {
       const i = args.findIndex((w) => w === '-c' || w === '-e');
