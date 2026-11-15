@@ -10,11 +10,19 @@
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { lex } from './code.mjs';
+import { scopes } from './scopes.mjs';
 
 const CODE_WRITES = /\bopen\([^)]*,\s*['"][wax]|\.write_text\(|\.write_bytes\(|writeFileSync\(|writeFile\(|appendFileSync\(|\.writelines?\(|createWriteStream\(|File\.write|>>?\s*\$|\bdump\(/u;
-const PATHISH = /(?:\.{0,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z0-9]{1,6}\b/gu;
+const CODE_WRITES_ALL = new RegExp(CODE_WRITES.source, 'gu');
+const PATHISH =/(?:\.{0,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z0-9]{1,6}\b/gu;
 const RUNNER = /^(?:python3?|node|ruby|perl|bash|sh|zsh|deno|bun)$/u;
 const SHELLS = /^(?:bash|sh|zsh|dash|ksh)$/u;
+// The largest script file whose text is read (runScript); a larger one is not known, never read in part. Reading and
+// lexing src/cli.mjs (157 KB) took 20 ms, and a script of 1,040,066 bytes 198 ms (2026-11-14), of the hook's 15 s.
+const SCRIPT_BYTES = 1024 * 1024;
+// The most bytes of script files one command's reading reads, each file counted once (runScript).
+const SCRIPTS_BUDGET = 4 * 1024 * 1024;
 // The variable a `{}` of find -exec stands for while its command is read (findRun): a name no command sets.
 const FOUND = '__readfirst_found_file';
 const AWKS = /^(?:awk|gawk|mawk|nawk)$/u;
@@ -31,6 +39,52 @@ function shellScript(args) {
     return w;
   }
   return undefined;
+}
+// The script files python, node, ruby, perl, deno or bun runs, from its words after the name (dq'd): { scripts, rest },
+// rest being the script's arguments, or null when it runs no file (code from -c / -e / -p, a module from python -m,
+// stdin `-` or no file at all, --version, --help, node --check). Each runner's options are read letter by letter, as
+// it reads them: a code letter (python -Bc, perl -ne) means no file; a letter that takes a value takes the rest of
+// the word or, with none, the next word (ruby -rjson, python -W ignore), and perl's only the rest of the word (`-l`,
+// `-i` alone take nothing); long options that take the next word are
+// listed. `node --test` runs every file it is given (its operands, no arguments). deno runs a file after `run`; bun
+// runs one after `run` or as its first word when it has a dot or a slash (`bun test`, `bun install` are its own).
+const RUNNER_OPTIONS = {
+  python: { code: 'cm', value: 'WXQ', long: /^--(?:help|version)$/u },
+  ruby: { code: 'e', value: 'IrCEFTxK', long: /^--(?:help|version)$/u },
+  perl: { code: 'eE', value: '', attached: 'IMmxil0', long: /^--(?:help|version)$/u },
+  node: { code: 'epc', value: 'rC', long: /^--(?:require|import|loader|experimental-loader|conditions|test-reporter|test-reporter-destination|test-name-pattern|test-skip-pattern|inspect-port|title|env-file|watch-path|input-type|stack-size)$/u },
+  deno: { code: '', value: 'cLr', long: /^--(?:config|import-map|lock|cert|location|seed|env-file|log-level|reload)$/u },
+  bun: { code: 'e', value: 'rc', long: /^--(?:preload|cwd|env-file|config)$/u },
+};
+const NO_FILE = /^--(?:eval|print|check|version|help|interactive)$/u;
+function runnerScripts(cmd, args) {
+  const kind = /^python/u.test(cmd) ? 'python' : cmd;
+  const spec = RUNNER_OPTIONS[kind];
+  if (!spec) return null;
+  let i = 0;
+  if (kind === 'deno') { if (args[0] !== 'run') return null; i = 1; }
+  if (kind === 'bun' && args[0] === 'run') i = 1;
+  let test = false;
+  for (; i < args.length; i++) {
+    const w = args[i];
+    if (w === '--') { i++; break; }
+    if (w === '-' || !w.startsWith('-')) break;
+    if (w.startsWith('--')) {
+      if (NO_FILE.test(w.split('=')[0]) || (kind === 'node' && /^--(?:help|version|v8-options)$/u.test(w))) return null;
+      if (kind === 'node' && w === '--test') test = true;
+      if (!w.includes('=') && spec.long.test(w)) i++;
+      continue;
+    }
+    for (let j = 1; j < w.length; j++) {
+      if (spec.code.includes(w[j])) return null;
+      if (w[j] === 'h' || w[j] === 'V' || (kind === 'node' && w[j] === 'v')) return null;
+      if (spec.attached?.includes(w[j])) break;
+      if (spec.value.includes(w[j])) { if (j === w.length - 1) i++; break; }
+    }
+  }
+  if (i >= args.length || args[i] === '-') return null;
+  if (kind === 'bun' && args[0] !== 'run' && !/[./]/u.test(args[i])) return null;
+  return test ? { scripts: args.slice(i).filter((w) => !w.startsWith('-')), rest: [], test } : { scripts: [args[i]], rest: args.slice(i + 1), test };
 }
 // Whether running the file as a command runs it as a script: it can be run (an execute bit) and it is no program. A
 // file without #! runs too: the kernel refuses it (ENOEXEC) and bash reads it as a shell script (`./plain.sh` with no
@@ -260,11 +314,21 @@ const ARGV = /^(?:sys\.argv|process\.argv)/u;
 // words the script names that exist on disk (`exists`), so a real write is not missed.
 // Before 0.26.0 every path-like word in a writing script counted: in readfirst's own sessions 96% of scripts were
 // flagged, 4,106 paths for about 500 real targets, among them 0.015, /u.test and test data (2026-11-08).
-export function codeTargets(code, { args = [], exists = () => false, glob = () => [] } = {}) {
+// `unresolved` (a function) is called when such a write is there, so the caller can give it as not known. With
+// `fallback: false` nothing falls back: a whole script file names many paths that exist (a test file names the files
+// it reads), and the fallback named README.md and package.json as written by `node test/x.test.mjs` (2026-11-14,
+// runScript).
+// `inCode` (index -> whether it is code, not a string or a comment) skips a write call whose name stands in a string
+// or a comment: a test file holds commands as data (`w("... fs.writeFileSync('a.json', '')")`), and they were read
+// as its writes (2026-11-14, runScript).
+export function codeTargets(code, { args = [], exists = () => false, glob = () => [], unresolved: onUnresolved = null, fallback = true, inCode = () => true } = {}) {
   const out = new Set();
-  const lit = new RegExp(String.raw`^\s*${LIT}`, 'u');
+  // A literal is the target only when it is the whole argument: `open('e' + 'x', 'w')` writes ex and
+  // `open('d-%d' % n, 'w')` d-1, not e or d-%d (named with certainty until 2026-11-14).
+  const lit = new RegExp(String.raw`^\s*${LIT}\s*$`, 'u');
   const name = (n) => n.replace(/\$/gu, '\\$');
-  const assigned = (n) => [...code.matchAll(new RegExp(String.raw`(?:^|[\s;(,])(?:const |let |var )?${name(n)}\s*=\s*(?:Path\()?${LIT}`, 'gmu'))].map((m) => m[2]);
+  // The literal must be all the assignment gives: `p = Path('.') / 'x.txt'` named '' (the folder), review of #222.
+  const assigned = (n) => [...code.matchAll(new RegExp(String.raw`(?:^|[\s;(,])(?:const |let |var )?${name(n)}\s*=\s*(?:Path\()?${LIT}(?=\s*\)?\s*(?:$|[;#]|\/\/))`, 'gmu'))].map((m) => m[2]);
   const passed = (n) => {
     const got = [];
     for (const m of code.matchAll(new RegExp(String.raw`(?:def|function)\s+(\w+)\s*\(\s*${name(n)}\b`, 'gu'))) for (const c of code.matchAll(new RegExp(String.raw`\b${m[1]}\(\s*${LIT}`, 'gu'))) got.push(c[2]);
@@ -276,6 +340,7 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
   };
   let unresolved = false;
   for (const re of WRITE_CALLS) for (const m of code.matchAll(re)) {
+    if (!inCode(m.index)) continue;
     const arg = m[1].trim();
     const l = arg.match(lit);
     if (l) { out.add(l[2]); continue; }
@@ -284,8 +349,113 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
     const found = id ? [...assigned(id), ...passed(id)] : [];
     if (found.length) found.forEach((p) => out.add(p)); else unresolved = true;
   }
-  if (unresolved) for (const w of code.match(PATHISH) ?? []) if (exists(w)) out.add(w);
+  if (unresolved) onUnresolved?.();
+  if (unresolved && fallback) for (const w of code.match(PATHISH) ?? []) if (exists(w)) out.add(w);
   return [...out].filter((p) => p && !p.includes('$') && !p.includes('{'));
+}
+
+// A script's text with each write into a temporary folder taken out (its call name made spaces, so neither
+// CODE_WRITES nor codeTargets sees it), for runScript: a test file writes into the folders mkdtemp makes, and each
+// such write was not known, so the gate refused `node --test test/x.test.mjs` once in 44 of this repository's 75 test
+// files (review of #222). Temporary: an expression holding a call that makes or names one (TEMP_SOURCE: mkdtemp,
+// mkdtempSync, tmpdir, os.tmpdir, tempfile's mkdtemp, mkstemp, gettempdir, TemporaryDirectory, NamedTemporaryFile, or
+// a `mktemp` it runs), or a name the file assigns such an expression once (`const root = mkdtempSync(…)`, `d =
+// tempfile.mkdtemp()`, `with tempfile.TemporaryDirectory() as d`). A write is into one when its target is such a name
+// or expression, or starts from one through join, resolve, path.join, os.path.join, a template or f-string that opens
+// with it, `+`, or Python's `/` (`Path(d) / 'x'`). Every other write stays as it was: one into the repository next to
+// one into a temporary folder is still read. inCode: whether an index of the text is code (lex), so a bracket or a
+// comma inside a string does not end an argument. Its own scan: code.mjs's closeOf walks tokens, not the text.
+const TEMP_SOURCE = /\b(?:mkdtempSync|mkdtemp|mkstemp|gettempdir|TemporaryDirectory|NamedTemporaryFile|tmpdir)\s*\(|\bmktemp\b/u;
+const WRITE_NAMES = /\b(?:writeFileSync|writeFile|appendFileSync|appendFile|createWriteStream|openSync|open|File\.write)\s*\(|\.(?:write_text|write_bytes)\s*\(/gu;
+// lang: 'py' or 'js', how scopes (src/scopes.mjs, the table of a file's bindings and what each name refers to) reads
+// the text. A name in a write's target is a temporary folder when the binding it refers to there is one: in its
+// scope, every binding of the name is an assignment (`const`, `let`, `var`, a plain `=` or `with … as`) of a
+// temporary folder, all `const` or only one. Each test's own `const root = mkdtempSync(…)` is one; a `const root =
+// repo()` beside it in another test is not, and neither is a name also bound there by `=` to something else, by `+=`,
+// as a parameter, or as a loop's or a catch's variable (`p = mkdtempSync(…)` then `p = 'reused.txt'`; `def f(d)`
+// beside `d = tempfile.mkdtemp()`): its writes stay not known. Told by the name alone across the file, they went
+// silent (review of #222).
+export function withoutTempWrites(code, inCode = () => true, lang = 'js') {
+  const lines = code.split('\n');
+  const lineStarts = [0];
+  for (let i = 0; i < code.length; i++) if (code[i] === '\n') lineStarts.push(i + 1);
+  const lineOf = (i) => { let lo = 0; let hi = lineStarts.length - 1; while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (lineStarts[mid] <= i) lo = mid; else hi = mid - 1; } return lo + 1; };
+  const table = TEMP_SOURCE.test(code) ? scopes(lang === 'py' ? 'script.py' : 'script.mjs', code) : null;
+  const bindings = table?.bindings ?? [];
+  const refAt = new Map();
+  for (const r of table?.references ?? []) { const k = `${r.line}\0${r.name}`; if (!refAt.has(k) && r.to?.binding !== undefined) refAt.set(k, r.to.binding); }
+  // What a binding gives its name, when it is an assignment of the line's text after `name =` (or `with X as name`).
+  const given = (b) => {
+    const line = lines[b.line - 1] ?? '';
+    const n = b.name.replace(/\$/gu, '\\$');
+    if (b.how === 'with') return line.match(new RegExp(String.raw`\bwith\s+(.*)\bas\s+${n}\b`, 'u'))?.[1] ?? null;
+    if (!['assign', 'const', 'let', 'var'].includes(b.how)) return null;
+    return line.match(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*=(?![=>])\s*(.*)`, 'u'))?.[1] ?? null;
+  };
+  const LEAD = /^\s*(?:(?:path\.|os\.path\.)?(?:join|resolve)\(\s*|Path\(\s*|\x60\$\{\s*|f?['"]\{\s*|\(\s*)*/u;
+  const DIRECT = new RegExp(String.raw`^[^,]*(?:${TEMP_SOURCE.source})`, 'u');
+  // Whether an expression on a line is a temporary folder or starts from one; depth: the steps through names left.
+  const isTemp = (expr, line, depth) => {
+    const rest = expr.replace(LEAD, '');
+    if (DIRECT.test(rest)) return true;
+    const name = rest.match(/^([A-Za-z_$][\w$]*)(?![\w$]|\s*[.([])/u)?.[1];
+    const b = name === undefined ? undefined : refAt.get(`${line}\0${name}`);
+    if (b === undefined || depth < 0) return false;
+    const group = bindings.filter((x) => x.name === bindings[b].name && x.scope === bindings[b].scope);
+    if (!(group.length === 1 || group.every((x) => x.how === 'const'))) return false;
+    return group.every((x) => { const g = given(x); return g != null && isTemp(g, x.line, depth - 1); });
+  };
+  // One step through a name to another (`const event = join(root, …)`), as decided for this change.
+  const fromTemp = { test: (target, at) => isTemp(target, lineOf(at), 1) };
+  // The arguments of the call whose ( is at i, split at its commas at depth 0, in code.
+  const argsOf = (i) => {
+    const got = [];
+    let depth = 0;
+    let from = i + 1;
+    for (let j = i + 1; j < code.length; j++) {
+      if (!inCode(j)) continue;
+      const c = code[j];
+      if ('([{'.includes(c)) depth++;
+      else if (')]}'.includes(c)) { if (depth === 0) { got.push(code.slice(from, j)); return got; } depth--; } else if (c === ',' && depth === 0) { got.push(code.slice(from, j)); from = j + 1; }
+    }
+    got.push(code.slice(from));
+    return got;
+  };
+  // What `.write_text(` is called on: the expression before the dot, back to where it starts.
+  const receiver = (dot) => {
+    let depth = 0;
+    let j = dot - 1;
+    for (; j >= 0; j--) {
+      // A blank or a line's end at depth 0 ends it, code or not (lex marks blanks ' '): skipping them read the line
+      // above into the receiver (review of #222: `(Path('.') / 'x').write_text` after a temporary `(d / 'y')` line).
+      if (depth === 0 && /\s/u.test(code[j])) break;
+      if (!inCode(j)) continue;
+      const c = code[j];
+      if (')]'.includes(c)) depth++;
+      else if ('(['.includes(c)) { if (depth === 0) break; depth--; } else if (depth === 0 && /[\s=,;:]/u.test(c)) break;
+    }
+    return code.slice(j + 1, dot);
+  };
+  const out = code.split('');
+  const others = [];
+  for (const m of code.matchAll(WRITE_NAMES)) {
+    if (!inCode(m.index)) continue;
+    const open = m.index + m[0].length - 1;
+    const args = m[0].startsWith('.') ? [] : argsOf(open);
+    // open writes only with a mode that writes, its second argument or mode=: open(p) and open(p, 'r') read.
+    // A mode that is no literal (`open('f', mode)`) may write: such a write is not known, whatever its target.
+    let unsure = false;
+    if (/^open/u.test(m[0])) {
+      const mode = args.find((a) => /^\s*mode\s*=/u.test(a)) ?? (args[1] !== undefined && !/^\s*\w+\s*=/u.test(args[1]) ? args[1] : undefined);
+      if (!mode) continue;
+      const literal = mode.replace(/^\s*mode\s*=/u, '').match(/^\s*(?:[rbuf]{0,2})?(['"])([^'"]*)\1\s*$/u);
+      if (literal && !/[wax+]/u.test(literal[2])) continue;
+      unsure = !literal;
+    }
+    const target = m[0].startsWith('.') ? receiver(m.index) : args[0];
+    if (fromTemp.test(target, m.index)) { for (let k = m.index; k < open; k++) out[k] = ' '; } else others.push({ target: target.trim(), unsure });
+  }
+  return { code: out.join(''), others };
 }
 
 // What an awk program writes and runs, read as awk reads it: { file, expr } for each `print`/`printf ... > f` or
@@ -1759,6 +1929,99 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const shown = w.replaceAll(HOLE, '');
     missing({ part: part ?? `${by} ${shown}`, word: shown, why: `${by} runs it, and readfirst does not read the file's text`, prefix: '' });
   };
+  // Code from -c / -e, a here-document or a script file (part: what ran it; why: what to say when a write is not
+  // known): the targets of its write calls (codeTargets). With `fallback` (code from -c, -e or a here-document) a write
+  // whose target is not read falls back to the paths the code names that exist, and is not known only when that names
+  // nothing: `python3 -c "open('d-%d' % n, 'w')"` was quiet until 2026-11-14. Without (a script file), it is not known
+  // whatever else is named, and so is code CODE_WRITES sees writing where no write call names a target.
+  // Only code counts (runner: what runs it): a write inside a string or a comment is data (lex, the one reader of
+  // code, with Python's rules for python, ruby and perl and JavaScript's for the rest). A test file holds commands as
+  // data, and `node -e` code quoting `open('e' + 'x', 'w')` named a file it held the path of (2026-11-14).
+  // The code inside a template's `${ }` or an f-string's `{ }` is code too (lex marks it 'p'): a write there was
+  // missed in silence (review of #222). `read` (a script file read before in this command) keeps its marks.
+  const codeWrites = (code, runner, args, part, why, { fallback = true, read = null } = {}) => {
+    const marks = read?.marks ?? lex(code.split('\n'), /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js').map((r) => r.mark).join('\n');
+    if (read) read.marks = marks;
+    const inCode = (i) => marks[i] === 'c' || marks[i] === 'p';
+    if (fallback) {
+      if (![...code.matchAll(CODE_WRITES_ALL)].some((m) => inCode(m.index))) return;
+      let open = false;
+      const targets = codeTargets(code, { args, exists: here, glob, unresolved: () => { open = true; }, fallback, inCode });
+      targets.forEach(add);
+      if (open && !targets.length) missing({ part, word: part, why, prefix: '' });
+      return;
+    }
+    // A script file: its writes into a temporary folder are left out (withoutTempWrites). Each other write call it
+    // finds by its brackets (CODE_WRITES' open( misses `open(os.path.join(a, b), 'w')`) names its target when that is
+    // a literal or a name assigned one, and is not known otherwise, as is a write codeTargets cannot place.
+    // A name assigned a literal names it only when each of its assignments is one (`p = 'x'` then `p = f()` is not
+    // known); a write whose mode is not a literal (`unsure`) is not known.
+    // What a file gives for its arguments, in the folder it runs from, is worked out once per command (`read.given`):
+    // the temporary-folder pass (scopes) took about 35 ms each time, so 60 runs of one 741 KB script took 3.7 s on
+    // Node 20 (CI on be7fbaf), against a test's 3 s.
+    const key = `${state.base}\0${args.join('\0')}`;
+    let result = read?.given?.get(key);
+    if (!result) {
+      const t = read?.temp ?? withoutTempWrites(code, inCode, /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js');
+      if (read) read.temp = t;
+      let open = false;
+      const names = codeTargets(t.code, { args, glob, unresolved: () => { open = true; }, fallback: false, inCode });
+      const lit = new RegExp(String.raw`^${LIT}$`, 'u');
+      for (const { target, unsure } of t.others) {
+        if (unsure) { open = true; continue; }
+        const l = target.match(lit);
+        const id = target.match(/^[A-Za-z_$][\w$]*$/u)?.[0];
+        const n = id?.replace(/\$/gu, '\\$');
+        const all = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*(?:[-+*/%|&^]|\*\*|\/\/)?=(?![=>])\s*([^;\n]*)`, 'gmu'))].map((m) => m[1].trim()) : [];
+        const literals = all.map((v) => v.match(lit)?.[2]).filter((v) => v !== undefined);
+        if (l) names.push(l[2]);
+        else if (all.length && literals.length === all.length) names.push(...literals);
+        else if (!(ARGV.test(target) && args.length)) open = true;
+      }
+      result = { names, open };
+      if (read) (read.given ??= new Map()).set(key, result);
+    }
+    result.names.forEach(add);
+    if (result.open) missing({ part, word: part, why, prefix: '' });
+  };
+  // A script file python, node, ruby, perl, deno or bun runs (w: its path as dq gives it; rest: its arguments): its
+  // text is read as code from -c or -e is (codeTargets: the targets of its write calls, the script's own arguments
+  // for sys.argv / process.argv), without -c's fallback to the paths it names that exist. One with a write call whose
+  // target none of those names writes where it is known only when it runs: not known, with why. One with no write call writes nothing readfirst can see (writes made by
+  // the modules it imports are not read). A path not there runs nothing and is quiet; one known only when the
+  // command runs, or relative where the folder is not known, is not known; one past SCRIPT_BYTES is not read and not
+  // known. Until 2026-11-14 `node build.mjs` and `python3 gen.py` were read as writing nothing. Unlike runFile, which
+  // gives a shell script as not known without reading it, this reads the text.
+  const runScript = (cmd, w, rest) => {
+    const shown = w.replaceAll(HOLE, '');
+    const part = `${cmd} ${shown}`;
+    if (w.includes(HOLE) || (!isAbsolute(w) && state.base == null)) {
+      missing({ part, word: shown, why: `${cmd} runs that file, and which file it is is known only when the command runs`, prefix: '' });
+      return;
+    }
+    const at = isAbsolute(w) ? w : resolve(state.base, w);
+    let size;
+    try { const st = statSync(at); if (!st.isFile()) throw new Error('no file'); size = st.size; } catch {
+      if (existsSync(at)) missing({ part, word: shown, why: `${cmd} runs what is in that folder, and readfirst does not read it`, prefix: '' });
+      return;
+    }
+    if (size > SCRIPT_BYTES) { missing({ part, word: shown, why: `${cmd} runs that file, over ${SCRIPT_BYTES} bytes, and readfirst does not read one that large`, prefix: '' }); return; }
+    // Each file is read and lexed once per command, and the files one command reads come to SCRIPTS_BUDGET bytes at
+    // most: one command running a 750 KB script 60 times read it 60 times, 7.9 s of the hook's 15 (review of #222).
+    const lang = /^(?:python|ruby|perl)/u.test(cmd) ? 'py' : 'js';
+    let read = scriptsRead.get(`${lang}\0${at}`);
+    if (!read) {
+      if (scriptBytes + size > SCRIPTS_BUDGET) { missing({ part, word: shown, why: `${cmd} runs that file, and the files this command runs come to over ${SCRIPTS_BUDGET} bytes, more than readfirst reads for one command`, prefix: '' }); return; }
+      let code;
+      try { code = readFileSync(at, 'utf8'); } catch { missing({ part, word: shown, why: `${cmd} runs that file, and readfirst could not read it`, prefix: '' }); return; }
+      scriptBytes += size;
+      read = { code, marks: null };
+      scriptsRead.set(`${lang}\0${at}`, read);
+    }
+    codeWrites(read.code, cmd, rest.filter((a) => !a.startsWith('-')), part, `${cmd} runs that file, and it writes files whose names are known only when it runs`, { fallback: false, read });
+  };
+  const scriptsRead = new Map();
+  let scriptBytes = 0;
   const exportedOnly = (v) => new Map([...v].filter(([, x]) => x.exported));
   // find (raw: its words after the name as written, without redirects; args: the same as dq gives them). The command
   // after each -exec, -execdir, -ok or -okdir, up to its `;` (or a `+` after `{}`), runs for each file find finds:
@@ -1863,7 +2126,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // body is read by that shell alone, which sees only exported variables; without, the outer shell expands it first.
     const fed = runner != null && SHELLS.test(runner.split('/').pop());
     if (fed) inner(body, quote ? exportedOnly(state.vars) : state.vars);
-    else if (runner != null && CODE_WRITES.test(body)) codeTargets(body, { args, exists: here, glob }).forEach(add);
+    else if (runner != null && CODE_WRITES.test(body)) { const by = `${runner.split('/').pop()} <<`; codeWrites(body, runner.split('/').pop(), args, by, `${by} runs code that writes files whose names are known only when it runs`); }
     // With a tag not quoted, the shell expands the body before the command gets it: each $( ) and backtick in it runs,
     // as a subshell where the command stands (`cat <<E` with `$(echo > f)` in its body makes f; nothing was named
     // until 2026-11-14). A shell fed the body reads them with its commands (above).
@@ -2022,10 +2285,13 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // A path in the command's place runs that file (`./build.sh`, `exec ./build.sh`): a script, as `bash x.sh` does.
     else if (cmd === 'find') findRun(withoutRedirects(ws.slice(1)), args);
     else if (AWKS.test(cmd)) awkRun(cmd, args);
-    else if (dq(ws[0] ?? '').includes('/')) runFile(dq(ws[0]), 'the command', { part: dq(ws[0]).replaceAll(HOLE, ''), script: true });
+    else if (RUNNER.test(cmd) && !SHELLS.test(cmd) && runnerScripts(cmd, args)) {
+      const { scripts, rest } = runnerScripts(cmd, args);
+      scripts.forEach((w) => runScript(cmd, w, rest));
+    } else if (dq(ws[0] ?? '').includes('/')) runFile(dq(ws[0]), 'the command', { part: dq(ws[0]).replaceAll(HOLE, ''), script: true });
     else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e') && CODE_WRITES.test(segment)) {
       const i = args.findIndex((w) => w === '-c' || w === '-e');
-      codeTargets(args[i + 1] ?? '', { args: args.slice(i + 2).filter((w) => !w.startsWith('-')), exists: here, glob }).forEach(add);
+      codeWrites(args[i + 1] ?? '', cmd, args.slice(i + 2).filter((w) => !w.startsWith('-')), `${cmd} ${args[i]}`, `${cmd} ${args[i]} runs code that writes files whose names are known only when it runs`);
     }
   };
   // A cd inside ( ) ends at its `)`, and a redirect after the `)` is the outer shell's: in
