@@ -75,6 +75,15 @@ test('the backup sed -i, perl -i, cp, mv and install keep is named, and bash agr
   ]);
   // The look-alikes: no suffix, no backup asked for or none kept, and nothing there to keep.
   agrees(['sed -i s/one/two/ a.txt', 'perl -pi -e s/one/two/ a.txt', 'cp a.txt b.txt', 'cp --backup=none a.txt b.txt', 'cp --backup=off a.txt b.txt', 'cp -b a.txt n.txt', 'mv -b a.txt n.txt']);
+  // A numbered backup (b.txt.~1~) is not known before the command runs: given as not known beside the file, never left
+  // out (review of #239); with nothing there to keep, there is none.
+  for (const c of ['cp --backup=numbered a.txt b.txt', 'mv --backup=t a.txt b.txt']) {
+    const dir = setUp();
+    const r = shellWrites(c, dir);
+    assert.deepEqual(r.unknown.map((u) => [u.part, u.prefix, u.direct]), [[`${c.split(' ')[0]} --backup=numbered`, `${dir}/`, true]], c);
+    assert.ok(bashChanged(c, dir).includes('b.txt.~1~'), `bash keeps b.txt.~1~: ${c}`);
+  }
+  assert.deepEqual(shellWrites('cp --backup=numbered a.txt n.txt', setUp()).unknown, []);
 });
 
 // The gate end to end: a file the map holds, moved off by mv, is refused until its items are answered.

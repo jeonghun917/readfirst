@@ -828,8 +828,9 @@ function inPlaceSuffix(args, spec) {
   return /[*/]/u.test(suffix) ? null : suffix;
 }
 // cp, mv and install keep a file they replace as NAME~ with -b, --backup or -S / --suffix (which GNU cp 9.4 takes for
-// -b too), or NAME plus the -S suffix. --backup=numbered or t name NAME.~N~, whose N is not known here, and none or off
-// keep nothing: null. existing (the default) is taken for simple, which it is while no numbered backup is there.
+// -b too), or NAME plus the -S suffix. --backup=numbered or t name NAME.~N~, whose N is not known here: { numbered }.
+// none or off keep nothing: null. existing (the default) is taken for simple, which it is while no numbered backup is
+// there.
 function backupSuffix(args, spec) {
   const end = args.indexOf('--');
   const before = end < 0 ? args : args.slice(0, end);
@@ -837,8 +838,9 @@ function backupSuffix(args, spec) {
   const o = options(before, { ...spec, digits: 'b' });
   const control = before.findLast((w) => /^--backup(?:=|$)/u.test(w))?.slice(8).replace(/^=/u, '');
   if (control === undefined && !o.values.b && !o.values.S) return null;
-  if (/^(?:numbered|t|none|off)$/u.test(control ?? '')) return null;
-  return o.values.S?.at(-1) || '~';
+  if (/^(?:none|off)$/u.test(control ?? '')) return null;
+  if (/^(?:numbered|t)$/u.test(control ?? '')) return { numbered: true };
+  return { suffix: o.values.S?.at(-1) || '~' };
 }
 
 // A word runs on through quotes, a $( ) (one level of parentheses inside it) and backticks: `sed -i ... $(grep -rl x src
@@ -2189,10 +2191,17 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const sources = o.values.t ? files : files.slice(0, -1);
     if (cmd === 'mv') sources.forEach(add);
     add(into);
-    const suffix = backupSuffix(args, OPTIONS[cmd]);
-    if (suffix == null) return;
+    const backup = backupSuffix(args, OPTIONS[cmd]);
+    if (backup == null) return;
     const folder = Boolean(o.values.t) || sources.length > 1 || isFolder(into);
-    for (const target of folder ? sources.map((s) => join(into, basename(s))) : [into]) if (here(target)) add(`${target}${suffix}`);
+    for (const target of folder ? sources.map((s) => join(into, basename(s))) : [into]) {
+      if (!here(target)) continue;
+      if (backup.suffix !== undefined) { add(`${target}${backup.suffix}`); continue; }
+      // A numbered backup: a new name beside the target, known only when the command runs (review of #239: it was left
+      // out in silence).
+      const at = isAbsolute(target) ? target : resolve(state.base, target);
+      missing({ part: `${cmd} --backup=numbered`, word: `${target}.~N~`, why: `${cmd} keeps ${target} as ${target}.~N~, and N is known only when the command runs`, prefix: `${dirname(at)}/`, direct: true });
+    }
   };
   // npm, pnpm and yarn. Installing, adding, removing or updating packages writes the lock file (package-lock.json,
   // pnpm-lock.yaml, yarn.lock), package.json when the command names packages, and node_modules: given as not known,
