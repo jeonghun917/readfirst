@@ -33,7 +33,7 @@ import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom, unshownRisks } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
-import { bashReads, commandWords, readfirstCommands, readfirstRun, shellWrites } from './bash-writes.mjs';
+import { bashReads, commandWords, readfirstCommands, readfirstRun, shellWrites, VALUES } from './bash-writes.mjs';
 import { ANSWER_HOW, ANSWER_KINDS, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, itemTally, lastAnswers, openUnsure, parseAnswer, readfirstAt, wideItems } from './answers.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
@@ -87,10 +87,10 @@ Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; de
          --agent (init: also run setup), --for (setup: the agents to wire, e.g. cursor,codex),
          --ci (init: add .github/workflows/readfirst.yml, the Action with auto-fix)`;
 
-// The on/off flags (name -> key in args) and the options that take a value. Anything else that starts with `--` is an
+// The on/off flags (name -> key in args); the options that take a value are `VALUES`, kept in src/bash-writes.mjs
+// with the readers of a readfirst command that skip their values. Anything else that starts with `--` is an
 // error: an unknown option used to take the next word as its value, so `hook --new-flag --stop` quietly ran the wrong hook.
 const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', git: 'git', ci: 'ci', stop: 'stop', gate: 'gate', report: 'report', help: 'help', version: 'version' };
-const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
 // The options each command reads (by their key in args), besides --root, --help and --version, which every command
 // takes. parse() takes every option for every command, so one a command did not read did nothing with no word: `fix
 // --dry-run` wrote the map (2026-11-14). main() refuses an option the command does not read, naming it. The plain

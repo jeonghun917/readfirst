@@ -1317,11 +1317,13 @@ function mayCd(state, name) {
 // A function definition at the start of some words (`f()`, `f ()`, `f ( )`, `f(){`, `function f`, `function f ()`):
 // its name and the words after the `()`, or null. Until 2026-11-13 `f ( )` was not one: `f ( ) { cd /a; }; f` was
 // read as a call of f and a group that runs where it is written.
+// A name is any word bash takes for one, not only an identifier: `:() { return 1; }` makes `:` fail (review of
+// ae3fea9: the constant results of eachCommand ask whether the command defined the name).
 function definition(ws) {
   const named = ws[0] === 'function' ? 1 : 0;
-  const m = (ws[named] ?? '').match(/^([A-Za-z_][\w-]*)(.*)$/su);
+  const m = (ws[named] ?? '').match(/^([^\s()<>|&;'"$`\\=]+)(\(.*)?$/su);
   if (!m) return null;
-  let tail = m[2];
+  let tail = m[2] ?? '';
   let j = named + 1;
   while (tail.length < 2 && j < ws.length) {
     const joined = tail + ws[j];
@@ -1334,9 +1336,19 @@ function definition(ws) {
 }
 // The text of a definition after its head (`f()`, `f ( )`, `function f`): the body, a { } group or a ( ) subshell,
 // read again where f is called (eachCommand).
+// The name is found as a string, never put in a pattern: a name is any word bash takes for one (`[`, `p?`, `a*`), and
+// in a RegExp `[` threw and `p?` matched `p` (review of 05c537f).
 function bodyText(text, name) {
-  const m = blank(text).match(new RegExp(`(?:^|[\\s;&|({])(?:function\\s+)?${name}(?:\\s*\\(\\s*\\))?`, 'u'));
-  return m ? text.slice(m.index + m[0].length) : '';
+  const b = blank(text);
+  for (let i = b.indexOf(name); i >= 0 && name; i = b.indexOf(name, i + 1)) {
+    if (i > 0 && !/[\s;&|({]/u.test(b[i - 1])) continue;
+    const after = i + name.length;
+    // A whole word: not the f of `function f`.
+    if (after < b.length && !/[\s({]/u.test(b[after])) continue;
+    const parens = b.slice(after).match(/^\s*\(\s*\)/u);
+    return text.slice(after + (parens ? parens[0].length : 0));
+  }
+  return '';
 }
 // The name a command calls as a function: its first word after NAME=value words, `time` (and -p) and `!`, which run it
 // in this shell. Not after env, nohup, sudo, timeout, nice, command and the other wrappers (unwrap): they run a program
@@ -1451,7 +1463,11 @@ const CHAINED = /^(?:&&|\|\||\|&?)$/u;
 // A call of a function from inside its own body is not read again, and the bodies read for one text are capped
 // (CALL_BUDGET and 8 per segment of it): such a call is given as `unread`, with why.
 const CALL_BUDGET = 20000;
-function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}) {
+// skip: leave out the commands that never run (bashReads and commandWords, whose readers credit a read, an answer or a
+// find: a wrong guess there credits less). shellWrites and stateAt never skip: a write that may not run is still
+// named, so a wrong guess can only refuse once more, never let a write through (2026-11-15, after three reviews found
+// guesses that hid writes).
+function eachCommand(text, state, visit, tail = () => {}, { calls = false, skip = false } = {}) {
   // Here-documents first, then comments, in one place for every walk (hereDocs): a body's lines are no commands, and a
   // ' in a body (`it's`) would otherwise open a quote for the comment reader. Both are no change on text without them.
   // Each is skipped where it has nothing to find (no << or no #). (stateAt walked the text before each here-document
@@ -1467,6 +1483,19 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
   const outer = [];
   let before = '';
   let ticks = false;
+  // Commands the shell never runs (2026-11-15), decided here once for every walk: one is `never` after `false &&` or
+  // `true ||` / `: ||` (`status`: the constant result of the list so far, 'true' or 'false', null when it depends on
+  // what runs; a command skipped keeps it), inside a block, group or subshell such a command opens (`dead`: how deep it
+  // stood; never while deeper), and after an `exit` of this shell itself (top level, not after && or ||, not in a
+  // pipeline or the background; dead: -1). Any other && or || may run, as before. A never command is not visited.
+  let status = null;
+  let dead = null;
+  // A command that runs eval, source, `.`, alias, enable or shopt anywhere can redefine a name where readfirst does not
+  // see it (`eval 'true() { return 1; }'`, `enable -n exit`): no result in it is constant (review of 05c537f).
+  // A command name not written out plainly (`$e`, `\eval`, `"eval"`, `e''val`) may be any of those: from there on no
+  // result is constant either (review of 2def059: `e=eval; $e "true() { return 1; }"; true || cd a; readfirst read y`
+  // credited y in the wrong folder).
+  let aliased = /(?:^|[\s;&|({])(?:eval|source|\.|alias|enable|shopt)(?=[\s;&|)}]|$)/u.test(blank(shell));
   const inSub = (list) => list.some((o) => o.sub);
   // `case W in a) cd /a;;` is one segment up to the first `;`: its head `case W in` opens the block, and the rest is
   // the first arm. Until 2026-11-13 the arm was not read: `a)` stood where the command name should be, so a cd in an
@@ -1543,6 +1572,9 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
       }
     }
     const p = parens(text, outer.length);
+    const deep = (state.blocks?.length ?? 0) + groups.length + outer.length;
+    if (dead !== null && deep <= dead) dead = null;
+    const never = skip && (dead !== null || (before === '&&' && status === 'false') || (before === '||' && status === 'true'));
     const subBefore = ticks || inSub(outer);
     if ((blank(text).match(/(?<!\\)`/gu) ?? []).length % 2) ticks = !ticks;
     for (let k = 0; k < p.lead; k++) outer.push(snapshot(state));
@@ -1570,7 +1602,8 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     // return ends the body it is in: the rest of it is not read (`f() { cd a; return; cd b; }` stays in a). One that
     // may not run (after && or ||, in a block or a subshell of the body) leaves the rest read, and what it changes not
     // known after the call (review of #217).
-    if (calls && inside > 0 && !how.body && unquote(unwrap(opening(raw))[0] ?? '') === 'return') {
+    if (never) how.never = true;
+    if (calls && inside > 0 && !how.body && !never && unquote(unwrap(opening(raw))[0] ?? '') === 'return') {
       const top = reading.at(-1);
       const maybe = before === '&&' || before === '||' || (state.blocks?.length ?? 0) > top.blocksAt || outer.length > top.outerAt || p.lead > 0 || p.closes > 0 || ticks;
       if (maybe) top.returnAt ??= snapshot(state);
@@ -1582,7 +1615,7 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     }
     // A call of a function whose body was kept: read next, where it is called.
     let call = null;
-    if (calls && !how.body && state.fns?.size) {
+    if (calls && !how.body && !never && state.fns?.size) {
       const name = callee(raw);
       const ws = opening(raw).slice(opening(raw).findIndex((w) => unquote(w) === name));
       const info = state.fns?.has(name) ? state.fnInfo?.get(name) : null;
@@ -1602,14 +1635,14 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
       }
     }
     const defined = state.fnBody;
-    visit(p, raw, how, op);
+    if (!never) visit(p, raw, how, op);
     // A ( ) closing puts back what the shell held, not how deep a function's body is (the text's syntax): put back, the
     // depth of `f() { cd a; ( echo ) }` went back to 1 at the ), so the body never ended (review of #217).
     for (let k = 0; k < p.closes; k++) Object.assign(state, outer.pop(), { fnDepth: state.fnDepth });
     const apart = op === '&' || op === '|' || op === '|&';
     for (const g of closed) if (apart || g.piped) Object.assign(state, g.at);
     // A function's body: its redirects (`f() { ...; } > log`) are read where it is called.
-    if (!how.body) tail(p.tail);
+    if (!how.body && !never) tail(p.tail);
     if (call) { spent += call.segs.length; putFront([{ call, begins: true }, ...call.segs, { call }]); }
     // Its body's segments kept as they come, up to the } or ) that ends it (the first with its head taken off).
     // A body that is an if, a loop or a case (`f() if true; then cd a; fi`) ends where that block does (it ran where it
@@ -1632,6 +1665,23 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     // feeds, inside the list (`cd $S && python3 - <<E` lost its folder for a while on 2026-11-13).
     if (!subAfter && state.chain && op && !CHAINED.test(op) && (state.blocks?.length ?? 0) <= state.chain.depth) { const from = state.chain; state.chain = null; unsure(state, from, 'is set only on some paths through the command (after && or ||)'); }
     for (let k = 0; k < p.opened; k++) outer.push({ ...snapshot(state), sub: true });
+    // What a command that ran leaves for the next of its list: a constant result (true, :, false, not negated, not in a
+    // pipeline or a subshell), or an exit that ends this shell. One that never ran keeps the status, and makes what it
+    // opens never run. Never with a redirect (`true < missing` fails, and bash goes on after `exit < missing`) or a
+    // name the command defines as a function (`true() { return 1; }`): review of ae3fea9, which let a write through.
+    if (never) { if (dead === null && (state.blocks?.length ?? 0) + groups.length + outer.length > deep) dead = deep; }
+    else {
+      // The name is the command's first word, or the word after a bare `command` or `builtin` (which run the builtin);
+      // after NAME=value, env, exec or any other wrapper it is not read as constant (nor anywhere in a command that can
+      // redefine names: `aliased`).
+      if (/[$`\\'"]/u.test(unwrap(opening(raw))[0] ?? '')) aliased = true;
+      const ow = opening(raw).map(unquote);
+      const k = /^(?:command|builtin)$/u.test(ow[0] ?? '') ? 1 : 0;
+      const name = ow[k] ?? '';
+      const plain = !aliased && !p.lead && !p.closes && !p.opened && !ticks && !raw.includes('!') && !how.pipe && op !== '|' && op !== '|&' && withoutRedirects(raw).length === raw.length && !state.fns?.has(name);
+      status = plain && (name === 'true' || name === ':') ? 'true' : plain && name === 'false' ? 'false' : null;
+      if (name === 'exit' && plain && deep === 0 && !subBefore && op !== '&' && before !== '&&' && before !== '||' && !how.body && !keeping && inside === 0) dead = -1;
+    }
     before = op;
   }
   return state;
@@ -2523,13 +2573,15 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
 // The command runs readfirst as `readfirstRun` reads it, with `read` as its subcommand; a -c string is read the same
 // way (three deep); any other way of running it (an alias, a script, inside $( )) is not seen here. Relative paths
 // start where the cds before it moved to, or at --root when it is given, as `readfirst read` resolves them.
-const READ_VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
+// readfirst's options that take a value: the one list, for parse() in src/cli.mjs and every reader of a readfirst
+// command here (until 2026-11-15 the two kept a copy each).
+export const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
 // Where one command's words run readfirst, for every reader of a readfirst command (bashReads, answerRuns and
 // findQueries through readfirstAt, readfirstHookOf; until 2026-11-15 each had a spelling pattern of its own, and each
 // missed forms another knew): the words that launch it (a shell, node, npx, npm exec or x, pnpm or yarn dlx, bun x,
 // bunx, env, `--`, NAME=value and their options, skipping the value of one that takes a value such as -p <package>),
 // then the readfirst program (readfirst, readfirst@<any version>, a path ending in readfirst or readfirst.mjs, read as
-// written so a backslash stays a separator), then its own options (READ_VALUES take a value) up to its subcommand.
+// written so a backslash stays a separator), then its own options (VALUES take a value) up to its subcommand.
 // words: [{ text, raw }]. { program, sub }: the indexes of the program and of its subcommand (words.length when there
 // is none); { code }: the text of a -c string (sh -c, bash -lc, npx -c or --call), to be read as a command of its own;
 // null: no readfirst is run here.
@@ -2547,7 +2599,7 @@ export function readfirstRun(words) {
   }
   if (!/^readfirst(?:@\S+)?(?:\.mjs)?$/u.test(said(i).split(/[\\/]/u).pop())) return null;
   let j = i + 1;
-  while (j < words.length && String(words[j].text).startsWith('-')) j += !words[j].text.includes('=') && READ_VALUES.has(words[j].text.replace(/^--?/u, '')) ? 2 : 1;
+  while (j < words.length && String(words[j].text).startsWith('-')) j += !words[j].text.includes('=') && VALUES.has(words[j].text.replace(/^--?/u, '')) ? 2 : 1;
   return { program: i, sub: Math.min(j, words.length) };
 }
 // Each command of a shell text as commandWords gives it, with the commands of a -c string (readfirstRun's code) read
@@ -2611,7 +2663,7 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map(), dept
         if (names) { files.push(w); continue; }
         if (w === '--') { names = true; continue; }
         const opt = w.match(/^--([\w-]+)(=.*)?$/u);
-        if (opt && READ_VALUES.has(opt[1])) {
+        if (opt && VALUES.has(opt[1])) {
           const value = opt[2] !== undefined ? opt[2].slice(1) : args[++i];
           if (opt[1] === 'root') root = value ?? null;
           if (opt[1] === 'limit') limit = true;
@@ -2624,7 +2676,7 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map(), dept
       const abs = files.filter((f) => !f.includes(HOLE) && !/[*?]/u.test(f)).map((f) => (isAbsolute(f) ? f : from == null ? null : resolve(from, f))).filter(Boolean);
       if (abs.length) out.push({ files: abs, seen: !thrown && !limit, why: thrown ? 'its output was sent elsewhere' : limit ? '--limit cut the list' : null });
     }
-  }); } finally { liftDone(); }
+  }, undefined, { skip: true }); } finally { liftDone(); }
   return out;
 }
 
@@ -2687,7 +2739,7 @@ export function commandWords(command, cwd = process.cwd(), { vars = new Map() } 
       const at = state.base;
       follow(state, opened, how);
       if (words.length) out.push({ words, op, pipe: how.pipe, body, at });
-    });
+    }, undefined, { skip: true });
   } finally { liftDone(); }
   return out;
 }
