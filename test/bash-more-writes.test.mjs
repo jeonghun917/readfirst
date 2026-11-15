@@ -241,3 +241,26 @@ test('patch -d DIR names the files under DIR, and bash agrees', { skip: !hasGit 
   const unplaced = named('patch -d $D -p1 < fix.diff', setUp());
   assert.ok(unplaced.length > 0 && unplaced.every((w) => w.startsWith('?')), unplaced.join(', '));
 });
+
+// A change-folder option whose value begins with a part known only when the command runs (`patch -d $X`, `git -C
+// $X`) may be absolute: from there on the folder is under nothing known, and a `..` after it does not take the part
+// away (review of #236: `-d sub -d $X` was placed under sub/, and `patch -d $X ../a.txt` named ./a.txt, as `git -C $X
+// checkout -- ../f` named ./f on main).
+test('a change-folder option known only when the command runs puts its writes under nothing known', () => {
+  for (const [command, want] of [
+    ['patch -d sub -d $X a.txt < fix0.diff', ['?$X/a.txt@']],
+    ['patch -d $X -d sub a.txt < fix0.diff', ['?$X/sub/a.txt@']],
+    ['patch -d $X ../a.txt < fix0.diff', ['?$X/../a.txt@']],
+    ['patch -d sub/$X a.txt < fix0.diff', ['?sub/$X/a.txt@sub']],
+    ['git -C a -C $X checkout -- f', ['?$X/f@']],
+    ['git -C $X checkout -- ../f', ['?$X/../f@']],
+    ['git -C $X -C .. checkout -- f', ['?$X/../f@']],
+    ['git -C /w -C b checkout -- f', ['/w/b/f']],
+    ['git -C a checkout -- f', ['a/f']],
+  ]) {
+    const dir = setUp();
+    const r = shellWrites(command, dir);
+    const got = [...r.files.map((f) => (f.startsWith(dir) ? relative(dir, f) : f)), ...r.unknown.map((u) => `?${u.word}@${u.prefix ? relative(dir, u.prefix) : ''}`)];
+    assert.deepEqual(got, want, command);
+  }
+});
