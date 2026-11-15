@@ -28,8 +28,8 @@ function session() {
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-checkout-state-'));
   const id = `checkout-${process.pid}-${++n}`;
   let now = Date.now() + 2000;
-  const call = (tool, input) => {
-    const out = runHook(JSON.stringify({ session_id: id, cwd: root, tool_name: tool, tool_input: input }), { stateDir, gate: true, now: (now += 1000) });
+  const call = (tool, input, cwd = root) => {
+    const out = runHook(JSON.stringify({ session_id: id, cwd, tool_name: tool, tool_input: input }), { stateDir, gate: true, now: (now += 1000) });
     const h = out ? JSON.parse(out).hookSpecificOutput : null;
     return h?.permissionDecisionReason ?? h?.additionalContext ?? '';
   };
@@ -48,6 +48,14 @@ test('a Bash copy into another worktree is said as writing there', () => {
   const { wt, call } = session();
   const text = call('Bash', { command: `cp src/a.js ${wt}/src/a.js` });
   assert.ok(text.includes(`(writing src/a.js in ${wt})`), text.split('\n')[0]);
+});
+
+test('with the session in a folder in no repository, every checkout is named', () => {
+  const { root, call } = session();
+  const out = realpathSync(mkdtempSync(join(tmpdir(), 'readfirst-checkout-out-')));
+  const text = call('Edit', { file_path: join(root, 'src/a.js'), old_string: '  return 1;', new_string: '  return 2;' }, out);
+  assert.ok(text.includes(`readfirst refused this Edit of src/a.js in ${root} (the edit of`), text.split('\n')[0]);
+  assert.ok(text.includes(`readfirst notes for src/a.js in ${root} (from .readfirst/map.json)`), text);
 });
 
 test('files of the checkout the session is in read as before', () => {

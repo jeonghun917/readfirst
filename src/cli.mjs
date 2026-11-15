@@ -547,7 +547,7 @@ function physical(abs) {
 const callSig = (tool, targets) => createHash('sha1').update(`${tool}\0${targets.join('\0')}`).digest('hex').slice(0, 12);
 // A call as a refusal names it, so the agent can tell which of the calls it sent in one response was refused (an Edit
 // by the first line of its old text; review of 2026-11-14: an error read against the wrong edit sent that edit twice).
-function callWhat(tool, input, targets, here = null) {
+function callWhat(tool, input, targets, here = undefined) {
   const files = filesSaid(targets, here);
   const first = (text) => String(text ?? '').split('\n').find((l) => l.trim()) ?? '';
   if (tool === 'Edit') return `Edit of ${files} (the edit of \`${clip(first(input?.old_string))}\`)`;
@@ -557,7 +557,8 @@ function callWhat(tool, input, targets, here = null) {
   return `${tool} of ${files}`;
 }
 // The files a call writes as the hook says them: each relative to its checkout, and that checkout named when it is not
-// `here`, the one the session's folder is in. Another worktree of the same repository has the same paths and the
+// `here`, the one the session's folder is in (null when that folder is in none: then every checkout is named; not
+// given, none is). Another worktree of the same repository has the same paths and the
 // same notes, so its files read as this checkout's: a copy into a scratch worktree was said as "writing src, test,
 // src/cli.mjs" (2026-11-15).
 function filesSaid(targets, here, known = new Map()) {
@@ -567,7 +568,7 @@ function filesSaid(targets, here, known = new Map()) {
     if (!by.has(root)) by.set(root, []);
     by.get(root).push(root ? relative(root, abs) : abs);
   }
-  return [...by].map(([root, files]) => `${files.join(', ')}${root && here && root !== here ? ` in ${root}` : ''}`).join('; ');
+  return [...by].map(([root, files]) => `${files.join(', ')}${root && here !== undefined && root !== here ? ` in ${root}` : ''}`).join('; ');
 }
 // Said with every refusal: the hook sees one call, never the others of its response.
 const BATCH_LINE = 'If it was one of several calls in one response, the others were not refused by this: those before it ran, those after it are judged on their own. Check that what went in still fits without this one.';
@@ -1142,7 +1143,7 @@ function hookContext(root, stateDir) {
 // gate: the files already shown are judged too (their notes are not shown again) and `items` gives each rule and risk
 // of every file with the repository it is in and whether its notes were shown in this call (noteItems): the gate asks
 // what a change touches every time, not once per file.
-function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = new Map(), gate = false, here = null } = {}) {
+function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = new Map(), gate = false, here = undefined } = {}) {
   const known = new Map();
   const branches = new Map();
   const byRoot = new Map();
@@ -1213,7 +1214,7 @@ function notesFor(targets, seen, now, { deadline = Infinity, stateDir, edited = 
     if (ctx.broken.length) lines.unshift(brokenMapLine(ctx.broken));
     for (const p of done) { seen[join(root, p)] = now; seen[`shown:${branchOf(root, branches)}:${join(root, p)}`] = now; }
     if (!lines.length) continue;
-    notes.push(`readfirst notes for ${done.join(', ')}${here && root !== here ? ` in ${root}` : ''}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${lines.join('\n- ')}`);
+    notes.push(`readfirst notes for ${done.join(', ')}${here !== undefined && root !== here ? ` in ${root}` : ''}${map ? ` (from ${MAP_PATH})` : ''}:\n- ${lines.join('\n- ')}`);
   }
   return { notes, late, items };
 }
