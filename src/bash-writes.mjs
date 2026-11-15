@@ -9,7 +9,7 @@
 // A here-document fed to cat or tee is data; only where it goes counts. `cd dir &&` moves where relative paths start.
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { lex } from './code.mjs';
 import { scopes } from './scopes.mjs';
 
@@ -812,6 +812,33 @@ function options(args, spec) {
     }
   }
   return { files, values, inPlace, script: Boolean(values.e || values.E || values.f) };
+}
+// A file name options() gives that starts with a - is one after `--` (`rm -- -a.txt`), or an option's value
+// (`sort -o -out.txt`): add() leaves out words that start with -, so it is given as ./-a.txt (they were missed until
+// 2026-11-15). A lone - is stdin or stdout, as before.
+const operand = (w) => (w.length > 1 && w.startsWith('-') ? `./${w}` : w);
+// The backup suffix of sed -i / perl -i (`-i.bak`, `-pi.orig`, `--in-place=.bak`; '' when none is kept), read by
+// options() with i as a letter whose value is the rest of its word. A suffix with a * (the file's name goes there) or a
+// / is not read here: null.
+function inPlaceSuffix(args, spec) {
+  const end = args.indexOf('--');
+  const before = end < 0 ? args : args.slice(0, end);
+  const long = before.findLast((w) => w.startsWith('--in-place='))?.slice(11);
+  const suffix = long ?? options(before, { ...spec, inPlace: false, attached: `${spec.attached ?? ''}i` }).values.i?.at(-1) ?? '';
+  return /[*/]/u.test(suffix) ? null : suffix;
+}
+// cp, mv and install keep a file they replace as NAME~ with -b, --backup or -S / --suffix (which GNU cp 9.4 takes for
+// -b too), or NAME plus the -S suffix. --backup=numbered or t name NAME.~N~, whose N is not known here, and none or off
+// keep nothing: null. existing (the default) is taken for simple, which it is while no numbered backup is there.
+function backupSuffix(args, spec) {
+  const end = args.indexOf('--');
+  const before = end < 0 ? args : args.slice(0, end);
+  // b takes no value: read as a digits letter, it is recorded, and no digits follow it in these commands' options.
+  const o = options(before, { ...spec, digits: 'b' });
+  const control = before.findLast((w) => /^--backup(?:=|$)/u.test(w))?.slice(8).replace(/^=/u, '');
+  if (control === undefined && !o.values.b && !o.values.S) return null;
+  if (/^(?:numbered|t|none|off)$/u.test(control ?? '')) return null;
+  return o.values.S?.at(-1) || '~';
 }
 
 // A word runs on through quotes, a $( ) (one level of parentheses inside it) and backticks: `sed -i ... $(grep -rl x src
@@ -2151,6 +2178,22 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // it without refusing (refuses in src/cli.mjs), since it can name no file to read first.
     missing({ part, word: part, why: `${part} changes the tracked files it brings, known only when it runs`, prefix: under, ...(sub === 'clean' ? {} : { moves: true }) });
   };
+  // cp, mv and install write their destination, or the folder -t names (what lands in a folder is not looked up). mv
+  // takes its sources away as rm does: `mv a.txt b.txt` named only b.txt until 2026-11-15, so a file the map holds was
+  // moved off without its notes. With a backup (backupSuffix) a file there already that one lands on is kept under its
+  // name and the suffix: `cp -b a b` writes b~ when b is there, `mv -b a d` writes d/a~ when d/a is.
+  const isFolder = (w) => { try { return (isAbsolute(w) || state.base != null) && statSync(isAbsolute(w) ? w : resolve(state.base, w)).isDirectory(); } catch { return false; } };
+  const copies = (cmd, args, o) => {
+    const files = o.files.map(operand);
+    const into = o.values.t ? operand(o.values.t.at(-1)) : files.at(-1);
+    const sources = o.values.t ? files : files.slice(0, -1);
+    if (cmd === 'mv') sources.forEach(add);
+    add(into);
+    const suffix = backupSuffix(args, OPTIONS[cmd]);
+    if (suffix == null) return;
+    const folder = Boolean(o.values.t) || sources.length > 1 || isFolder(into);
+    for (const target of folder ? sources.map((s) => join(into, basename(s))) : [into]) if (here(target)) add(`${target}${suffix}`);
+  };
   // npm, pnpm and yarn. Installing, adding, removing or updating packages writes the lock file (package-lock.json,
   // pnpm-lock.yaml, yarn.lock), package.json when the command names packages, and node_modules: given as not known,
   // with what it writes, and `moves`, so the hook shows it without refusing (it could name no file to read first; the
@@ -2395,8 +2438,13 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const files = args.filter((w) => !w.startsWith('-'));
     const o = OPTIONS[cmd] ? options(args, OPTIONS[cmd]) : null;
     // sed and perl write only in place; the script is the first file argument unless -e/-f gave it.
-    if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
-    else if (cmd === 'tee' || cmd === 'truncate') o.files.forEach(add);
+    // With a suffix (`sed -i.bak`), each file is kept under its name and the suffix too.
+    if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) {
+      const edited = (o.script ? o.files : o.files.slice(1)).map(operand);
+      const suffix = inPlaceSuffix(args, OPTIONS[cmd]);
+      edited.forEach(add);
+      if (suffix) edited.forEach((f) => add(`${f}${suffix}`));
+    } else if (cmd === 'tee' || cmd === 'truncate') o.files.map(operand).forEach(add);
     // patch: the file named first, or, with none (`patch -p1 < fix.diff`, missed until 2026-11-14), the files the
     // patch it reads names.
     else if (cmd === 'patch') {
@@ -2412,12 +2460,12 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       }
     }
     // touch and rm write (or take away) the files they are given; sort -o writes its output file.
-    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.forEach(add);
-    else if (cmd === 'sort' && o.values.o) add(o.values.o.at(-1));
+    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.map(operand).forEach(add);
+    else if (cmd === 'sort' && o.values.o) add(operand(o.values.o.at(-1)));
     else if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') packages(cmd, args);
-    else if (['cp', 'mv', 'install'].includes(cmd) && o.values.t) add(o.values.t.at(-1));
+    else if (['cp', 'mv', 'install'].includes(cmd) && (o.values.t || o.files.length >= 2)) copies(cmd, args, o);
     else if (cmd === 'rsync' && (args.some((w) => w === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/u.test(w)) || /^(?:[\w.@-]+:|rsync:\/\/)/u.test(o.files.at(-1) ?? ''))) { /* a dry run or a remote destination */ }
-    else if (['cp', 'mv', 'install', 'rsync'].includes(cmd) && o.files.length >= 2) add(o.files.at(-1));
+    else if (cmd === 'rsync' && o.files.length >= 2) add(operand(o.files.at(-1)));
     else if (cmd === 'git') {
       // git's own options before the subcommand: -C <dir> runs it in that folder, -c <k=v> and --no-pager change nothing.
       let i = 0;
@@ -2430,7 +2478,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       // write to ./w/f, which once variables were followed showed this repository's notes for a path that does not
       // exist (2026-11-13).
       if (cs.some((c) => isAbsolute(c))) dir = resolve('/', ...cs);
-      if (/^(?:checkout|restore)$/u.test(args[i] ?? '')) gitPaths(args.slice(i), (w) => here(join(dir, w))).forEach((p) => add(join(dir, p)));
+      if (/^(?:checkout|restore)$/u.test(args[i] ?? '')) gitPaths(args.slice(i), (w) => here(join(dir, w))).forEach((p) => add(operand(join(dir, p))));
       // A checkout the command makes (worktree add, clone, init): a write below it lands in a repository, though none
       // is there yet when the hook runs (`git worktree add $S/w-$rev` then a write into $S/w-$rev).
       const sub = args[i];
@@ -2453,7 +2501,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
         const gr = args.slice(i + 1);
         if (!(sub === 'rm' && gr.includes('--cached')) && !gr.some((w) => /^(?:-n|--dry-run)$/u.test(w))) {
           const dd = gr.indexOf('--');
-          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => add(join(dir, p)));
+          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => add(operand(join(dir, p))));
         }
       } else if (sub !== undefined) gitMoves(sub, args.slice(i + 1), dir);
       for (const m of made ? perTurn(made) ?? [made] : []) {
