@@ -205,3 +205,22 @@ test('after a move between commits the Stop hook does not check what it brought,
   run(root, 'git stash pop -q');
   assert.match(String(stop(root, id)), /`false`/u, 'stash pop leaves src/a.js changed: its check is asked for');
 });
+
+// The folder a package manager, git -C or git apply --directory works under, when part of it is known only when the
+// command runs, is placed under what is known before that part: never the word with readfirst's \0 marks in it
+// (`/r/\0$D\0/` was the prefix of `npm --prefix $D install` until 2026-11-15, a folder that is nowhere).
+test('a folder word known only when the command runs places its writes under what is known before it', () => {
+  for (const [command, prefix] of [
+    ['npm --prefix $D install', ''],
+    ['npm --prefix /r/$D install', '/r/'],
+    ['pnpm -C $D add x', ''],
+    ['yarn --cwd /r/$D', '/r/'],
+    ['git -C $D pull', ''],
+    ['git apply --directory=$D p.diff', ''],
+    ['npm --prefix sub install', '/r/sub/'],
+  ]) {
+    const r = shellWrites(command, '/r');
+    assert.deepEqual(r.unknown.map((u) => u.prefix), [prefix], command);
+    for (const u of r.unknown) for (const [k, v] of Object.entries(u)) if (typeof v === 'string') assert.ok(!v.includes(String.fromCharCode(0)), `${command}: ${k}`);
+  }
+});
