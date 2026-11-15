@@ -1695,7 +1695,25 @@ const HOOK_MATCHER = HOOK_TOOLS.join('|');
 // A readfirst hook command however readfirst is run: `npx --yes readfirst hook`, `readfirst@1.2.3 hook`, or a
 // checkout's own `node "$CLAUDE_PROJECT_DIR/bin/readfirst.mjs" hook` (this repository's; until 2026-11-14 install did
 // not see it and added a second entry, so the hook ran twice).
-const READFIRST_HOOK = /(?:^|[\s"'/])readfirst(?:@[\w.-]+)?(?:\.mjs)?["']?\s+hook\b/u;
+// Read by the command's words (commandWords), never by its spelling (review of #218: a pattern missed
+// `readfirst@^1.2 hook`, `node C:\x\readfirst.mjs hook` and `readfirst --no-color hook`, and took `readfirst hook-x`):
+// what launches it (node, npx, pnpm dlx, bunx, their options, NAME=value), then the readfirst program (readfirst,
+// readfirst@<any version>, a path ending in readfirst or readfirst.mjs, read as written so a backslash stays a
+// separator), then its first word that is not an option or an option's value, which must be `hook`. { stop } says
+// whether it is the Stop hook (`--stop`); null: no readfirst hook.
+const LAUNCHERS = new Set(['node', 'npx', 'bunx', 'pnpm', 'yarn', 'dlx', 'exec', 'env']);
+export function readfirstHookOf(command) {
+  for (const c of commandWords(String(command ?? ''), process.cwd())) {
+    const w = c.words.map((x) => String(x.raw ?? x.text).replace(/^["']|["']$/gu, ''));
+    let i = 0;
+    while (i < w.length && (LAUNCHERS.has(w[i]) || w[i].startsWith('-') || /^\w+=/u.test(w[i]))) i++;
+    if (!/^readfirst(?:@\S+)?(?:\.mjs)?$/u.test((w[i] ?? '').split(/[\\/]/u).pop())) continue;
+    let j = i + 1;
+    while (j < w.length && w[j].startsWith('-')) j += !w[j].includes('=') && VALUES.has(w[j].replace(/^--?/u, '')) ? 2 : 1;
+    if (w[j] === 'hook') return { stop: w.slice(j + 1).includes('--stop') };
+  }
+  return null;
+}
 export const STOP_HOOK_COMMAND = 'npx --yes readfirst hook --stop';
 // Adds the hook to the project's .claude/settings.json, keeping everything already there. With verify, also the Stop
 // hook that runs the checks before Claude Code finishes.
@@ -1711,12 +1729,15 @@ export function installHook(root, { verify = false } = {}) {
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) throw new Error('.claude/settings.json was left alone (it is not a JSON object)');
   }
   const pre = ((settings.hooks ??= {}).PreToolUse ??= []);
-  const has = (list) => list.some((m) => (m.hooks ?? []).some((h) => READFIRST_HOOK.test(h.command ?? '')));
+  // The hook of each kind: a PreToolUse entry that only runs `readfirst hook --stop` is no PreToolUse hook (until
+  // 2026-11-14 it counted, so install said the hook was there and added none).
+  const isHook = (h, stop) => readfirstHookOf(h.command)?.stop === stop;
+  const has = (list, stop) => list.some((m) => (m.hooks ?? []).some((h) => isHook(h, stop)));
   let added = false;
-  if (!has(pre)) { pre.push({ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }); added = true; }
+  if (!has(pre, false)) { pre.push({ matcher: HOOK_MATCHER, hooks: [{ type: 'command', command: HOOK_COMMAND, timeout: 15 }] }); added = true; }
   if (verify) {
     const stop = (settings.hooks.Stop ??= []);
-    if (!has(stop)) { stop.push({ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }); added = true; }
+    if (!has(stop, true)) { stop.push({ hooks: [{ type: 'command', command: STOP_HOOK_COMMAND, timeout: 1800 }] }); added = true; }
   }
   // A readfirst hook installed before it read Bash commands (matcher Edit|Write|MultiEdit) never sees a file a command
   // writes, nor a `readfirst read` or `find` run in Bash, and installing again left it so (2026-11-13). Bash is added
@@ -1729,7 +1750,12 @@ export function installHook(root, { verify = false } = {}) {
     try { return new RegExp(`^(?:${m})$`, 'u').test(tool); } catch { return m.split('|').map((s) => s.trim()).includes(tool); }
   };
   const lacks = (m) => HOOK_TOOLS.filter((tool) => !sees(m.matcher, tool));
-  const narrow = pre.filter((m) => lacks(m).length && (m.hooks ?? []).some((h) => READFIRST_HOOK.test(h.command ?? '') && !/--stop\b/u.test(h.command ?? '')));
+  const narrow = pre.filter((m) => lacks(m).length && (m.hooks ?? []).some((h) => isHook(h, false)));
+  // A matcher that is no valid pattern cannot be widened into a valid one (until 2026-11-14 the tools were added to it
+  // and it stayed invalid): nothing is written, and the person is told.
+  const valid = (m) => { try { new RegExp(`^(?:${m})$`, 'u'); return true; } catch { return false; } };
+  const bad = narrow.find((m) => typeof m.matcher === 'string' && !valid(m.matcher));
+  if (bad) throw new Error(`.claude/settings.json was left alone (the readfirst hook's matcher \`${bad.matcher}\` is not a valid pattern, so ${lacks(bad).join(', ')} cannot be added to it: fix the matcher by hand)`);
   const widened = narrow.map((m) => [m.matcher, [m.matcher, ...lacks(m)].join('|')]);
   narrow.forEach((m, i) => { m.matcher = widened[i][1]; });
   if (!added && !widened.length) return false;
