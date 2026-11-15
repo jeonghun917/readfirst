@@ -1303,9 +1303,19 @@ function definition(ws) {
 }
 // The text of a definition after its head (`f()`, `f ( )`, `function f`): the body, a { } group or a ( ) subshell,
 // read again where f is called (eachCommand).
+// The name is found as a string, never put in a pattern: a name is any word bash takes for one (`[`, `p?`, `a*`), and
+// in a RegExp `[` threw and `p?` matched `p` (review of 05c537f).
 function bodyText(text, name) {
-  const m = blank(text).match(new RegExp(`(?:^|[\\s;&|({])(?:function\\s+)?${name}(?:\\s*\\(\\s*\\))?`, 'u'));
-  return m ? text.slice(m.index + m[0].length) : '';
+  const b = blank(text);
+  for (let i = b.indexOf(name); i >= 0 && name; i = b.indexOf(name, i + 1)) {
+    if (i > 0 && !/[\s;&|({]/u.test(b[i - 1])) continue;
+    const after = i + name.length;
+    // A whole word: not the f of `function f`.
+    if (after < b.length && !/[\s({]/u.test(b[after])) continue;
+    const parens = b.slice(after).match(/^\s*\(\s*\)/u);
+    return text.slice(after + (parens ? parens[0].length : 0));
+  }
+  return '';
 }
 // The name a command calls as a function: its first word after NAME=value words, `time` (and -p) and `!`, which run it
 // in this shell. Not after env, nohup, sudo, timeout, nice, command and the other wrappers (unwrap): they run a program
@@ -1443,7 +1453,9 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
   // pipeline or the background; dead: -1). Any other && or || may run, as before. A never command is not visited.
   let status = null;
   let dead = null;
-  let aliased = false;
+  // A command that runs eval, source, `.`, alias, enable or shopt anywhere can redefine a name where readfirst does not
+  // see it (`eval 'true() { return 1; }'`, `enable -n exit`): no result in it is constant (review of 05c537f).
+  const aliased = /(?:^|[\s;&|({])(?:eval|source|\.|alias|enable|shopt)(?=[\s;&|)}]|$)/u.test(blank(shell));
   const inSub = (list) => list.some((o) => o.sub);
   // `case W in a) cd /a;;` is one segment up to the first `;`: its head `case W in` opens the block, and the rest is
   // the first arm. Until 2026-11-13 the arm was not read: `a)` stood where the command name should be, so a cd in an
@@ -1620,12 +1632,11 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     if (never) { if (dead === null && (state.blocks?.length ?? 0) + groups.length + outer.length > deep) dead = deep; }
     else {
       // The name is the command's first word, or the word after a bare `command` or `builtin` (which run the builtin);
-      // after NAME=value, env, exec or any other wrapper it is not read as constant. Once the command has run alias,
-      // enable or shopt, a name may stand for anything else, and no result is constant from there on.
+      // after NAME=value, env, exec or any other wrapper it is not read as constant (nor anywhere in a command that can
+      // redefine names: `aliased`).
       const ow = opening(raw).map(unquote);
       const k = /^(?:command|builtin)$/u.test(ow[0] ?? '') ? 1 : 0;
       const name = ow[k] ?? '';
-      if (/^(?:alias|enable|shopt)$/u.test(unquote(unwrap(opening(raw))[0] ?? ''))) aliased = true;
       const plain = !aliased && !p.lead && !p.closes && !p.opened && !ticks && !raw.includes('!') && !how.pipe && op !== '|' && op !== '|&' && withoutRedirects(raw).length === raw.length && !state.fns?.has(name);
       status = plain && (name === 'true' || name === ':') ? 'true' : plain && name === 'false' ? 'false' : null;
       if (name === 'exit' && plain && deep === 0 && !subBefore && op !== '&' && before !== '&&' && before !== '||' && !how.body && !keeping && inside === 0) dead = -1;

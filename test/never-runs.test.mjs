@@ -60,22 +60,43 @@ const MAY = [
   'true < missing || ', 'true > nodir/x || ', ': > nodir/x || ', 'exit < missing; ', 'true() { return 1; }; true || ', ':() { return 1; }; : || ',
   'exit() { :; }; exit; ', 'false() { :; }; false && ', 'X=1 false && ', 'env true || ', 'true() { return 1; }; command true || ', '( exit ); ', '(exit 0); ',
   'exit | cat; ', 'x=$(exit); ', 'echo $(exit); ', 'exit 0 & wait; ', 'shopt -s expand_aliases\nalias true=false\ntrue || ', 'false && x || ', 'if x; then exit; fi; ',
+  // Review of 05c537f: a redefinition readfirst cannot see.
+  "eval 'true() { return 1; }'; true || ", 'enable -n exit; exit; ', "eval ':() { return 1; }'; : || ",
 ];
+// Function names that are no identifiers (review of 05c537f: put in a RegExp, `[` threw and `p?` found no body).
+const ODD_NAMES = ['[', 'p?', 'a*', 'x+', 'a.b', ':'];
 const bash = spawnSync('bash', ['-c', 'true']).status === 0;
 test('against bash: no write bash makes is missed, and none is named after a command that never runs', { skip: !bash && 'bash is not found here' }, () => {
   for (const before of [...NEVER, ...MAY]) {
     const dir = mkdtempSync(join(tmpdir(), 'readfirst-never-'));
     const script = `${before}echo x > f`;
     spawnSync('bash', ['-c', script], { cwd: dir, env: { PATH: process.env.PATH }, encoding: 'utf8' });
-    const named = shellWrites(script, dir).files.includes(join(dir, 'f'));
+    // Named, or given as a write readfirst cannot place (after eval the folder is not known): the gate refuses both.
+    const w = shellWrites(script, dir);
+    const named = w.files.includes(join(dir, 'f')) || w.unknown.length > 0;
     if (existsSync(join(dir, 'f'))) assert.ok(named, `bash writes f after ${JSON.stringify(before)}, and readfirst does not name it`);
     if (NEVER.includes(before)) assert.equal(existsSync(join(dir, 'f')) || named, false, `never runs: ${JSON.stringify(before)}`);
     else assert.ok(named, `may run: ${JSON.stringify(before)}`);
   }
+  for (const name of ODD_NAMES) {
+    const dir = mkdtempSync(join(tmpdir(), 'readfirst-never-'));
+    const script = `${name}() { echo x > f; }; ${name}`;
+    spawnSync('bash', ['-c', script], { cwd: dir, env: { PATH: process.env.PATH }, encoding: 'utf8' });
+    assert.ok(existsSync(join(dir, 'f')), `bash runs the body of ${name}`);
+    assert.ok(shellWrites(script, dir).files.includes(join(dir, 'f')), `the body of ${name} is read where it is called`);
+  }
 });
 
-// The gate end to end: a write to a file whose notes were not read, after a constant that is none, is refused on main
-// and stays refused (review of ae3fea9: both went through).
+// The gate end to end: each write below, to a file whose notes were not read, is refused on main and must stay
+// refused. The reviews of ae3fea9 and 05c537f found each let through (or, for `[`, the reader throwing). A change to
+// what never runs passes this whole list.
+const W = 'echo x >> src/a.js';
+const GATE_DENY = [
+  `true < missing || ${W}`, `true > nodir/x || ${W}`, `: > nodir/x || ${W}`, `exit < missing; ${W}`,
+  `true() { return 1; }; true || ${W}`, `:() { return 1; }; : || ${W}`, `exit() { :; }; exit; ${W}`, `false() { :; }; false && ${W}`,
+  `X=1 false && ${W}`, `env true || ${W}`, `[() { ${W}; }; [`, `p?() { ${W}; }; p?`, `a*() { ${W}; }; a*`,
+  `eval 'true() { return 1; }'; true || ${W}`, `shopt -s expand_aliases\nalias true=false\ntrue || ${W}`, `enable -n exit; exit; ${W}`,
+];
 test('the gate refuses a write after a result that only looks constant, as on main', () => {
   const root = mkdtempSync(join(tmpdir(), 'readfirst-never-gate-'));
   const files = { 'src/a.js': 'export const a = 1;\n', '.readfirst/map.json': JSON.stringify({ format: 'readfirst/map@1', groups: [{ id: 'src', title: 'the code', files: ['src/**'], risks: [{ text: 'a changes with care' }] }] }) };
@@ -84,7 +105,7 @@ test('the gate refuses a write after a result that only looks constant, as on ma
   execFileSync('git', ['-C', root, 'add', '.']);
   execFileSync('git', ['-C', root, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'start']);
   const stateDir = mkdtempSync(join(tmpdir(), 'readfirst-never-state-'));
-  for (const [i, command] of ['true < missing || echo x >> src/a.js', 'exit < missing; echo x >> src/a.js', 'true() { return 1; }; true || echo x >> src/a.js'].entries()) {
+  for (const [i, command] of GATE_DENY.entries()) {
     const out = runHook(JSON.stringify({ session_id: `never-${process.pid}-${i}`, cwd: root, tool_name: 'Bash', tool_input: { command } }), { stateDir, gate: true });
     assert.equal(out ? JSON.parse(out).hookSpecificOutput.permissionDecision : 'through', 'deny', command);
   }
