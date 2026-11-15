@@ -290,6 +290,11 @@ test('lex: going on from the state after any line gives what the whole file give
   // What `/` is depends on the last token of the line before.
   samples.push(['a.js', 'js', ['const half = total', '  / 2 / parts', 'const re = cond ?', '  /x{/ : null', 'const t = `a ${', '  b + `c ${d}`', '} e`']]);
   samples.push(['a.py', 'py', ['def f(', '    a,', '):', '    """doc', 'def g():', '    """', "    s = 'x'  # c", '    return (a,', 'a)', 'X = """', 'text', '"""']]);
+  // The stacks of templates and f-strings, nested and changed over lines (a line's state shares them with the next).
+  // Each change to the innermost lands on a line after the one that opened it, so a node changed in place would change
+  // that line's state too.
+  samples.push(['a.js', 'js', ['const s = `a ${ {', '  b: `x ${ { c: 1 }', '  .c } y`,', '}.b } e ${ `f ${', '1 }` }`', 'const t = `${', '{ a: 1 }.a }`', 'const z = 1']]);
+  samples.push(['a.py', 'py', ['x = f"""a {', '  (1 +', '   2) !r:>{', '  w} {f"""', '{b:{c}', '}"""} d"""', 'v = f"""{a', ':>10} {(b', ')} c"""', 'y = 1']]);
   for (const [file, lang, lines] of samples) {
     const whole = lex(lines, lang);
     for (let i = 1; i < lines.length; i++) assert.deepEqual(lex([lines[i]], lang, whole[i - 1].state)[0], whole[i], `${file}:${i + 1}`);
@@ -494,4 +499,19 @@ test('jsx: linear steps and time in the depth of elements over lines and the len
   }
   const { done, said } = await timeShapes(JSX_SHAPES, new URL('../src/code.mjs', import.meta.url).href, 'declarations', (fn, text) => fn('a.jsx', text));
   assert.ok(linearIn(done, JSX_SHAPES), said);
+});
+
+// Templates and f-strings nested over lines: each line's state holds the stacks open around it without a copy (a copy
+// per line took 12 times the time for 4 times the depth, and f-strings nested 8,000 deep ran out of heap). The steps
+// do not see a copy, so only the time is tested. A Python shape starts with `x = f`.
+const STACK_SHAPES = {
+  'templates nested over lines': (n) => `const s = \`${'${`\n'.repeat(n / 4)}x${'`}'.repeat(n / 4)}\`;\nconst z = 1;\n`,
+  'braces nested over lines in a template placeholder': (n) => `const s = \`\${${'{\n'.repeat(n / 2)}${'}'.repeat(n / 2)}}\`;\nconst z = 1;\n`,
+  'f-strings nested over lines': (n) => `x = f"""${'{f"""\n'.repeat(n / 6)}a${'"""}'.repeat(n / 6)}"""\nz = 1\n`,
+  'f-strings nested over lines in format specs': (n) => `x = f"""${'{a:{f"""\n'.repeat(n / 9)}b${'"""}}'.repeat(n / 9)}"""\nz = 1\n`,
+};
+
+test('lex: linear time in the depth of templates and f-strings nested over lines', async () => {
+  const { done, said } = await timeShapes(STACK_SHAPES, new URL('../src/code.mjs', import.meta.url).href, 'lex', (fn, text) => fn(text.split('\n'), text.startsWith('x = f') ? 'py' : 'js'));
+  assert.ok(linearIn(done, STACK_SHAPES), said);
 });

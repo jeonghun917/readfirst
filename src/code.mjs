@@ -57,14 +57,18 @@ export function countStep() { if (counting) steps++; }
 //   ends inside a JSX element's tag or children (not in one of its `{ }`), so the next line goes on with it.
 // - state: the state after the line. Passing it as the third argument goes on from the next line, so a hunk or a
 //   file's second half reads as it does in the whole file.
-const NO_TEMPLATES = Object.freeze([]);
+// The bottom of the template and f-string stacks below. Each stack is a list of nodes that are never changed, the
+// innermost first (`up` the next out, `length` how many are open), so a line's state keeps it without a copy: a copy
+// per line took time and memory by the depth times the lines (f-strings nested 8,000 deep over lines ran out of heap).
+const NO_STACK = Object.freeze({ length: 0 });
 export function lex(lines, lang, state = null) {
   const py = lang === 'py';
   let q = state?.q ?? null;
-  const tpl = state?.tpl ? [...state.tpl] : [];
+  // The `${ }` of templates open around, each with the depth of the braces open in it (n).
+  let tpl = state?.tpl ?? NO_STACK;
   let last = state?.last ?? '';
   // Python: the placeholders of f-strings open around (fs), and whether the string open is an f-string (fq) or raw.
-  const fs = state?.fs ? state.fs.map((f) => ({ ...f })) : [];
+  let fs = state?.fs ?? NO_STACK;
   let fq = state?.fq ?? false;
   let raw = state?.raw ?? false;
   // JSX (lang 'jsx'): the elements open around, as a list of frames that are never changed (the innermost first, `up`
@@ -103,25 +107,25 @@ export function lex(lines, lang, state = null) {
           if (c === '\\' && !(raw && fq && text[i + 1] === '{')) { carriesOn = i === text.length - 1; blank(Math.min(2, text.length - i), 'l'); continue; }
           if (q.length === 3 ? text.startsWith(q, i) : c === q) { const n = q.length; q = null; fq = false; raw = false; if (fs.length) blank(n, 'l'); else keep(n, 'l'); continue; }
           // An f-string's `{` opens a placeholder (`{{` is a brace); its code is marked 'p', its `{` 'o' and `}` 'e'.
-          if (fq && c === '{' && text[i + 1] !== '{') { fs.push({ q, raw, spec: false, depth: 0 }); q = null; fq = false; raw = false; blank(1, 'o'); continue; }
+          if (fq && c === '{' && text[i + 1] !== '{') { fs = { q, raw, spec: false, depth: 0, up: fs, length: fs.length + 1 }; q = null; fq = false; raw = false; blank(1, 'o'); continue; }
           if (fq && (c === '{' || c === '}') && text[i + 1] === c) { blank(2, 'l'); continue; }
           blank(1, 'l'); continue;
         }
-        const f = fs.at(-1);
+        const f = fs.length ? fs : null;
         if (f) {
           // Inside a placeholder: code to its `}` at its own depth, then the f-string goes on. After a `:` at that depth
           // the format spec is text, but a `{` in it opens a placeholder of its own; `!r`, `!s`, `!a` are text.
-          const close = () => { fs.pop(); blank(1, 'e'); if (!fs.at(-1)?.spec) { q = f.q; raw = f.raw; fq = true; } };
+          const close = () => { fs = f.up; blank(1, 'e'); if (!fs.spec) { q = f.q; raw = f.raw; fq = true; } };
           if (f.spec) {
-            if (c === '{') { fs.push({ q: f.q, raw: f.raw, spec: false, depth: 0 }); blank(1, 'o'); continue; }
+            if (c === '{') { fs = { q: f.q, raw: f.raw, spec: false, depth: 0, up: f, length: f.length + 1 }; blank(1, 'o'); continue; }
             if (c === '}') { close(); continue; }
             blank(1, 'l'); continue;
           }
           if (f.depth === 0 && c === '}') { close(); continue; }
-          if (f.depth === 0 && c === ':') { f.spec = true; blank(1, 'l'); continue; }
+          if (f.depth === 0 && c === ':') { fs = { ...f, spec: true }; blank(1, 'l'); continue; }
           if (f.depth === 0 && c === '!' && /[rsa]/u.test(text[i + 1] ?? '') && /[:}]/u.test(text[i + 2] ?? '')) { blank(2, 'l'); continue; }
-          if ('([{'.includes(c)) f.depth++;
-          else if (')]}'.includes(c)) f.depth--;
+          if ('([{'.includes(c)) fs = { ...f, depth: f.depth + 1 };
+          else if (')]}'.includes(c)) fs = { ...f, depth: f.depth - 1 };
         }
         if (c === '#' && !f) { comment = true; blank(text.length - i); break; }
         if (c === '"' || c === "'") {
@@ -159,7 +163,7 @@ export function lex(lines, lang, state = null) {
       if (q === '`') {
         if (c === '\\') blank(Math.min(2, text.length - i), 'l');
         else if (c === '`') { q = null; last = 'x'; keep(1, 'l'); }
-        else if (c === '$' && text[i + 1] === '{') { tpl.push(0); q = null; blank(2, 'o'); last = '{'; }
+        else if (c === '$' && text[i + 1] === '{') { tpl = { n: 0, up: tpl, length: tpl.length + 1 }; q = null; blank(2, 'o'); last = '{'; }
         else blank(1, 'l');
         continue;
       }
@@ -191,8 +195,8 @@ export function lex(lines, lang, state = null) {
       if (c === '/' && text[i - 1] !== '<' && !(last === '}' && text[i + 1] === '>') && (last === '' || /[(,=:[!&|?{};+\-*%<>~^]/u.test(last) || endsInKeyword(tail))) { q = 're'; keep(1, 'l'); continue; }
       if (c === '"' || c === "'" || c === '`') { q = c; keep(1, c === '`' ? 't' : 'l'); continue; }
       if (tpl.length) {
-        if (c === '{') tpl[tpl.length - 1]++;
-        else if (c === '}') { if (tpl[tpl.length - 1] === 0) { tpl.pop(); q = '`'; blank(1, 'e'); continue; } tpl[tpl.length - 1]--; }
+        if (c === '{') tpl = { ...tpl, n: tpl.n + 1 };
+        else if (c === '}') { if (tpl.n === 0) { tpl = tpl.up; q = '`'; blank(1, 'e'); continue; } tpl = { ...tpl, n: tpl.n - 1 }; }
       } else if (el) { // in a JSX `{ }`: its own `}` goes back to the tag or the children
         if (c === '{') jsx = { ...el, depth: el.depth + 1 };
         else if (c === '}') { if (el.depth === 0) { jsx = el.up; keep(); continue; } jsx = { ...el, depth: el.depth - 1 }; }
@@ -203,7 +207,7 @@ export function lex(lines, lang, state = null) {
     }
     if (q === 're' || ((q === "'" || q === '"') && !carriesOn)) q = null;
     if (startsIn === 'block') comment = true;
-    out.push({ code, mark, startsIn, comment, text, tplOpen: tpl.length > 0 || fs.length > 0, jsxOpen: Boolean(jsx) && jsx.k !== 'expr', state: { q, tpl: tpl.length ? [...tpl] : NO_TEMPLATES, last, fs: fs.length ? fs.map((f) => ({ ...f })) : NO_TEMPLATES, fq, raw, jsx } });
+    out.push({ code, mark, startsIn, comment, text, tplOpen: tpl.length > 0 || fs.length > 0, jsxOpen: Boolean(jsx) && jsx.k !== 'expr', state: { q, tpl, last, fs, fq, raw, jsx } });
   }
   return out;
 }
