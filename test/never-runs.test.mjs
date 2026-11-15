@@ -40,6 +40,10 @@ test('a command that may run is read as before', () => {
     assert.ok(shellWrites(`${before}echo x > f`, CWD).files.includes('/r/f'), before);
   }
   assert.deepEqual(reads('true < m || cd a; readfirst read y.md'), [], 'the cd may have run: the read is in a folder not known');
+  // Review of 2def059: a command name not written out plainly may be an eval that redefines true.
+  for (const before of [`e=eval; $e "true() { return 1; }"; `, `\\eval 'true() { return 1; }'; `, `"eval" 'true() { return 1; }'; `, `e''val 'true() { return 1; }'; `]) {
+    assert.ok(!reads(`${before}true || cd a; readfirst read y.md`).includes('/r/y.md'), `not credited in the wrong folder: ${before}`);
+  }
   assert.deepEqual(reads('false && { x; }; readfirst read a.js'), ['/r/a.js'], 'after the block that never ran ends');
   assert.deepEqual(reads('false && { x; } || readfirst read a.js'), ['/r/a.js'], 'the || after a block skipped by false && runs');
 });

@@ -1459,7 +1459,10 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false, skip 
   let dead = null;
   // A command that runs eval, source, `.`, alias, enable or shopt anywhere can redefine a name where readfirst does not
   // see it (`eval 'true() { return 1; }'`, `enable -n exit`): no result in it is constant (review of 05c537f).
-  const aliased = /(?:^|[\s;&|({])(?:eval|source|\.|alias|enable|shopt)(?=[\s;&|)}]|$)/u.test(blank(shell));
+  // A command name not written out plainly (`$e`, `\eval`, `"eval"`, `e''val`) may be any of those: from there on no
+  // result is constant either (review of 2def059: `e=eval; $e "true() { return 1; }"; true || cd a; readfirst read y`
+  // credited y in the wrong folder).
+  let aliased = /(?:^|[\s;&|({])(?:eval|source|\.|alias|enable|shopt)(?=[\s;&|)}]|$)/u.test(blank(shell));
   const inSub = (list) => list.some((o) => o.sub);
   // `case W in a) cd /a;;` is one segment up to the first `;`: its head `case W in` opens the block, and the rest is
   // the first arm. Until 2026-11-13 the arm was not read: `a)` stood where the command name should be, so a cd in an
@@ -1638,6 +1641,7 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false, skip 
       // The name is the command's first word, or the word after a bare `command` or `builtin` (which run the builtin);
       // after NAME=value, env, exec or any other wrapper it is not read as constant (nor anywhere in a command that can
       // redefine names: `aliased`).
+      if (/[$`\\'"]/u.test(unwrap(opening(raw))[0] ?? '')) aliased = true;
       const ow = opening(raw).map(unquote);
       const k = /^(?:command|builtin)$/u.test(ow[0] ?? '') ? 1 : 0;
       const name = ow[k] ?? '';
