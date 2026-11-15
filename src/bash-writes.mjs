@@ -771,25 +771,32 @@ function withoutRedirects(ws) {
 // -0: `-lne` is -l, -n, -e); inPlace: -i (with any suffix after it) and --in-place edit in
 // place; long: long options with a value (--name=v or --name v) by the letter they stand for.
 const OPTIONS = {
-  sed: { next: 'efl', inPlace: true, long: { expression: 'e', file: 'f', 'line-length': 'l' } },
+  // names: every long option the tool has (GNU sed 4.9, coreutils 9.4, from --help), so that a unique prefix of one is
+  // read as it (`sed --in`, `sort --out=o`, `cp --t d`: GNU getopt_long takes any unique prefix), and one that starts
+  // more than one is `ambiguous` (the tool refuses the command). takes: the ones that need a value readfirst does not
+  // keep, so that value is not read as a file. A spec without names (perl, rsync, awk: not measured here) reads whole
+  // long names only.
+  sed: { next: 'efl', inPlace: true, long: { expression: 'e', file: 'f', 'line-length': 'l' }, names: ['debug', 'expression', 'file', 'follow-symlinks', 'help', 'in-place', 'line-length', 'null-data', 'posix', 'quiet', 'regexp-extended', 'sandbox', 'separate', 'silent', 'unbuffered', 'version'] },
   perl: { next: 'eE', attached: 'MmIxCdD', digits: 'l0', inPlace: true, long: {} },
-  tee: { next: '', long: {} },
-  truncate: { next: 'sr', long: { size: 's', reference: 'r' } },
-  cp: { next: 'tS', long: { 'target-directory': 't', suffix: 'S' } },
-  mv: { next: 'tS', long: { 'target-directory': 't', suffix: 'S' } },
-  install: { next: 'tSmog', long: { 'target-directory': 't', suffix: 'S', mode: 'm', owner: 'o', group: 'g' } },
+  tee: { next: '', long: {}, names: ['append', 'help', 'ignore-interrupts', 'output-error', 'version'] },
+  truncate: { next: 'sr', long: { size: 's', reference: 'r' }, names: ['help', 'io-blocks', 'no-create', 'reference', 'size', 'version'] },
+  cp: { next: 'tS', long: { 'target-directory': 't', suffix: 'S' }, takes: ['no-preserve', 'sparse'], names: ['archive', 'attributes-only', 'backup', 'context', 'copy-contents', 'debug', 'dereference', 'force', 'help', 'interactive', 'link', 'no-clobber', 'no-dereference', 'no-preserve', 'no-target-directory', 'one-file-system', 'parents', 'preserve', 'recursive', 'reflink', 'remove-destination', 'sparse', 'strip-trailing-slashes', 'suffix', 'symbolic-link', 'target-directory', 'update', 'verbose', 'version'] },
+  mv: { next: 'tS', long: { 'target-directory': 't', suffix: 'S' }, names: ['backup', 'context', 'debug', 'force', 'help', 'interactive', 'no-clobber', 'no-copy', 'no-target-directory', 'strip-trailing-slashes', 'suffix', 'target-directory', 'update', 'verbose', 'version'] },
+  install: { next: 'tSmog', long: { 'target-directory': 't', suffix: 'S', mode: 'm', owner: 'o', group: 'g' }, takes: ['strip-program'], names: ['backup', 'compare', 'context', 'debug', 'directory', 'group', 'help', 'mode', 'no-target-directory', 'owner', 'preserve-context', 'preserve-timestamps', 'strip', 'strip-program', 'suffix', 'target-directory', 'verbose', 'version'] },
   rsync: { next: 'eTf', long: { rsh: 'e', 'temp-dir': 'T', filter: 'f', exclude: 'x', include: 'x' } },
-  touch: { next: 'rdt', long: { reference: 'r', date: 'd' } },
-  rm: { next: '', long: {} },
-  unlink: { next: '', long: {} },
-  sort: { next: 'oSTkt', long: { output: 'o', 'buffer-size': 'S', 'temporary-directory': 'T', key: 'k', 'field-separator': 't', parallel: 'p', 'files0-from': 'F' } },
+  touch: { next: 'rdt', long: { reference: 'r', date: 'd' }, takes: ['time'], names: ['date', 'help', 'no-create', 'no-dereference', 'reference', 'time', 'version'] },
+  rm: { next: '', long: {}, names: ['dir', 'force', 'help', 'interactive', 'no-preserve-root', 'one-file-system', 'preserve-root', 'recursive', 'verbose', 'version'] },
+  unlink: { next: '', long: {}, names: ['help', 'version'] },
+  sort: { next: 'oSTkt', long: { output: 'o', 'buffer-size': 'S', 'temporary-directory': 'T', key: 'k', 'field-separator': 't', parallel: 'p', 'files0-from': 'F' }, takes: ['batch-size', 'compress-program', 'random-source', 'sort'], names: ['batch-size', 'buffer-size', 'check', 'compress-program', 'debug', 'dictionary-order', 'field-separator', 'files0-from', 'general-numeric-sort', 'help', 'human-numeric-sort', 'ignore-case', 'ignore-leading-blanks', 'ignore-nonprinting', 'key', 'merge', 'month-sort', 'numeric-sort', 'output', 'parallel', 'random-sort', 'random-source', 'reverse', 'sort', 'stable', 'temporary-directory', 'unique', 'version', 'version-sort', 'zero-terminated'] },
   awk: { next: 'fEvFWil', long: { file: 'f', exec: 'E', assign: 'v', 'field-separator': 'F', include: 'i', load: 'l' } },
 };
-// { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given }
+// { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given,
+// ambiguous: the long options written as a prefix of more than one of spec.names }
 function options(args, spec) {
   const files = [];
   const values = {};
   const put = (k, v) => { (values[k] ??= []).push(v ?? ''); };
+  const ambiguous = [];
   let inPlace = false;
   let ended = false;
   for (let i = 0; i < args.length; i++) {
@@ -798,9 +805,15 @@ function options(args, spec) {
     if (a === '--') { ended = true; continue; }
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
-      const name = a.slice(2, eq < 0 ? undefined : eq);
+      const given = a.slice(2, eq < 0 ? undefined : eq);
+      // A unique prefix of one of the tool's long names is that option, as GNU getopt_long reads it; one that starts
+      // several is refused by the tool (`ambiguous`), and what its value would be is not known.
+      const fits = spec.names && !spec.names.includes(given) ? spec.names.filter((n) => n.startsWith(given)) : [given];
+      if (fits.length > 1) { ambiguous.push(a); continue; }
+      const name = fits[0] ?? given;
       if (spec.inPlace && name === 'in-place') inPlace = true;
       else if (spec.long[name]) put(spec.long[name], eq < 0 ? args[++i] : a.slice(eq + 1));
+      else if (spec.takes?.includes(name) && eq < 0) i++;
       continue;
     }
     for (let j = 1; j < a.length; j++) {
@@ -811,7 +824,7 @@ function options(args, spec) {
       if (spec.digits?.includes(c)) { const d = a.slice(j + 1).match(/^[0-7]*/u)[0]; put(c, d); j += d.length; }
     }
   }
-  return { files, values, inPlace, script: Boolean(values.e || values.E || values.f) };
+  return { files, values, inPlace, script: Boolean(values.e || values.E || values.f), ambiguous };
 }
 
 // A word runs on through quotes, a $( ) (one level of parentheses inside it) and backticks: `sed -i ... $(grep -rl x src
@@ -2394,8 +2407,12 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const args = withoutRedirects(ws.slice(1)).map(dq);
     const files = args.filter((w) => !w.startsWith('-'));
     const o = OPTIONS[cmd] ? options(args, OPTIONS[cmd]) : null;
+    // A long option that starts more than one of the tool's (`cp --p`: --parents or --preserve): the tool refuses the
+    // command, and which option was meant, so what it would write, is not known (it was read as a file: `cp --p a d`
+    // named d).
+    if (o?.ambiguous.length) missing({ part: `${cmd} ${o.ambiguous[0]}`, word: `${cmd} ${o.ambiguous[0]}`, why: `${o.ambiguous[0]} starts more than one of ${cmd}'s long options, so ${cmd} refuses it and which was meant is not known`, prefix: '' });
     // sed and perl write only in place; the script is the first file argument unless -e/-f gave it.
-    if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
+    else if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
     else if (cmd === 'tee' || cmd === 'truncate') o.files.forEach(add);
     // patch: the file named first, or, with none (`patch -p1 < fix.diff`, missed until 2026-11-14), the files the
     // patch it reads names.
