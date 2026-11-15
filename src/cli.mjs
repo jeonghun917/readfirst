@@ -91,6 +91,29 @@ Options: --root <dir>, --json, --limit <n>, --timeout <s> (verify, per check; de
 // error: an unknown option used to take the next word as its value, so `hook --new-flag --stop` quietly ran the wrong hook.
 const FLAGS = { json: 'json', force: 'force', agent: 'agent', install: 'install', 'dry-run': 'dryRun', record: 'record', cursor: 'cursor', check: 'check', strict: 'strict', verify: 'verify', git: 'git', ci: 'ci', stop: 'stop', gate: 'gate', report: 'report', help: 'help', version: 'version' };
 const VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
+// The options each command reads (by their key in args), besides --root, --help and --version, which every command
+// takes. parse() takes every option for every command, so one a command did not read did nothing with no word: `fix
+// --dry-run` wrote the map (2026-11-14). main() refuses an option the command does not read, naming it. The plain
+// `hook` is not checked here: a hook never fails on its own arguments (letThrough).
+const COMMAND_OPTIONS = {
+  hook: ['install', 'verify'],
+  mcp: [],
+  answer: [],
+  init: ['force', 'agent', 'for', 'ci'],
+  prompt: ['labels'],
+  view: ['out'],
+  pending: ['json'],
+  check: ['strict', 'json'],
+  setup: ['git', 'for'],
+  fix: ['json', 'dryRun'],
+  find: ['limit', 'json'],
+  export: ['cursor', 'check'],
+  scan: ['json'],
+  audit: ['json'],
+  read: ['base', 'json', 'limit', 'lang'],
+  diff: ['base', 'json', 'limit', 'lang'],
+  verify: ['base', 'dryRun', 'json', 'timeout', 'record'],
+};
 export function parse(argv) {
   const args = { _: [], json: false };
   for (let i = 0; i < argv.length; i++) {
@@ -1780,6 +1803,13 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
   const [cmd, ...rest] = args._;
   if (args.version) { io.out(`${VERSION()}\n`); return 0; }
   if (args.help || !cmd) { io.out(`${HELP}\n`); return cmd || args.help ? 0 : 2; }
+  // An option the command does not read is refused by its name (COMMAND_OPTIONS), never ignored.
+  const takes = cmd === 'hook' && !args.install ? null : COMMAND_OPTIONS[cmd];
+  if (takes) {
+    const nameOf = Object.fromEntries(Object.entries(FLAGS).map(([n, k]) => [k, n]));
+    const extra = Object.keys(args).filter((k) => k !== '_' && k !== 'root' && args[k] !== false && args[k] !== undefined && !takes.includes(k));
+    if (extra.length) throw new Error(`${extra.map((k) => `--${nameOf[k] ?? k}`).join(', ')} does nothing for readfirst ${cmd}${takes.length ? ` (it takes ${takes.map((k) => `--${nameOf[k] ?? k}`).join(', ')})` : ''}`);
+  }
   if (cmd === 'hook' && !args.install) {
     try {
       // --timeout (seconds per check) reaches the Stop hook too: it was accepted and ignored until 0.29.0, so a check
@@ -1897,7 +1927,8 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
     // Evidence lines outside what their item names (2026-11-10): the line judges the item against a change, so
     // one the code moved away from judges by the wrong code. Listed, failed with --strict; `fix` moves those git traces.
     const { drift, unanchored } = evidenceDrift(map, { files, read, history: evidenceHistory(root) });
-    const driftLine = (d) => `${d.where}: ${d.ref} is outside ${d.names.map((n, i) => `\`${n}\` (line ${d.lines[i]})`).join(', ')}${d.now ? `: it moved to ${d.path}:${d.now}, \`readfirst fix\` writes that` : ': git does not show it moving there, so check it by hand (wrong from the start, or pointing elsewhere on purpose)'}`;
+    // A line still inside one declaration the item names, written for another (`inside`), is said as that.
+    const driftLine = (d) => (d.inside ? `${d.where}: ${d.ref} is in \`${d.inside}\`, but the line it was written for moved with \`${d.movedWith}\` to ${d.path}:${d.now}, \`readfirst fix\` writes that` : `${d.where}: ${d.ref} is outside ${d.names.map((n, i) => `\`${n}\` (line ${d.lines[i]})`).join(', ')}${d.now ? `: it moved to ${d.path}:${d.now} with \`${d.movedWith}\`, \`readfirst fix\` writes that` : ': git does not show it moving there, so check it by hand (wrong from the start, or pointing elsewhere on purpose)'}`);
     const problems = [...settledMap.problems, ...pinProblems(map, pinnedReadfirst(new Map(pinFiles(files).map((f) => [f, read(f)])))), ...(args.strict ? [...about, ...drift.map(driftLine)] : [])];
     if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, problems, settled, unshown, drift, unanchored }, null, 2)}\n`);
     else {
@@ -1955,12 +1986,13 @@ export function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) 
       const key = gid !== undefined ? 'text' : 'rule';
       if (!item || typeof item[key] !== 'string') continue;
       item[key] = moveEvidence(item[key], d.ref, d.path, d.now);
-      changes.push(`${d.where}: ${d.ref} -> ${d.path}:${d.now} (\`${d.names[0]}\` moved)`);
+      changes.push(`${d.where}: ${d.ref} -> ${d.path}:${d.now} (\`${d.movedWith}\` moved)`);
     }
-    if (changes.length) { mustBeInside(root, MAP_PATH); writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`); }
-    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, changes, problems }, null, 2)}\n`);
+    // --dry-run: what fix would change, and nothing written (until 2026-11-14 it was taken and ignored: the map was written).
+    if (changes.length && !args.dryRun) { mustBeInside(root, MAP_PATH); writeFileSync(join(root, MAP_PATH), `${JSON.stringify(map, null, 2)}\n`); }
+    if (args.json) io.out(`${JSON.stringify({ ok: !problems.length, changes, problems, ...(args.dryRun ? { dryRun: true } : {}) }, null, 2)}\n`);
     else {
-      io.out(changes.length ? `updated ${MAP_PATH}:\n- ${changes.join('\n- ')}\n` : 'nothing to fix automatically.\n');
+      io.out(changes.length ? `${args.dryRun ? 'would update' : 'updated'} ${MAP_PATH}:\n- ${changes.join('\n- ')}\n` : 'nothing to fix automatically.\n');
       io.out(problems.length ? `still to fix by hand:\n- ${problems.join('\n- ')}\n` : `${MAP_PATH} is good: ${files.length} files.\n`);
     }
     return problems.length ? 1 : 0;
