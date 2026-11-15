@@ -15,6 +15,8 @@ const CODE_WRITES = /\bopen\([^)]*,\s*['"][wax]|\.write_text\(|\.write_bytes\(|w
 const PATHISH = /(?:\.{0,2}\/)?[\w@.-]+(?:\/[\w@.-]+)*\.[A-Za-z0-9]{1,6}\b/gu;
 const RUNNER = /^(?:python3?|node|ruby|perl|bash|sh|zsh|deno|bun)$/u;
 const SHELLS = /^(?:bash|sh|zsh|dash|ksh)$/u;
+// The variable a `{}` of find -exec stands for while its command is read (findRun): a name no command sets.
+const FOUND = '__readfirst_found_file';
 const AWKS = /^(?:awk|gawk|mawk|nawk)$/u;
 // The script file a shell runs, from its arguments (dq'd, without -c): the first word after its options and their
 // values (-o/-O/+o/+O NAME, --rcfile/--init-file FILE), or after `--`. None when it reads its commands from stdin (-s,
@@ -1045,8 +1047,13 @@ const segmentsAndOps = (shell) => {
   // No \s* before the separator: a blanked quote is all spaces and would be taken with it.
   // `>|` is a redirect, not a pipe; `|&` pipes stderr too and is one operator (2026-11-09).
   // A single & ends a command too (`cmd & sed -i x f` once read sed as cmd's arguments, so its write was not seen,
-  // 2026-11-13); the & of &&, >&2, 2>&1, &>, <& and an escaped \& does not.
-  for (const m of blank(shell).matchAll(/&&|\|\||;|(?<!>)\|&?|(?<![>&<\\])&(?![&>])|\n/gu)) { out.push({ text: shell.slice(at, m.index).trim(), op: m[0] }); at = m.index + m[0].length; }
+  // 2026-11-13); the & of &&, >&2, 2>&1, &>, <& does not. A character a backslash escapes (outside quotes, which
+  // blank takes out) is no operator: `\;`, `\|` and `\&` are words. `find . -exec echo {} \; -exec cp a b \;` was two
+  // commands, the second `-exec cp a b`, and `echo a \; cp x y` named y, until 2026-11-14 (only \& was kept, by a
+  // lookbehind that also kept the & after an escaped backslash, `\\&`).
+  const b = blank(shell).split('');
+  for (let i = 0; i < b.length; i++) if (b[i] === '\\') { if (i + 1 < b.length && b[i + 1] !== '\n') b[i + 1] = ' '; i++; }
+  for (const m of b.join('').matchAll(/&&|\|\||;|(?<!>)\|&?|(?<![>&<])&(?![&>])|\n/gu)) { out.push({ text: shell.slice(at, m.index).trim(), op: m[0] }); at = m.index + m[0].length; }
   out.push({ text: shell.slice(at).trim(), op: '' });
   return out;
 };
@@ -1863,6 +1870,56 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
     missing({ part, word: part, why: `${part} writes ${what}, as the packages it installs make it`, prefix: under, moves: true });
   };
+  // find (raw: its words after the name as written, without redirects; args: the same as dq gives them). The command
+  // after each -exec, -execdir, -ok or -okdir, up to its `;` (or a `+` after `{}`), runs for each file find finds:
+  // it is read as commands, by a program, so with the exported variables only, once for each folder find starts from
+  // (the words before its first test or action; `.` with none). Each `{}` is a file under that folder, known only
+  // when it runs (`FOUND`, whose why names it), so a write to it is not known, under that folder. -execdir and
+  // -okdir run the command in the found file's own folder, below the start: a relative path there is not known,
+  // under the start. -fprint, -fprint0, -fprintf and -fls write the file after them. Until 2026-11-14 find's
+  // commands were not read: `find . -name '*.md' -exec sed -i s/a/b/ {} \;` wrote and nothing was said.
+  const findRun = (raw, args) => {
+    // -H, -L, -P, -O<n> and -D <list> come before the starts (`find -L /x -exec …`: the start was taken to be `.`,
+    // review of #223).
+    let lead = 0;
+    while (lead < args.length && /^-(?:[HLP]|O\d*|D)$/u.test(args[lead])) lead += args[lead] === '-D' ? 2 : 1;
+    // A `--` after them ends the options (`find -L -- /x -exec …`, review of edb0e8f).
+    if (args[lead] === '--') lead++;
+    let first = args.findIndex((w, k) => k >= lead && /^[-(!),]/u.test(w) && w !== '-');
+    if (first < 0) first = args.length;
+    const roots = first > lead ? raw.slice(lead, first) : ['.'];
+    // A start that is a file is the one file find finds there: `{}` is that path (`find z.md -exec cp {} {}.f \;`
+    // writes z.md.f, review of #223).
+    const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };
+    const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
+    for (let i = first; i < args.length; i++) {
+      if (/^-(?:fprint0?|fls|fprintf)$/u.test(args[i])) { if (args[i + 1] !== undefined) add(args[i + 1]); i += args[i] === '-fprintf' ? 2 : 1; continue; }
+      if (!/^-(?:exec|execdir|ok|okdir)$/u.test(args[i])) continue;
+      let j = i + 1;
+      while (j < args.length && args[j] !== ';' && !(args[j] === '+' && args[j - 1] === '{}')) j++;
+      const inDir = /dir$/u.test(args[i]);
+      for (const root of roots) {
+        const rootText = dq(root);
+        // A start known only when the command runs is written as it was (`$D`): what it holds stays not known.
+        const startAt = rootText.includes(HOLE) || state.base == null ? null : resolve(state.base, rootText);
+        const one = startAt != null && isFile(startAt);
+        const at = rootText.includes(HOLE) ? `${root}/` : quote(`${rootText.replace(/\/+$/u, '')}/`);
+        const each = one ? quote(inDir ? `./${rootText.split('/').pop()}` : rootText) : inDir ? `'./'"$${FOUND}"` : `${at}"$${FOUND}"`;
+        const text = args.slice(i + 1, j).map((w, k) => (w.includes(HOLE) ? raw[i + 1 + k] : w.split('{}').map(quote).join(each))).join(' ');
+        const vars = exportedOnly(state.vars);
+        vars.set(FOUND, { value: null, why: `${args[i]} runs it for each file find finds, known only when it runs`, part: '{}', exported: true });
+        const r = inDir && one
+          ? shellWrites(text, dirname(startAt), { vars, why: state.why })
+          : inDir
+            ? shellWrites(text, null, { vars, why: { part: `find ${args[i]}`, why: `${args[i]} runs it in the folder of each file find finds, known only when it runs`, prefix: startAt ? `${startAt.replace(/\/$/u, '')}/` : '' } })
+            : shellWrites(text, state.base, { vars, why: state.why });
+        r.files.forEach((f) => found.add(f));
+        r.unknown.forEach(missing);
+        r.repos.forEach((x) => repos.add(x));
+      }
+      i = j;
+    }
+  };
   // awk (args: its words after the name, as dq gives them; options read by options() with OPTIONS.awk): the program
   // is the first word that is no option, or the text of each -f / --file / -E file (one not there runs nothing and is
   // quiet; one whose path is known only when the command runs is not known). What it writes and runs is read from the
@@ -2110,6 +2167,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       else if (piped) missing({ part: `| ${cmd}`, word: cmd, why: `${cmd} runs the commands the command before it prints, and readfirst does not read them`, prefix: '' });
     }
     // A path in the command's place runs that file (`./build.sh`, `exec ./build.sh`): a script, as `bash x.sh` does.
+    else if (cmd === 'find') findRun(withoutRedirects(ws.slice(1)), args);
     else if (AWKS.test(cmd)) awkRun(cmd, args);
     else if (dq(ws[0] ?? '').includes('/')) runFile(dq(ws[0]), 'the command', { part: dq(ws[0]).replaceAll(HOLE, ''), script: true });
     else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e') && CODE_WRITES.test(segment)) {
