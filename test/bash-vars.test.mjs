@@ -87,9 +87,11 @@ test('variables from the environment, mktemp, $OLDPWD and the checkouts a comman
   assert.deepEqual(s('F=$(mktemp -p /q); echo > $F').unknown.map((u) => [u.prefix, u.fresh]), [['/q/', true]]);
   assert.deepEqual(s('F=$(mktemp x.XXX); echo > $F').unknown.map((u) => [u.prefix, u.fresh]), [['/r/', true]], 'a template with no folder: where the command is');
   assert.deepEqual(s('cd /a && cd /b && echo > $OLDPWD/f').files, ['/a/f']);
-  assert.deepEqual(s('for r in $L; do echo > /s/w-$r/f; done').unknown.map((u) => [u.prefix, u.fresh]), [['/s', undefined]], 'a loop variable: not new');
+  // A prefix ends in one / however the part not known sits in the name (until 2026-11-15 these two gave `/s`, and `/s/$r`
+  // gave `/s/`).
+  assert.deepEqual(s('for r in $L; do echo > /s/w-$r/f; done').unknown.map((u) => [u.prefix, u.fresh]), [['/s/', undefined]], 'a loop variable: not new');
   // Not known only inside a file's name: the file is in that folder. A whole part may hold a /: it could be below.
-  assert.deepEqual(s('echo > /s/out-$k.txt').unknown.map((u) => [u.prefix, u.direct]), [['/s', true]]);
+  assert.deepEqual(s('echo > /s/out-$k.txt').unknown.map((u) => [u.prefix, u.direct]), [['/s/', true]]);
   assert.deepEqual(s('echo > /s/$r').unknown.map((u) => [u.prefix, u.direct]), [['/s/', undefined]]);
   assert.deepEqual(s('S=/s && git worktree add $S/w-x main && git clone u /c/d && git -C /a init sub').repos, ['/s/w-x', '/c/d', '/a/sub']);
   // git -C with an absolute folder runs there (it was joined under the command's folder: /r/s/w/f.js).
