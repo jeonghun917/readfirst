@@ -18,9 +18,9 @@ test('bashWrites: option values and < redirects are not files written', () => {
   const w = (c) => bashWrites(c, '/r');
   assert.deepEqual(w('truncate -s 0 f.log'), ['/r/f.log']);
   assert.deepEqual(w('tee -a log.txt < x'), ['/r/log.txt']);
-  assert.deepEqual(w('cp -t dest src.txt'), ['/r/dest']);
-  assert.deepEqual(w('cp --target-directory=out a.txt b.txt'), ['/r/out']);
-  assert.deepEqual(w('mv -t /tmp/d a.txt'), ['/r/a.txt', '/tmp/d'], 'mv takes a.txt away');
+  assert.deepEqual(w('cp -t dest src.txt'), ['/r/dest/src.txt']);
+  assert.deepEqual(w('cp --target-directory=out a.txt b.txt'), ['/r/out/a.txt', '/r/out/b.txt']);
+  assert.deepEqual(w('mv -t /tmp/d a.txt'), ['/r/a.txt', '/tmp/d/a.txt'], 'mv takes a.txt away');
   assert.deepEqual(w(`sed -i -e 's/a/b/' -e 's/c/d/' f.txt`), ['/r/f.txt']);
   assert.deepEqual(w(`sed -i -f fix.sed f.txt`), ['/r/f.txt']);
 });

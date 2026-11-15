@@ -18,7 +18,13 @@ test('shellWrites gives the files a command writes only by removing or moving th
   assert.deepEqual(r('rm a b; unlink c'), ['a', 'b', 'c']);
   assert.deepEqual(r('git mv a b'), ['a', 'b']);
   assert.deepEqual(r('mv a d/b'), ['a', 'd/b']);
-  assert.deepEqual(r('mv -t d a'), ['a', 'd']);
+  assert.deepEqual(r('mv -t d a'), ['a', 'd/a']);
+  // Into a folder there, what lands in it (test/bash-folder-destination.test.mjs) is a move's write too; a copy's is not.
+  mkdirSync(join(at, 'd'));
+  assert.deepEqual(r('mv a d'), ['a', 'd/a']);
+  assert.deepEqual(r('mv a b d/'), ['a', 'b', 'd/a', 'd/b']);
+  assert.deepEqual(r('git mv a d'), ['a', 'd/a']);
+  assert.deepEqual(r('cp a d'), []);
   writeFileSync(join(at, 'b'), 'x\n');
   assert.deepEqual(shellWrites('mv -b a b', at).files.map((f) => f.slice(at.length + 1)).sort(), ['a', 'b', 'b~']);
   assert.deepEqual(r('mv -b a b'), ['a', 'b']);

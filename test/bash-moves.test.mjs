@@ -49,9 +49,9 @@ const agrees = (scripts) => {
 
 test('mv names the files it takes away as well as where they go, and bash agrees', { skip: !hasTools && 'bash, GNU cp, sed or perl is not installed' }, () => {
   agrees(['mv a.txt n.txt', 'mv a.txt b.txt', 'mv -f a.txt b.txt', 'mv -t d b.txt', 'mv --target-directory=d b.txt', 'mv --target-directory d b.txt', 'mv b.txt -- -a.txt']);
-  // Into a folder: the folder is named, as before, not what lands in it.
+  // Into a folder: what lands in it (test/bash-folder-destination.test.mjs).
   const dir = setUp();
-  assert.deepEqual(named('mv a.txt b.txt d', dir), ['a.txt', 'b.txt', 'd']);
+  assert.deepEqual(named('mv a.txt b.txt d', dir), ['a.txt', 'b.txt', 'd/a.txt', 'd/b.txt']);
   assert.deepEqual(named('cp a.txt n.txt', dir), ['n.txt'], 'cp takes nothing away');
 });
 
@@ -61,7 +61,7 @@ test('a name after -- that starts with a - is written, and bash agrees', { skip:
   assert.deepEqual(s('git rm -q -- -a.txt'), ['/r/-a.txt']);
   assert.deepEqual(s('git -C x rm -- -a.txt'), ['/r/x/-a.txt']);
   assert.deepEqual(s('git checkout -- -a.txt'), ['/r/-a.txt']);
-  assert.deepEqual(s('cp -t -d a.txt'), ['/r/-d'], 'an option value');
+  assert.deepEqual(s('cp -t -d a.txt'), ['/r/-d/a.txt'], 'an option value');
   // The look-alikes: an option before `--`, and a lone - (stdin or stdout).
   assert.deepEqual(s('rm -f a.txt'), ['/r/a.txt']);
   assert.deepEqual(s('echo x | tee -'), []);

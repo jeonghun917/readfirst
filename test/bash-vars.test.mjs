@@ -249,7 +249,7 @@ test('values changed where the reader cannot follow are not known: $( ) split at
   assert.deepEqual(s('E=/s/eval && echo x > $E/out.txt'), ['/s/eval/out.txt']);
   assert.deepEqual(s('S=/a; F=/x/source; echo x > $S/f'), ['/a/f']);
   // A here-document inside a loop: the loop it is read in does not stay open for the rest of the command.
-  assert.deepEqual(s("E=/s && for m in a b; do cp x $E/mut/ && python3 - <<'EOF'\nprint(1)\nEOF\ndone"), ['/s/mut/']);
+  assert.deepEqual(s("E=/s && for m in a b; do cp x $E/mut/ && python3 - <<'EOF'\nprint(1)\nEOF\ndone"), ['/s/mut/x']);
   // C: export keeps its mark when the value is set later or again.
   assert.deepEqual(s("export S; S=/a; bash -c 'echo x > $S/f'"), ['/a/f']);
   assert.deepEqual(s("export S=/a; S=/b; bash -c 'echo x > $S/f'"), ['/b/f']);
@@ -330,7 +330,7 @@ test('blocks, && lists, loops, cd -, pushd and popd: a value is known exactly wh
   assert.deepEqual(s('for r in a "b c"; do for k in 1 2; do echo > /t/$r-$k; done; done'), ['/t/a-1', '/t/a-2', '/t/b c-1', '/t/b c-2']);
   assert.deepEqual(s('for r in a b; do echo; done; echo > /t/$r'), ['$r'], 'after the loop');
   // A file in a checkout the command makes is not there yet: listed in that checkout.
-  assert.deepEqual(shellWrites('git worktree add /s/w main && cp t.js /s/w/test/', '/r').unknown.map((u) => [u.word, u.prefix]), [['/s/w/test/', '/s/w/']]);
+  assert.deepEqual(shellWrites('git worktree add /s/w main && cp t.js /s/w/test/', '/r').unknown.map((u) => [u.word, u.prefix]), [['/s/w/test/t.js', '/s/w/']]);
   // within: a part not known inside one folder name.
   assert.deepEqual(shellWrites('echo x > /t/zz-$R/f.txt', '/r').unknown.map((u) => u.within), [{ dir: '/t/', pre: 'zz-', post: '' }]);
   assert.deepEqual(shellWrites('echo x > /t/$A/$B/f.txt', '/r').unknown.map((u) => u.within), [undefined], 'more than one folder name');
