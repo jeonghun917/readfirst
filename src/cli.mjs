@@ -753,12 +753,30 @@ const repoIdOf = (dir) => { try { return realpathSync(resolve(dir, git(dir, 'rev
 // Whether a find of this session asked about `name` under any of `keys` (the repository's id, and its top level, which
 // older state files used). A name whose words find all drops counts when a find asked one of them as written.
 function findAsked(seen, keys, name) {
-  const mine = words(name);
-  const plain = mine.length ? [] : plainWords(name);
   return keys.some((key) => {
     const prefix = `findwords:${key}:`;
-    return Object.keys(seen).some((k) => k.startsWith(prefix) && k.slice(prefix.length).split(' ').some((q) => (q.startsWith('=') ? plain.includes(q.slice(1)) : mine.some((w) => meets(q, w)))));
+    return Object.keys(seen).some((k) => k.startsWith(prefix) && asksAbout(k.slice(prefix.length), name));
   });
+}
+// Whether the words a find asked (askedWords, space-separated) ask about `name`.
+function asksAbout(asked, name) {
+  const mine = words(name);
+  const plain = mine.length ? [] : plainWords(name);
+  return asked.split(' ').some((q) => (q.startsWith('=') ? plain.includes(q.slice(1)) : mine.some((w) => meets(q, w))));
+}
+// The folders where a find of this session asked about `name`, for a name no find of its own repository asked about
+// (findAsked): another repository (`findwords:<its id>:`, shown as the folder its .git is in) or a folder in no
+// repository (`findat:<folder>:`). Such a find searched other files, so it does not count for the name; the refusal
+// says where it ran, so the agent runs it here instead of being told no find asked (2026-11-15: a find run from a
+// scratch folder was refused as if none had).
+function findsElsewhere(seen, name) {
+  const out = new Set();
+  for (const k of Object.keys(seen)) {
+    const m = /^(findwords|findat):(.+):([^:]*)$/su.exec(k);
+    if (!m || !asksAbout(m[3], name)) continue;
+    out.add(m[1] === 'findwords' && basename(m[2]) === '.git' ? dirname(m[2]) : m[2]);
+  }
+  return [...out];
 }
 // Only names another file could use count (2026-11-14: a const local to a function, an inner function and a test's own
 // helper were asked about too): what definitions reads as reusable (the file's top level, a class's member, an export),
@@ -833,11 +851,15 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const resentNow = Boolean(prev && prev[0] === `call:${sig}` && seen[`denied:${sig}`] === prev[1]);
     const markResent = () => { if (resentNow) seen[`resent:${sig}:${now}`] = now; };
     seen[`call:${sig}`] = now;
-    // Each find is marked in the repository it runs in, and only when it asked something.
+    // Each find is marked in the repository it runs in, and only when it asked something. One run in a folder in no
+    // repository is kept as `findat:<folder>:<words>`, which counts for nothing: the refusal names it (findsElsewhere).
     for (const { query, at } of tool === 'Bash' ? findQueries(event.tool_input?.command, cwd) : []) {
       const id = repoIdOf(at);
       const asked = askedWords(query);
-      if (id && asked.length) { seen[`find:${id}`] = now; seen[`findwords:${id}:${asked.join(' ')}`] = now; }
+      if (!asked.length) continue;
+      if (id) { seen[`find:${id}`] = now; seen[`findwords:${id}:${asked.join(' ')}`] = now; }
+      // A folder that is not there searched nothing (`--root /gone`): find failed, and it asked nothing anywhere.
+      else if (existsSync(at)) seen[`findat:${physical(at)}:${asked.join(' ')}`] = now;
     }
     // `readfirst read` run in Bash shows the same notes the hook would (2026-11-13: the gate did not count it, so a
     // file read that way was refused all the same). It counts for the branch it ran on, and only when its whole
@@ -934,7 +956,16 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const askedAt = before[askKey];
     const fresh = open.filter((f) => !(askedAt && marksOf(f.root).some((k) => seen[`find:${k}`] > askedAt)));
     const askFind = fresh.length > 0 && !askedAt;
-    const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}. Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
+    // A find that asked about a name somewhere else is said with where it ran (findsElsewhere), else the agent is told
+    // no find asked when one did.
+    const elsewhere = fresh.flatMap((f) => {
+      const by = f.names.map((n) => [n, findsElsewhere(seen, n)]).filter(([, at]) => at.length);
+      return by.length ? [{ root: f.root, names: by.map(([n]) => n), at: [...new Set(by.flatMap(([, at]) => at))] }] : [];
+    });
+    // cut: three folders named, the rest counted (each is a find of this session that asked a word of the name)
+    const places = (at) => (at.length === 1 ? `in ${at[0]}, which is` : `in ${at.length > 3 ? `${at.slice(0, 3).join(', ')} and ${at.length - 3} more` : `${at.slice(0, -1).join(', ')} and ${at.at(-1)}`}, which are`);
+    const elsewhereLine = elsewhere.map((e) => ` A \`readfirst find\` of this session asked about ${e.names.map((n) => `\`${n}\``).join(', ')} ${places(e.at)} not this repository (${e.root}), so it searched other files: run it here, or with \`--root ${e.root}\`.`).join('');
+    const findLine = fresh.length ? `readfirst: this adds ${fresh.map((f) => `${f.names.map((n) => `\`${n}\``).join(', ')} to ${relative(f.root, f.abs)}`).join('; ')}, and no \`readfirst find\` in this session asked about ${fresh.flatMap((f) => f.names).length === 1 ? 'it' : 'them'}${elsewhere.length ? ' in this repository' : ''}.${elsewhereLine} Run \`npx readfirst find "<what it does>"\` first and reuse what already exists${gate && askFind ? ', then make the same call again' : ''}.` : null;
     if (fresh.length) seen[gate && askFind ? askKey : `nofindwrite:${sig}`] = now;
     // Files it had no time for refuse the call once: made again at once it goes through, the files named and still
     // marked for the stop. Until 2026-11-14 it was refused each time the lookup ran out of time again, so in a
@@ -1275,8 +1306,8 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|findat|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|findat|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { bashWrites, codeTargets } from '../src/bash-writes.mjs';
+import { bashWrites, codeTargets, shellWrites } from '../src/bash-writes.mjs';
 
 test('bashWrites: where a command writes, not every file it names', () => {
   const w = (c) => bashWrites(c, '/r');
@@ -50,8 +50,11 @@ test('bashWrites: a file the script names and does not write stays out, even whe
   for (const f of ['HANDOFF.md', 'src/read.mjs']) writeFileSync(join(dir, f), '');
   const got = bashWrites(`python3 - <<'E'\np='HANDOFF.md'; s=open(p).read() + open('src/read.mjs').read()\nopen(p,'w').write(s)\nE`, dir);
   assert.deepEqual(got, [join(dir, 'HANDOFF.md')]);
-  // A target built at run time cannot be named: the files it names that exist stand in for it.
-  assert.deepEqual(bashWrites(`python3 - <<'E'\np=root + 'src/read.mjs'\nopen(p,'w').write('')\nE`, dir), [join(dir, 'src/read.mjs')]);
+  // A target built at run time cannot be named, and is not known. Until 2026-11-15 the files the code names that exist
+  // stood in for it (here src/read.mjs); in this session's transcript that fallback named a file the code only imported
+  // and was silent on writes beside a named path, right in 1 command of the 4 where it made a difference.
+  const built = shellWrites(`python3 - <<'E'\np=root + 'src/read.mjs'\nopen(p,'w').write('')\nE`, dir);
+  assert.deepEqual([built.files, built.unknown.map((u) => u.part)], [[], ['python3 <<']]);
 });
 
 // 2026-11-08: `cd /home/user/readfirst-cloud && python3 - <<E` writing .github/workflows/ci.yml showed readfirst's notes.

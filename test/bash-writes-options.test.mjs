@@ -8,7 +8,7 @@ test('bashWrites: perl -M<module> and -I<dir> are not in-place edits', () => {
   assert.deepEqual(w(`perl -Mstrict -ne 'print if /x/' f.txt`), []);
   assert.deepEqual(w(`perl -MFile::Basename -e 'print basename($ARGV[0])' f.txt`), []);
   assert.deepEqual(w(`perl -Ilib -ne 'print' f.txt`), []);
-  assert.deepEqual(w(`perl -i.bak -pe 's/a/b/' f.txt`), ['/r/f.txt'], '-i<suffix> still is');
+  assert.deepEqual(w(`perl -i.bak -pe 's/a/b/' f.txt`), ['/r/f.txt', '/r/f.txt.bak'], '-i<suffix> still is, and keeps f.txt.bak');
   assert.deepEqual(w(`perl -pi -e 's/a/b/' f.txt`), ['/r/f.txt']);
   assert.deepEqual(w(`sed --in-place 's/a/b/' f.txt`), ['/r/f.txt']);
   assert.deepEqual(w(`sed -Ei 's/a/b/' f.txt`), ['/r/f.txt'], 'a cluster of flag letters ending in i');
@@ -20,7 +20,7 @@ test('bashWrites: option values and < redirects are not files written', () => {
   assert.deepEqual(w('tee -a log.txt < x'), ['/r/log.txt']);
   assert.deepEqual(w('cp -t dest src.txt'), ['/r/dest']);
   assert.deepEqual(w('cp --target-directory=out a.txt b.txt'), ['/r/out']);
-  assert.deepEqual(w('mv -t /tmp/d a.txt'), ['/tmp/d']);
+  assert.deepEqual(w('mv -t /tmp/d a.txt'), ['/r/a.txt', '/tmp/d'], 'mv takes a.txt away');
   assert.deepEqual(w(`sed -i -e 's/a/b/' -e 's/c/d/' f.txt`), ['/r/f.txt']);
   assert.deepEqual(w(`sed -i -f fix.sed f.txt`), ['/r/f.txt']);
 });
