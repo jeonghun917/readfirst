@@ -94,3 +94,28 @@ test('an escaped ; | or & is a word, not an operator', () => {
   assert.deepEqual(shellWrites('echo a \\\\; cp x y', '/r').files, ['/r/y'], 'an escaped backslash, then a ;');
   assert.deepEqual(shellWrites('echo \\\\& cp x y', '/r').files, ['/r/y'], 'an escaped backslash, then a &');
 });
+
+// What a find command gives is shown as it was written: each `{}` reads `{}` again, never the variable findRun stands
+// it with (`node ./$__readfirst_found_file` was the part of `find . -exec node {} \;`, review of #222), in every
+// field of every not-known part, for each runner, -exec and -execdir, a start known only when it runs, and a `{}`
+// inside a word or a -c string.
+test('a `{}` is shown as `{}` in what find gives, never as the name readfirst stands it with', () => {
+  const dir = setUp();
+  writeFileSync(join(dir, 's.mjs'), "import fs from 'node:fs';\nfs.writeFileSync('fromscript', 'x');\n");
+  const B = String.fromCharCode(92);
+  const cases = {
+    [`find . -name s.mjs -exec node {} ${B};`]: ['node {} | {}'],
+    [`find $D -exec python3 {} +`]: ['python3 {} | {}'],
+    // mv takes its source away as well as writing its destination (#239: `mv a.txt b.txt` names both), so each found
+    // file is given twice, as `{}` and as `{}.bak`; bash leaves only the .bak files.
+    [`find . -exec mv {} {}.bak ${B};`]: ['{} | {}', '{} | {}.bak'],
+    [`find d -exec cp x {}/k ${B};`]: ['{} | {}/k'],
+    [`find . -execdir sh -c "echo > {}" ${B};`]: ['{} | sh -c echo > {}'],
+    [`find . -exec source {} ${B};`]: ['source {} | {}'],
+  };
+  for (const [command, parts] of Object.entries(cases)) {
+    const r = shellWrites(command, dir);
+    assert.deepEqual(r.unknown.map((u) => `${u.part} | ${u.word}`), parts, command);
+    for (const u of r.unknown) for (const [k, v] of Object.entries(u)) if (typeof v === 'string') assert.ok(!v.includes('__readfirst') && !v.includes(String.fromCharCode(0)), `${command}: ${k} = ${v}`);
+  }
+});

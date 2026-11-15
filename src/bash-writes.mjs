@@ -9,7 +9,7 @@
 // A here-document fed to cat or tee is data; only where it goes counts. `cd dir &&` moves where relative paths start.
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { lex } from './code.mjs';
 import { scopes } from './scopes.mjs';
 
@@ -368,9 +368,20 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
     const found = id ? [...assigned(id), ...passed(id)] : [];
     if (found.length) found.forEach((p) => out.add(p)); else unresolved = true;
   }
+  // A target holding a part the shell left not known (\0s: `$X`, find's `{}`) is kept, so add() gives it as not known;
+  // one holding `${ }` or `{ }` is a template or an f-string, known only when the code runs. Both were dropped with no
+  // word until 2026-11-15 (`python3 -c "open('$X','w')"` was silent), and so was a literal holding a plain `$`, which
+  // is that text (`open('$E/x', 'w')` in code the shell does not expand).
+  const kept = [];
+  for (const p of out) {
+    if (!p) continue;
+    if (p.includes(HOLE)) kept.push(p);
+    else if (/\{[^}]*\}/u.test(p)) unresolved = true;
+    else kept.push(p);
+  }
   if (unresolved) onUnresolved?.();
-  if (unresolved && fallback) for (const w of code.match(PATHISH) ?? []) if (exists(w)) out.add(w);
-  return [...out].filter((p) => p && !p.includes('$') && !p.includes('{'));
+  if (unresolved && fallback) for (const w of code.match(PATHISH) ?? []) if (exists(w)) kept.push(w);
+  return [...new Set(kept)];
 }
 
 // A script's text with each write into a temporary folder taken out (its call name made spaces, so neither
@@ -785,6 +796,15 @@ const OPTIONS = {
 };
 // { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given,
 // ambiguous: the long options written as a prefix of more than one of spec.names }
+// The long option a word `--name` or `--name=value` stands for. A unique prefix of one of the tool's long names is that
+// option, as GNU getopt_long reads it; one that starts several is refused by the tool: null (options() gives it as
+// `ambiguous`, and what its value would be is not known). A spec without names reads the name as written.
+function longName(word, spec) {
+  const eq = word.indexOf('=');
+  const given = word.slice(2, eq < 0 ? undefined : eq);
+  const fits = spec.names && !spec.names.includes(given) ? spec.names.filter((n) => n.startsWith(given)) : [given];
+  return fits.length > 1 ? null : fits[0] ?? given;
+}
 function options(args, spec) {
   const files = [];
   const values = {};
@@ -798,12 +818,8 @@ function options(args, spec) {
     if (a === '--') { ended = true; continue; }
     if (a.startsWith('--')) {
       const eq = a.indexOf('=');
-      const given = a.slice(2, eq < 0 ? undefined : eq);
-      // A unique prefix of one of the tool's long names is that option, as GNU getopt_long reads it; one that starts
-      // several is refused by the tool (`ambiguous`), and what its value would be is not known.
-      const fits = spec.names && !spec.names.includes(given) ? spec.names.filter((n) => n.startsWith(given)) : [given];
-      if (fits.length > 1) { ambiguous.push(a); continue; }
-      const name = fits[0] ?? given;
+      const name = longName(a, spec);
+      if (name === null) { ambiguous.push(a); continue; }
       if (spec.inPlace && name === 'in-place') inPlace = true;
       else if (spec.long[name]) put(spec.long[name], eq < 0 ? args[++i] : a.slice(eq + 1));
       else if (spec.takes?.includes(name) && eq < 0) i++;
@@ -835,6 +851,38 @@ function foldDirs(dirs, start = '.') {
     // join keeps the head's last /: `sub/` then $X stays sub/$X, `zz-` then $X stays zz-$X.
     return cut < 0 ? join(at, d) : `${join(at, d.slice(0, cut))}${d.slice(cut)}`;
   }, start);
+}
+// A file name options() gives that starts with a - is one after `--` (`rm -- -a.txt`), or an option's value
+// (`sort -o -out.txt`): add() leaves out words that start with -, so it is given as ./-a.txt (they were missed until
+// 2026-11-15). A lone - is stdin or stdout, as before.
+const operand = (w) => (w.length > 1 && w.startsWith('-') ? `./${w}` : w);
+// The backup suffix of sed -i / perl -i (`-i.bak`, `-pi.orig`, `--in-place=.bak`; '' when none is kept), read by
+// options() with i as a letter whose value is the rest of its word. A suffix with a * (the file's name goes there) or a
+// / is not read here: null.
+function inPlaceSuffix(args, spec) {
+  const end = args.indexOf('--');
+  const before = end < 0 ? args : args.slice(0, end);
+  // Read by longName, as options() reads it: `--in=.bak` is --in-place=.bak where the spec lists sed's names.
+  const long = before.findLast((w) => w.startsWith('--') && w.includes('=') && longName(w, spec) === 'in-place')?.replace(/^[^=]*=/u, '');
+  const suffix = long ?? options(before, { ...spec, inPlace: false, attached: `${spec.attached ?? ''}i` }).values.i?.at(-1) ?? '';
+  return /[*/]/u.test(suffix) ? null : suffix;
+}
+// cp, mv and install keep a file they replace as NAME~ with -b, --backup or -S / --suffix (which GNU cp 9.4 takes for
+// -b too), or NAME plus the -S suffix. --backup=numbered or t name NAME.~N~, whose N is not known here: { numbered }.
+// none or off keep nothing: null. existing (the default) is taken for simple, which it is while no numbered backup is
+// there.
+function backupSuffix(args, spec) {
+  const end = args.indexOf('--');
+  const before = end < 0 ? args : args.slice(0, end);
+  // b takes no value: read as a digits letter, it is recorded, and no digits follow it in these commands' options.
+  const o = options(before, { ...spec, digits: 'b' });
+  // --backup or a unique prefix of it (`--back=t`), by longName as options() reads it; its value after an =.
+  const word = before.findLast((w) => w.startsWith('--') && w !== '--' && longName(w, spec) === 'backup');
+  const control = word === undefined ? undefined : word.includes('=') ? word.replace(/^[^=]*=/u, '') : '';
+  if (control === undefined && !o.values.b && !o.values.S) return null;
+  if (/^(?:none|off)$/u.test(control ?? '')) return null;
+  if (/^(?:numbered|t)$/u.test(control ?? '')) return { numbered: true };
+  return { suffix: o.values.S?.at(-1) || '~' };
 }
 
 // A word runs on through quotes, a $( ) (one level of parentheses inside it) and backticks: `sed -i ... $(grep -rl x src
@@ -1916,10 +1964,10 @@ export function shellWrites(command, cwd = process.cwd(), options = {}) {
 }
 function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   const found = new Set();
-  // gone: what a removal or a move names (rm, unlink, git rm: the file removed; mv: where it goes, which is written, not
-  // removed; git mv: both); wrote: what any other write names. A file only in gone is a `noEditTool` of the result: a
-  // write no edit tool can make, so the gate's hint to use one leaves it out (2026-11-15). It is not a list of the files
-  // removed: mv's destination is in it, and its source is in no list of the result.
+  // gone: what a removal or a move names (rm, unlink, git rm: the file removed; mv and git mv: where it was and where it
+  // goes, which is written, not removed); wrote: what any other write names, mv's backup too. A file only in gone is a
+  // `noEditTool` of the result: a write no edit tool can make, so the gate's hint to use one leaves it out (2026-11-15).
+  // It is not a list of the files removed: a move's destination is in it.
   const gone = new Set();
   const wrote = new Set();
   let removing = false;
@@ -1950,11 +1998,19 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     if (!abs) return state.why?.prefix ?? '';
     return abs.endsWith('/') ? abs : dirname(abs);
   };
+  // The folder a command's own writes are under, from the folder word it is given (dq'd: `npm --prefix $D`, `git -C`,
+  // `--directory`): a part known only when it runs leaves what is known before it (`$D`: anywhere), never the word
+  // with its \0s (`<cwd>/\0$D\0/` was the prefix of `npm --prefix $D install` until 2026-11-15).
+  const folderUnder = (dir) => {
+    if (dir.includes(HOLE)) return knownPrefix(dir.slice(0, dir.indexOf(HOLE)));
+    return state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+  };
   const dq = (w) => { const r = shellWord(w, state.vars); for (const u of r.unknown) holes.set(u.text, u); return r.text; };
   // Each part and word once, looked up by key: searched through the list, every call past the budget of function bodies
   // (each one not known) took time by the number already there (8,000 functions each calling the next twice: 10.8 s).
   const listed = new Set();
-  const missing = (u) => { const key = `${u.part}\0${u.word}`; if (!listed.has(key)) { listed.add(key); unknown.push(u); } };
+  // The same part under another folder is another write (`find d e -exec cp {} {}.m \;`: `{}` under d and under e).
+  const missing = (u) => { const key = `${u.part}\0${u.word}\0${u.prefix ?? ''}`; if (!listed.has(key)) { listed.add(key); unknown.push(u); } };
   // repos: the checkouts the command makes (git worktree add, clone, init), as a folder or the known start of one;
   // madeAt: those whose folder is known in full.
   const repos = new Set();
@@ -2068,28 +2124,22 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     missing({ part: part ?? `${by} ${shown}`, word: shown, why: `${by} runs it, and readfirst does not read the file's text`, prefix: '' });
   };
   // Code from -c / -e, a here-document or a script file (part: what ran it; why: what to say when a write is not
-  // known): the targets of its write calls (codeTargets). With `fallback` (code from -c, -e or a here-document) a write
-  // whose target is not read falls back to the paths the code names that exist, and is not known only when that names
-  // nothing: `python3 -c "open('d-%d' % n, 'w')"` was quiet until 2026-11-14. Without (a script file), it is not known
-  // whatever else is named, and so is code CODE_WRITES sees writing where no write call names a target.
+  // known): the targets of its write calls (codeTargets). A write whose target is not read is not known, whatever else
+  // is named. Until 2026-11-15 code from -c, -e or a here-document fell back to the paths it names that exist, and was
+  // not known only when that named nothing: `node -e` code that imported one file and wrote computed paths named the
+  // imported file, and a write next to a named path was silent (in this session's transcript the fallback was right in
+  // 1 command of 4 where it made a difference). `expands` (a here-document under a tag not quoted): bash expands `$`
+  // and backticks in the body before the code runs, so a literal target holding one is not known, never that text.
   // Only code counts (runner: what runs it): a write inside a string or a comment is data (lex, the one reader of
   // code, with Python's rules for python, ruby and perl and JavaScript's for the rest). A test file holds commands as
   // data, and `node -e` code quoting `open('e' + 'x', 'w')` named a file it held the path of (2026-11-14).
   // The code inside a template's `${ }` or an f-string's `{ }` is code too (lex marks it 'p'): a write there was
   // missed in silence (review of #222). `read` (a script file read before in this command) keeps its marks.
-  const codeWrites = (code, runner, args, part, why, { fallback = true, read = null } = {}) => {
+  const codeWrites = (code, runner, args, part, why, { read = null, expands = false } = {}) => {
     const marks = read?.marks ?? lex(code.split('\n'), /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js').map((r) => r.mark).join('\n');
     if (read) read.marks = marks;
     const inCode = (i) => marks[i] === 'c' || marks[i] === 'p';
-    if (fallback) {
-      if (![...code.matchAll(CODE_WRITES_ALL)].some((m) => inCode(m.index))) return;
-      let open = false;
-      const targets = codeTargets(code, { args, exists: here, glob, unresolved: () => { open = true; }, fallback, inCode });
-      targets.forEach(add);
-      if (open && !targets.length) missing({ part, word: part, why, prefix: '' });
-      return;
-    }
-    // A script file: its writes into a temporary folder are left out (withoutTempWrites). Each other write call it
+    // Its writes into a temporary folder are left out (withoutTempWrites). Each other write call it
     // finds by its brackets (CODE_WRITES' open( misses `open(os.path.join(a, b), 'w')`) names its target when that is
     // a literal or a name assigned one, and is not known otherwise, as is a write codeTargets cannot place.
     // A name assigned a literal names it only when each of its assignments is one (`p = 'x'` then `p = f()` is not
@@ -2097,23 +2147,34 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // What a file gives for its arguments, in the folder it runs from, is worked out once per command (`read.given`):
     // the temporary-folder pass (scopes) took about 35 ms each time, so 60 runs of one 741 KB script took 3.7 s on
     // Node 20 (CI on be7fbaf), against a test's 3 s.
-    const key = `${state.base}\0${args.join('\0')}`;
+    const key = `${state.base}\0${expands}\0${args.join('\0')}`;
     let result = read?.given?.get(key);
     if (!result) {
       const t = read?.temp ?? withoutTempWrites(code, inCode, /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js');
       if (read) read.temp = t;
       let open = false;
-      const names = codeTargets(t.code, { args, glob, unresolved: () => { open = true; }, fallback: false, inCode });
-      const lit = new RegExp(String.raw`^${LIT}$`, 'u');
+      const names = codeTargets(t.code, { args, glob, unresolved: () => { open = true; }, fallback: false, inCode }).filter((v) => {
+        if (expands && /[$`]/u.test(v)) { open = true; return false; }
+        return true;
+      });
+      // A literal, or a pathlib path made of one (`Path('p.txt')`, `pathlib.Path('p.txt')`, `pl.Path('p.txt')` after
+      // `import pathlib as pl`): the receiver of `.write_text(` is the path, as codeTargets reads it (review of #240:
+      // every pathlib write was also not known).
+      const plain = new RegExp(String.raw`^${LIT}$`, 'u');
+      const path = new RegExp(String.raw`^(?:[A-Za-z_]\w*\.)?Path\(\s*${LIT}\s*\)$`, 'u');
+      const lit = { [Symbol.match]: (v) => v.match(plain) ?? v.match(path) };
       for (const { target, unsure } of t.others) {
         if (unsure) { open = true; continue; }
         const l = target.match(lit);
         const id = target.match(/^[A-Za-z_$][\w$]*$/u)?.[0];
         const n = id?.replace(/\$/gu, '\\$');
-        const all = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*(?:[-+*/%|&^]|\*\*|\/\/)?=(?![=>])\s*([^;\n]*)`, 'gmu'))].map((m) => m[1].trim()) : [];
+        // Assignments in code only: ` p = f(x)` inside a string is data (a python here-document holding JavaScript made
+        // its `open(p, 'w')` not known until 2026-11-15).
+        const all = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*(?:[-+*/%|&^]|\*\*|\/\/)?=(?![=>])\s*([^;\n]*)`, 'gmu'))].filter((m) => inCode(m.index + m[0].indexOf(id))).map((m) => m[1].trim()) : [];
         const literals = all.map((v) => v.match(lit)?.[2]).filter((v) => v !== undefined);
-        if (l) names.push(l[2]);
-        else if (all.length && literals.length === all.length) names.push(...literals);
+        const given = l ? [l[2]] : all.length && literals.length === all.length ? literals : null;
+        if (given && expands && given.some((v) => /[$`]/u.test(v))) open = true;
+        else if (given) names.push(...given);
         else if (!(ARGV.test(target) && args.length)) open = true;
       }
       result = { names, open };
@@ -2156,7 +2217,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       read = { code, marks: null };
       scriptsRead.set(`${lang}\0${at}`, read);
     }
-    codeWrites(read.code, cmd, rest.filter((a) => !a.startsWith('-')), part, `${cmd} runs that file, and it writes files whose names are known only when it runs`, { fallback: false, read });
+    codeWrites(read.code, cmd, rest.filter((a) => !a.startsWith('-')), part, `${cmd} runs that file, and it writes files whose names are known only when it runs`, { read });
   };
   const scriptsRead = new Map();
   let scriptBytes = 0;
@@ -2172,7 +2233,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // name in ways that depend on which files are there, and a patch not read names nothing: either is not known, with
   // why, under where the command runs.
   const applyPatch = (by, text, strip, dir) => {
-    const under = state.base == null ? state.why?.prefix ?? '' : `${resolve(state.base, dir)}/`;
+    const under = folderUnder(dir);
     if (text == null) { missing({ part: by, word: by, why: `${by} changes the files the patch names, and readfirst does not read the patch`, prefix: under }); return; }
     if (strip === undefined) { missing({ part: by, word: by, why: `${by} without -p takes the names in the patch in ways that depend on the files there`, prefix: under }); return; }
     diffPaths(text, strip).forEach((p) => add(foldDirs([dir, p])));
@@ -2201,10 +2262,34 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     }
     if (!moves) return;
     const part = `git ${sub}`;
-    const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+    const under = folderUnder(dir);
     // `moves`: a move between commits (all of these but clean, which takes away files where they are): the hook shows
     // it without refusing (refuses in src/cli.mjs), since it can name no file to read first.
     missing({ part, word: part, why: `${part} changes the tracked files it brings, known only when it runs`, prefix: under, ...(sub === 'clean' ? {} : { moves: true }) });
+  };
+  // cp, mv and install write their destination, or the folder -t names (what lands in a folder is not looked up). mv
+  // takes its sources away as rm does: `mv a.txt b.txt` named only b.txt until 2026-11-15, so a file the map holds was
+  // moved off without its notes. With a backup (backupSuffix) a file there already that one lands on is kept under its
+  // name and the suffix: `cp -b a b` writes b~ when b is there, `mv -b a d` writes d/a~ when d/a is.
+  const isFolder = (w) => { try { return (isAbsolute(w) || state.base != null) && statSync(isAbsolute(w) ? w : resolve(state.base, w)).isDirectory(); } catch { return false; } };
+  const copies = (cmd, args, o) => {
+    const files = o.files.map(operand);
+    const into = o.values.t ? operand(o.values.t.at(-1)) : files.at(-1);
+    const sources = o.values.t ? files : files.slice(0, -1);
+    // mv's source and its destination are writes no edit tool makes (noEditTool); a backup it keeps is a file written.
+    if (cmd === 'mv') sources.forEach(takeAway);
+    (cmd === 'mv' ? takeAway : add)(into);
+    const backup = backupSuffix(args, OPTIONS[cmd]);
+    if (backup == null) return;
+    const folder = Boolean(o.values.t) || sources.length > 1 || isFolder(into);
+    for (const target of folder ? sources.map((s) => join(into, basename(s))) : [into]) {
+      if (!here(target)) continue;
+      if (backup.suffix !== undefined) { add(`${target}${backup.suffix}`); continue; }
+      // A numbered backup: a new name beside the target, known only when the command runs (review of #239: it was left
+      // out in silence).
+      const at = isAbsolute(target) ? target : resolve(state.base, target);
+      missing({ part: `${cmd} --backup=numbered`, word: `${target}.~N~`, why: `${cmd} keeps ${target} as ${target}.~N~, and N is known only when the command runs`, prefix: `${dirname(at)}/`, direct: true });
+    }
   };
   // npm, pnpm and yarn. Installing, adding, removing or updating packages writes the lock file (package-lock.json,
   // pnpm-lock.yaml, yarn.lock), package.json when the command names packages, and node_modules: given as not known,
@@ -2235,7 +2320,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     if (!(sub === undefined && cmd === 'yarn') && !/^(?:install|i|ci|add|uninstall|un|remove|rm|update|up|upgrade)$/u.test(sub ?? '')) return;
     const what = sub === 'ci' ? 'node_modules' : `${LOCKS[cmd]}${named.length || /^(?:uninstall|un|remove|rm)$/u.test(sub ?? '') ? ', package.json' : ''} and node_modules`;
     const part = `${cmd}${sub ? ` ${sub}` : ''}`;
-    const under = state.base == null && !isAbsolute(dir) ? state.why?.prefix ?? '' : `${resolve(state.base ?? '/', dir)}/`;
+    const under = folderUnder(dir);
     missing({ part, word: part, why: `${part} writes ${what}, as the packages it installs make it`, prefix: under, moves: true });
   };
   // find (raw: its words after the name as written, without redirects; args: the same as dq gives them). The command
@@ -2282,7 +2367,11 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
             ? shellWrites(text, null, { vars, why: { part: `find ${args[i]}`, why: `${args[i]} runs it in the folder of each file find finds, known only when it runs`, prefix: startAt ? `${startAt.replace(/\/$/u, '')}/` : '' } })
             : shellWrites(text, state.base, { vars, why: state.why });
         takeIn(r);
-        r.unknown.forEach(missing);
+        // What it gives is shown as the command was written: `{}` again, with the start folder put before it, never
+        // FOUND (`node ./$__readfirst_found_file` was the part of `find . -exec node {} \;`, review of #222).
+        const before = inDir ? './' : rootText.includes(HOLE) ? `${root}/` : `${rootText.replace(/\/+$/u, '')}/`;
+        const shown = (v) => (typeof v === 'string' ? v.replaceAll(`${before}$${FOUND}`, '{}').replaceAll(`\${${FOUND}}`, '{}').replaceAll(`$${FOUND}`, '{}') : v);
+        r.unknown.forEach((u) => missing(Object.fromEntries(Object.entries(u).map(([k, v]) => [k, shown(v)]))));
         r.repos.forEach((x) => repos.add(x));
       }
       i = j;
@@ -2341,7 +2430,9 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // body is read by that shell alone, which sees only exported variables; without, the outer shell expands it first.
     const fed = runner != null && SHELLS.test(runner.split('/').pop());
     if (fed) inner(body, quote ? exportedOnly(state.vars) : state.vars);
-    else if (runner != null && CODE_WRITES.test(body)) { const by = `${runner.split('/').pop()} <<`; codeWrites(body, runner.split('/').pop(), args, by, `${by} runs code that writes files whose names are known only when it runs`); }
+    // Code fed to a runner is read whole, as a script file is: CODE_WRITES on the body missed `open(os.path.join(a, b),
+    // 'w')` before codeWrites saw it.
+    else if (runner != null) { const by = `${runner.split('/').pop()} <<`; codeWrites(body, runner.split('/').pop(), args, by, `${by} runs code that writes files whose names are known only when it runs`, { expands: !quote }); }
     // With a tag not quoted, the shell expands the body before the command gets it: each $( ) and backtick in it runs,
     // as a subshell where the command stands (`cat <<E` with `$(echo > f)` in its body makes f; nothing was named
     // until 2026-11-14). A shell fed the body reads them with its commands (above).
@@ -2454,8 +2545,13 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // named d).
     if (o?.ambiguous.length) missing({ part: `${cmd} ${o.ambiguous[0]}`, word: `${cmd} ${o.ambiguous[0]}`, why: `${o.ambiguous[0]} starts more than one of ${cmd}'s long options, so ${cmd} refuses it and which was meant is not known`, prefix: '' });
     // sed and perl write only in place; the script is the first file argument unless -e/-f gave it.
-    else if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
-    else if (cmd === 'tee' || cmd === 'truncate') o.files.forEach(add);
+    // With a suffix (`sed -i.bak`), each file is kept under its name and the suffix too.
+    else if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) {
+      const edited = (o.script ? o.files : o.files.slice(1)).map(operand);
+      const suffix = inPlaceSuffix(args, OPTIONS[cmd]);
+      edited.forEach(add);
+      if (suffix) edited.forEach((f) => add(`${f}${suffix}`));
+    } else if (cmd === 'tee' || cmd === 'truncate') o.files.map(operand).forEach(add);
     // patch: the file named first, or, with none (`patch -p1 < fix.diff`, missed until 2026-11-14), the files the
     // patch it reads names. -d DIR (--directory) moves it into DIR before anything else, so every path it is given
     // (the file, -o, -i, a second operand: the patch) and every name in the patch is under DIR; a patch on stdin was
@@ -2477,12 +2573,12 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       }
     }
     // touch and rm write (or take away) the files they are given; sort -o writes its output file.
-    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.forEach(cmd === 'touch' ? add : takeAway);
-    else if (cmd === 'sort' && o.values.o) add(o.values.o.at(-1));
+    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.map(operand).forEach(cmd === 'touch' ? add : takeAway);
+    else if (cmd === 'sort' && o.values.o) add(operand(o.values.o.at(-1)));
     else if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') packages(cmd, args);
-    else if (['cp', 'mv', 'install'].includes(cmd) && o.values.t) (cmd === 'mv' ? takeAway : add)(o.values.t.at(-1));
+    else if (['cp', 'mv', 'install'].includes(cmd) && (o.values.t || o.files.length >= 2)) copies(cmd, args, o);
     else if (cmd === 'rsync' && (args.some((w) => w === '--dry-run' || /^-[a-zA-Z]*n[a-zA-Z]*$/u.test(w)) || /^(?:[\w.@-]+:|rsync:\/\/)/u.test(o.files.at(-1) ?? ''))) { /* a dry run or a remote destination */ }
-    else if (['cp', 'mv', 'install', 'rsync'].includes(cmd) && o.files.length >= 2) (cmd === 'mv' ? takeAway : add)(o.files.at(-1));
+    else if (cmd === 'rsync' && o.files.length >= 2) add(operand(o.files.at(-1)));
     else if (cmd === 'git') {
       // git's own options before the subcommand: -C <dir> runs it in that folder, -c <k=v> and --no-pager change nothing.
       let i = 0;
@@ -2496,7 +2592,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       // exist (2026-11-13). One known only when it runs may be absolute too (foldDirs): `git -C a -C $X` was placed
       // under a/, and `git -C $X checkout -- ../f` named ./f, until 2026-11-15.
       dir = foldDirs(cs);
-      if (/^(?:checkout|restore)$/u.test(args[i] ?? '')) gitPaths(args.slice(i), (w) => here(foldDirs([dir, w]))).forEach((p) => add(foldDirs([dir, p])));
+      if (/^(?:checkout|restore)$/u.test(args[i] ?? '')) gitPaths(args.slice(i), (w) => here(foldDirs([dir, w]))).forEach((p) => add(operand(foldDirs([dir, p]))));
       // A checkout the command makes (worktree add, clone, init): a write below it lands in a repository, though none
       // is there yet when the hook runs (`git worktree add $S/w-$rev` then a write into $S/w-$rev).
       const sub = args[i];
@@ -2519,7 +2615,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
         const gr = args.slice(i + 1);
         if (!(sub === 'rm' && gr.includes('--cached')) && !gr.some((w) => /^(?:-n|--dry-run)$/u.test(w))) {
           const dd = gr.indexOf('--');
-          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => takeAway(foldDirs([dir, p])));
+          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => takeAway(operand(foldDirs([dir, p]))));
         }
       } else if (sub !== undefined) gitMoves(sub, args.slice(i + 1), dir);
       for (const m of made ? perTurn(made) ?? [made] : []) {
@@ -2552,7 +2648,9 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       const { scripts, rest } = runnerScripts(cmd, args);
       scripts.forEach((w) => runScript(cmd, w, rest));
     } else if (dq(ws[0] ?? '').includes('/')) runFile(dq(ws[0]), 'the command', { part: dq(ws[0]).replaceAll(HOLE, ''), script: true });
-    else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e') && CODE_WRITES.test(segment)) {
+    // The code is the word after -c / -e as the shell gives it, read whole: CODE_WRITES on the command's raw text missed
+    // python's `open('{}','w')` inside `find -exec`, whose quotes are written `'\''` there (2026-11-15).
+    else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e')) {
       const i = args.findIndex((w) => w === '-c' || w === '-e');
       codeWrites(args[i + 1] ?? '', cmd, args.slice(i + 2).filter((w) => !w.startsWith('-')), `${cmd} ${args[i]}`, `${cmd} ${args[i]} runs code that writes files whose names are known only when it runs`);
     }

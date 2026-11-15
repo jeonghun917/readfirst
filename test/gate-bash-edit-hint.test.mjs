@@ -10,14 +10,18 @@ import { test } from 'node:test';
 import { shellWrites } from '../src/bash-writes.mjs';
 import { runHook } from '../src/cli.mjs';
 
-// noEditTool is not the files removed: mv's destination is in it (written, by a move), its source in no list.
+// noEditTool is not the files removed: a move's destination is in it (written, by a move). Since #239 mv names its
+// source too, and that is in it as well; a backup mv keeps is a file written, not in it.
 test('shellWrites gives the files a command writes only by removing or moving them as noEditTool', () => {
   const at = realpathSync(mkdtempSync(join(tmpdir(), 'readfirst-noedit-')));
   const r = (c) => shellWrites(c, at).noEditTool.map((f) => f.slice(at.length + 1)).sort();
   assert.deepEqual(r('rm a b; unlink c'), ['a', 'b', 'c']);
   assert.deepEqual(r('git mv a b'), ['a', 'b']);
-  assert.deepEqual(r('mv a d/b'), ['d/b']);
-  assert.deepEqual(r('mv -t d a'), ['d']);
+  assert.deepEqual(r('mv a d/b'), ['a', 'd/b']);
+  assert.deepEqual(r('mv -t d a'), ['a', 'd']);
+  writeFileSync(join(at, 'b'), 'x\n');
+  assert.deepEqual(shellWrites('mv -b a b', at).files.map((f) => f.slice(at.length + 1)).sort(), ['a', 'b', 'b~']);
+  assert.deepEqual(r('mv -b a b'), ['a', 'b']);
   assert.deepEqual(r('rm a; echo x > a; touch t; cp a c'), []);
   assert.deepEqual(r("bash -c 'rm a'"), ['a']);
   assert.deepEqual(r('sed -i s/x/y/ a'), []);
