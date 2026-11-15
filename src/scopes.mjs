@@ -207,7 +207,7 @@ function annotationOf(T, a, b) {
 // branches of a conditional type (`A extends B ? C : D`) follow a `?` or a type and are names used.
 function typeMemberName(toks, j) {
   const prev = toks[j - 1];
-  const starts = toks[j].first || isWord(prev, 'readonly') || (prev && ['{', ';', ',', '(', '['].includes(prev.v) && prev.k === 'punct');
+  const starts = toks[j].first || isWord(prev, 'readonly') || (prev && ['{', ';', ',', '(', '[', '...'].includes(prev.v) && prev.k === 'punct'); // `(...xs: T) =>`
   if (!starts) return false;
   const k = isPunct(toks[j + 1], '?') ? j + 2 : j + 1;
   return isPunct(toks[k], ':') || isPunct(toks[k], '(');
@@ -738,6 +738,7 @@ function readScript(T) {
     for (const stop = k - 4; k >= 0 && k > stop && (isWord(toks[k]) || isPunct(toks[k], '*')); k--) if (toks[k].v === what) return true;
     return false;
   };
+  let forOfAt = -1; // the last `of` read as a `for`'s keyword
   const keywordAt = (j) => {
     const v = toks[j].v;
     if (!T.data.keywords.has(v)) return false;
@@ -751,7 +752,16 @@ function readScript(T) {
       if (T.scopes[varScope()].kind === 'function') return headHas(varScope(), head);
       return Boolean(top && sameLine && (isWord(next) || next.k === 'val' || (next.k === 'punct' && top.has(next.v))));
     }
-    if (T.data.forHead.has(v) && !inForHead()) return false;
+    // In a `for`'s parentheses, `of` is the keyword right after the loop's binding (a name, or a pattern's `]` or `}`;
+    // a declaration word never comes before it here, the declaration has read the binding), wherever the line ends; a
+    // second `of` after that one is a name (`of of(1)`).
+    if (T.data.forHead.has(v)) {
+      if (!inForHead()) return false;
+      const p = toks[j - 1];
+      const bound = (isWord(p) && (!T.data.keywords.has(p.v) || T.data.contextual[p.v]) && j - 1 !== forOfAt) || isPunct(p, ']') || isPunct(p, '}');
+      if (bound) forOfAt = j;
+      return bound;
+    }
     const after = T.data.contextual[v];
     if (!after) return true;
     return sameLine && (isWord(next) || next.k === 'val' || (next.k === 'punct' && after.has(next.v)));
