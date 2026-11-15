@@ -205,3 +205,85 @@ test('after a move between commits the Stop hook does not check what it brought,
   run(root, 'git stash pop -q');
   assert.match(String(stop(root, id)), /`false`/u, 'stash pop leaves src/a.js changed: its check is asked for');
 });
+
+// patch -d DIR (--directory) moves into DIR before anything else: the file it is given, -o, -i and the names in the
+// patch are all under DIR, and a patch on stdin is opened by the shell where the command runs. Until 2026-11-15 -d was
+// left out: `patch -d sub -p1 < fix.diff` named a.txt, where patch changed sub/a.txt, and `--directory sub` named sub.
+test('patch -d DIR names the files under DIR, and bash agrees', { skip: !hasGit && 'bash, git or patch is not installed' }, () => {
+  const p0 = '--- a.txt\n+++ a.txt\n@@ -1 +1 @@\n-one\n+fixed\n';
+  for (const [script, want] of [
+    ['patch -s -d sub -p1 < fix.diff', ['sub/a.txt']],
+    ['patch -s --directory=sub -p1 < fix.diff', ['sub/a.txt']],
+    ['patch -s --directory sub -p1 < fix.diff', ['sub/a.txt']],
+    ['patch -s -dsub -p1 < fix.diff', ['sub/a.txt']],
+    ['patch -s -p1 -d sub < fix.diff', ['sub/a.txt']],
+    ['patch -s -d sub -p1 -i in.diff', ['sub/a.txt']],
+    ['patch -s -d sub -p1 -i ../fix.diff', ['sub/a.txt']],
+    ['patch -s -d sub b.txt < fix0.diff', ['sub/b.txt']],
+    ['patch -s -d sub -o out.txt a.txt < fix0.diff', ['sub/out.txt']],
+    ['patch -s -d sub -p0 < fix0.diff', ['sub/a.txt']],
+    ['patch -s --strip 1 -d sub < fix.diff', ['sub/a.txt']],
+    // Each -d moves on from the one before (review of #236: only the last was taken).
+    ['patch -s -d sub -d b -p0 < fix0.diff', ['sub/b/a.txt']],
+    ['patch -s -d sub -d sub -p0 < fix0.diff', ['sub/sub/a.txt']],
+    ['patch -s -d d -d ../sub -p0 < fix0.diff', ['sub/a.txt']],
+    ['patch -s --directory=sub -d b -o o.txt a.txt < fix0.diff', ['sub/b/o.txt']],
+  ]) {
+    const dir = setUp();
+    for (const f of ['sub/b', 'sub/sub']) mkdirSync(join(dir, f), { recursive: true });
+    for (const f of ['sub/a.txt', 'sub/b.txt', 'sub/b/a.txt', 'sub/sub/a.txt']) writeFileSync(join(dir, f), 'one\n');
+    writeFileSync(join(dir, 'sub/in.diff'), readFileSync(join(dir, 'fix.diff'), 'utf8'));
+    writeFileSync(join(dir, 'fix0.diff'), p0);
+    assert.deepEqual(named(script, dir), want, script);
+    assert.deepEqual(bashChanged(script, dir).filter((f) => !/\.orig$/u.test(f)), want, `bash: ${script}`);
+  }
+  // A folder known only when the command runs: nothing is named, and the write is not known.
+  const unplaced = named('patch -d $D -p1 < fix.diff', setUp());
+  assert.ok(unplaced.length > 0 && unplaced.every((w) => w.startsWith('?')), unplaced.join(', '));
+});
+
+// A change-folder option whose value begins with a part known only when the command runs (`patch -d $X`, `git -C
+// $X`) may be absolute: from there on the folder is under nothing known, and a `..` after it does not take the part
+// away (review of #236: `-d sub -d $X` was placed under sub/, and `patch -d $X ../a.txt` named ./a.txt, as `git -C $X
+// checkout -- ../f` named ./f on main).
+test('a change-folder option known only when the command runs puts its writes under nothing known', () => {
+  for (const [command, want] of [
+    ['patch -d sub -d $X a.txt < fix0.diff', ['?$X/a.txt@']],
+    ['patch -d $X -d sub a.txt < fix0.diff', ['?$X/sub/a.txt@']],
+    ['patch -d $X ../a.txt < fix0.diff', ['?$X/../a.txt@']],
+    ['patch -d sub/$X a.txt < fix0.diff', ['?sub/$X/a.txt@sub']],
+    ['git -C a -C $X checkout -- f', ['?$X/f@']],
+    ['git -C $X checkout -- ../f', ['?$X/../f@']],
+    ['git -C $X -C .. checkout -- f', ['?$X/../f@']],
+    ['git -C /w -C b checkout -- f', ['/w/b/f']],
+    ['git -C a checkout -- f', ['a/f']],
+  ]) {
+    const dir = setUp();
+    const r = shellWrites(command, dir);
+    const got = [...r.files.map((f) => (f.startsWith(dir) ? relative(dir, f) : f)), ...r.unknown.map((u) => `?${u.word}@${u.prefix ? relative(dir, u.prefix) : ''}`)];
+    assert.deepEqual(got, want, command);
+  }
+});
+
+// A `..` after a part known only when the command runs climbs from the folder known before it, as the part may be
+// empty: `sub/$X/../f` may be ./f. Until 2026-11-15 it was under sub/ (`within`), `patch -d sub/$X/.. a.txt` and `git -C
+// sub/$X/.. checkout -- f` named sub/a.txt and sub/f as sure, and `$(mktemp -d)/../f` was a new name (review of #236).
+test('a `..` after a part known only when the command runs climbs from what is known before it', () => {
+  const dir = setUp();
+  const at = (v) => (v ?? '').replace(dir, '<d>');
+  for (const [command, want] of [
+    ['echo x > sub/$X/../f', [['sub/$X/../f', '<d>/']]],
+    ['echo x > /r/zz-$X/../f', [['/r/zz-$X/../f', '/']]],
+    ['echo x > /r/s/$X/../../f', [['/r/s/$X/../../f', '/']]],
+    ['echo x > $(mktemp -d -p /w)/../f', [['$(mktemp -d -p /w)/../f', '/w/']]],
+    ['patch -d sub/$X/.. a.txt < fix.diff', [['sub/$X/../a.txt', '<d>/']]],
+    ['git -C sub/$X/.. checkout -- f', [['sub/$X/../f', '<d>/']]],
+    // No `..`: as before.
+    ['echo x > sub/$X/f', [['sub/$X/f', '<d>/sub/']]],
+    ['echo x > $(mktemp -d -p /w)/f', [['$(mktemp -d -p /w)/f', '/w/', 'fresh']]],
+  ]) {
+    const r = shellWrites(command, dir);
+    assert.deepEqual(r.files, [], `${command}: nothing named`);
+    assert.deepEqual(r.unknown.map((u) => [u.word, at(u.prefix), ...(u.fresh ? ['fresh'] : [])]), want, command);
+  }
+});

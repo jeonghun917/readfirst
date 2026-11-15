@@ -72,6 +72,8 @@ test('the backup sed -i, perl -i, cp, mv and install keep is named, and bash agr
   agrees([
     'sed -i.bak s/one/two/ a.txt', 'sed --in-place=.orig s/one/two/ a.txt', 'sed -Ei.bak s/one/two/ a.txt', 'perl -i.orig -pe s/one/two/ a.txt', 'perl -pi.bak -e s/one/two/ a.txt',
     'cp -b a.txt b.txt', 'cp --backup a.txt b.txt', 'cp --backup=simple a.txt b.txt', 'cp -S .old a.txt b.txt', 'cp --suffix=.old -b a.txt b.txt', 'mv -b a.txt b.txt', 'mv -b a.txt d', 'cp -b -t d a.txt', 'install -b a.txt b.txt',
+    // A unique prefix of a long name, as options() reads it (longName).
+    'sed --in=.bak s/one/two/ a.txt', 'sed --in-pl=.o s/one/two/ a.txt', 'cp --b a.txt b.txt', 'cp --backup=simple --suf=.x a.txt b.txt', 'mv --suf=.k a.txt b.txt',
   ]);
   // The look-alikes: no suffix, no backup asked for or none kept, and nothing there to keep.
   agrees(['sed -i s/one/two/ a.txt', 'perl -pi -e s/one/two/ a.txt', 'cp a.txt b.txt', 'cp --backup=none a.txt b.txt', 'cp --backup=off a.txt b.txt', 'cp -b a.txt n.txt', 'mv -b a.txt n.txt']);
