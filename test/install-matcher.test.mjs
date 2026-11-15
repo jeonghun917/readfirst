@@ -91,6 +91,68 @@ test('an old matcher without MultiEdit gets it too', () => {
   assert.deepEqual(JSON.parse(read(root)).hooks.PreToolUse[0].matcher.split('|').sort(), ['Bash', 'Edit', 'MultiEdit', 'NotebookEdit', 'Write']);
 });
 
+// Review of #218 (ledger, 2026-11-14): install knew its hook by one pattern of spellings. A PreToolUse entry holding
+// only `readfirst hook --stop` counted as the hook, so none was added; a version or an option before `hook`, or a
+// Windows path, was not seen and a second entry was added; `readfirst hook-x` counted; and a matcher that is no valid
+// pattern was widened into another invalid one. A command is now read by its words: the readfirst program, then its
+// first word that is not an option, which must be `hook`.
+const settingsWith = (pre) => `${JSON.stringify({ hooks: { PreToolUse: pre } }, null, 2)}\n`;
+const entry = (command, matcher = 'Edit|Write|MultiEdit|NotebookEdit|Bash') => ({ matcher, hooks: [{ type: 'command', command }] });
+
+test('a PreToolUse entry that only runs the Stop hook is not the hook: install adds it', () => {
+  const root = repoWith(settingsWith([entry('npx --yes readfirst hook --stop')]));
+  assert.equal(installHook(root), true);
+  const pre = JSON.parse(read(root)).hooks.PreToolUse;
+  assert.equal(pre.length, 2);
+  assert.ok(pre.some((m) => m.hooks.some((h) => h.command === 'npx --yes readfirst hook')), 'the PreToolUse hook is there now');
+});
+
+test('the hook is known by its words however readfirst is named or optioned, and only `hook` is the hook', () => {
+  for (const command of ['npx readfirst@^1.2 hook', 'readfirst@1.2.3-beta+x hook --gate', 'node C:\\x\\readfirst.mjs hook', 'npx readfirst --no-color hook', 'pnpm dlx readfirst hook', 'bunx readfirst hook']) {
+    const root = repoWith(settingsWith([entry(command)]));
+    assert.equal(installHook(root), false, command);
+  }
+  const other = repoWith(settingsWith([entry('npx readfirst hook-x')]));
+  assert.equal(installHook(other), true, 'hook-x is another command');
+  assert.equal(JSON.parse(read(other)).hooks.PreToolUse.length, 2);
+});
+
+// Review of 299934b: the words were read only right after the first launcher, so a hook the old pattern found was no
+// longer seen and a second entry was added: run by a shell's -c, by npm exec or bun x, or by npx with -p <package>.
+// Every hook form the old pattern found is listed here; a launcher's option that takes a value skips that value, and a
+// -c string (sh, bash, npx --call) is read as a command of its own.
+const OLD_FORMS = [
+  'sh -c "npx readfirst hook"', "bash -c 'npx --yes readfirst hook --gate'", 'bash -lc "npx readfirst hook"', '/bin/sh -c "readfirst hook"',
+  'npx -c "readfirst hook"', 'npx -p readfirst readfirst hook', 'npx --package readfirst readfirst hook', 'npx --yes -p readfirst@1 readfirst hook',
+  'npx --package=readfirst readfirst hook', 'npm exec -- readfirst hook', 'npm exec readfirst hook', 'npm exec --yes -- readfirst hook',
+  'npm x readfirst hook', 'bun x readfirst hook', 'yarn dlx readfirst hook', 'pnpm exec readfirst hook', 'pnpm --silent dlx readfirst hook',
+  'env FOO=1 npx readfirst hook', 'cd x && npx readfirst hook', 'npx readfirst hook; echo done', 'node -r ./trace.cjs bin/readfirst.mjs hook',
+  '/usr/bin/env node bin/readfirst.mjs hook', 'nice npx readfirst hook', 'npx -y readfirst@latest hook',
+];
+test('every hook form the old pattern found is still the hook: install adds no second entry', () => {
+  for (const command of OLD_FORMS) {
+    const root = repoWith(settingsWith([entry(command)]));
+    assert.equal(installHook(root), false, command);
+  }
+  for (const command of ['sh -c "npx readfirst hook --stop"', 'npm exec -- readfirst hook --stop']) {
+    const text = `${JSON.stringify({ hooks: { PreToolUse: [entry('npx readfirst hook')], Stop: [{ hooks: [{ type: 'command', command }] }] } }, null, 2)}\n`;
+    const root = repoWith(text);
+    assert.equal(installHook(root, { verify: true }), false, command);
+    assert.equal(read(root), text);
+  }
+  for (const command of ['echo readfirst hook', 'sh -c "echo readfirst hook"', 'npx -p readfirst hook']) {
+    const root = repoWith(settingsWith([entry(command)]));
+    assert.equal(installHook(root), true, `${command}: not the hook`);
+  }
+});
+
+test('a readfirst hook whose matcher is no valid pattern is left alone, and install says it cannot widen it', () => {
+  const text = settingsWith([entry('npx --yes readfirst hook', 'Edit|Write(')]);
+  const root = repoWith(text);
+  assert.throws(() => installHook(root), /matcher `Edit\|Write\(` is not a valid pattern/u);
+  assert.equal(read(root), text, 'nothing was written');
+});
+
 test('hook --install says what it did to an old hook', () => {
   const root = repoWith(OLD);
   let out = '';
