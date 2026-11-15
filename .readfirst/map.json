@@ -121,6 +121,12 @@
           ]
         },
         {
+          "text": "long options in Bash commands (`options()` in src/bash-writes.mjs, since 2026-11-15): GNU getopt_long takes any unique prefix of a long option, so a spec in `OPTIONS` that lists `names` (every long option of the tool, from GNU sed 4.9 and coreutils 9.4 --help) reads `sed --in`, `sort --out=o` and `cp --t d` as --in-place, --output and --target-directory; a prefix of more than one name (`cp --p`) is refused by the tool and given as `ambiguous`, a write not known with no prefix; `takes` lists the names that need a value readfirst does not keep (touch --time, sort --sort), so that value is not a file. A spec without names (perl, rsync, awk, which were not measured) reads whole names only. Until then `sed --in s/a/b/ f` wrote and nothing was named, and `touch --r a.txt new.txt` named a.txt. A new tool in OPTIONS, or a new version of one, gets its names from its own --help, never by guess: a name the tool does not have makes a real prefix ambiguous.",
+          "files": [
+            "src/bash-writes.mjs"
+          ]
+        },
+        {
           "text": "src/pending.mjs reads the hosted upkeep branch (refs/remotes/*/readfirst/upkeep) from the clone's refs only, as of the last fetch (no-network-in-cli): `pending`, the MCP tool pending_map_edits and the PreToolUse hook (once per session per repository, after MIN_DAYS or MIN_MERGES) use it. The hook adds the line as context and never denies for it, even with --gate. The branch name is the hosted upkeep's: if the server renames it, this goes silent",
           "files": [
             "src/pending.mjs",
