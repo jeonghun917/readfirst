@@ -106,8 +106,7 @@ test('a `{}` is shown as `{}` in what find gives, never as the name readfirst st
   const cases = {
     [`find . -name s.mjs -exec node {} ${B};`]: ['node {} | {}'],
     [`find $D -exec python3 {} +`]: ['python3 {} | {}'],
-    // mv takes the file found away too (#239); this case was written before it and left main failing once both merged.
-    [`find . -exec mv {} {}.bak ${B};`]: ['{} | {}', '{} | {}.bak'],
+    [`find . -exec mv {} {}.bak ${B};`]: ['{} | {}.bak'],
     [`find d -exec cp x {}/k ${B};`]: ['{} | {}/k'],
     [`find . -execdir sh -c "echo > {}" ${B};`]: ['{} | sh -c echo > {}'],
     [`find . -exec source {} ${B};`]: ['source {} | {}'],
