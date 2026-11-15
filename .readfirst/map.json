@@ -27,7 +27,7 @@
           ]
         },
         {
-          "text": "parse() knows its options from two lists, `FLAGS` (on/off) and `VALUES` (take a value, also as --name=value); any other --option is an error, so a new option must go into one of them or every use of it fails with 'unknown option', and into `COMMAND_OPTIONS` for each command that reads it, or main() refuses it there (until 2026-11-14 an option a command did not read was ignored: `fix --dry-run` wrote the map). Before 0.26.4 an unknown option took the next word as its value (hook --new-flag --stop ran the wrong hook). A `hook` call (not --install) never fails on its own arguments or errors: main() answers with a systemMessage warning and exit 0, because exit 2 from a PreToolUse hook refuses the tool call (an older readfirst that did not know --gate stopped every Edit and Bash call of a session, 2026-11-08)",
+          "text": "parse() knows its options from two lists, `FLAGS` (on/off) and `VALUES` (take a value, also as --name=value; kept beside the readers of a readfirst command, which skip the same values, since 2026-11-15 one list where there were two copies); any other --option is an error, so a new option must go into one of them or every use of it fails with 'unknown option', and into `COMMAND_OPTIONS` for each command that reads it, or main() refuses it there (until 2026-11-14 an option a command did not read was ignored: `fix --dry-run` wrote the map). Before 0.26.4 an unknown option took the next word as its value (hook --new-flag --stop ran the wrong hook). A `hook` call (not --install) never fails on its own arguments or errors: main() answers with a systemMessage warning and exit 0, because exit 2 from a PreToolUse hook refuses the tool call (an older readfirst that did not know --gate stopped every Edit and Bash call of a session, 2026-11-08)",
           "files": [
             "src/cli.mjs"
           ]
@@ -633,6 +633,12 @@
           "text": "`spansOf` (src/trigger.mjs) reads a name from an item's text only when it is in backticks or has a shape only code has (camelCase, snake_case, UPPER_CASE with an underscore, a call such as `main()`). A bare capital word with no underscore (CLI, API, URL, JSON, VERSION, FLAGS) is prose: 0.30.0 counted them, and a risk about \"the CLI version\" read as touched by a change to a line using a constant called CLI. A risk about a constant FLAGS must write `FLAGS`. A risk written before that rule and now judged by nothing is listed by `unmatchedItems` with `backtick`, the bare capital words its files declare, so `audit` can say what to put in backticks.",
           "files": [
             "src/trigger.mjs"
+          ]
+        },
+        {
+          "text": "A command the shell never runs is decided once, in `eachCommand`, for every walk (shellWrites, stateAt, bashReads, commandWords and the readers built on it: the answers, the finds, the hook install): after `false &&`, after `true ||` or `: ||` (`status`, the constant result of the list so far; a command skipped keeps it), inside a block, group or subshell such a command opens (`dead`, how deep it stood), and after an `exit` at the top level of this shell (not after && or ||, not in a pipeline, the background, a block, a group, a subshell or a function body). It is not visited: nothing it writes, reads, answers, finds or changes (a cd) counts, and a function it calls is not read. Any other && or || may run, as before, and `if false; then` is read as it was. Until 2026-11-15 every reader read such a command as run: `false && readfirst read f` opened the gate for f, `exit 0; readfirst answer` gave an answer, and the write of `true || echo > f` was named as certain. A new constant result goes into that one place, never into one reader.",
+          "files": [
+            "src/bash-writes.mjs"
           ]
         }
       ]
