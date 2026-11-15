@@ -378,9 +378,20 @@ export function codeTargets(code, { args = [], exists = () => false, glob = () =
     const found = id ? [...assigned(id), ...passed(id)] : [];
     if (found.length) found.forEach((p) => out.add(p)); else unresolved = true;
   }
+  // A target holding a part the shell left not known (\0s: `$X`, find's `{}`) is kept, so add() gives it as not known;
+  // one holding `${ }` or `{ }` is a template or an f-string, known only when the code runs. Both were dropped with no
+  // word until 2026-11-15 (`python3 -c "open('$X','w')"` was silent), and so was a literal holding a plain `$`, which
+  // is that text (`open('$E/x', 'w')` in code the shell does not expand).
+  const kept = [];
+  for (const p of out) {
+    if (!p) continue;
+    if (p.includes(HOLE)) kept.push(p);
+    else if (/\{[^}]*\}/u.test(p)) unresolved = true;
+    else kept.push(p);
+  }
   if (unresolved) onUnresolved?.();
-  if (unresolved && fallback) for (const w of code.match(PATHISH) ?? []) if (exists(w)) out.add(w);
-  return [...out].filter((p) => p && !p.includes('$') && !p.includes('{'));
+  if (unresolved && fallback) for (const w of code.match(PATHISH) ?? []) if (exists(w)) kept.push(w);
+  return [...new Set(kept)];
 }
 
 // A script's text with each write into a temporary folder taken out (its call name made spaces, so neither
@@ -2013,28 +2024,22 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     missing({ part: part ?? `${by} ${shown}`, word: shown, why: `${by} runs it, and readfirst does not read the file's text`, prefix: '' });
   };
   // Code from -c / -e, a here-document or a script file (part: what ran it; why: what to say when a write is not
-  // known): the targets of its write calls (codeTargets). With `fallback` (code from -c, -e or a here-document) a write
-  // whose target is not read falls back to the paths the code names that exist, and is not known only when that names
-  // nothing: `python3 -c "open('d-%d' % n, 'w')"` was quiet until 2026-11-14. Without (a script file), it is not known
-  // whatever else is named, and so is code CODE_WRITES sees writing where no write call names a target.
+  // known): the targets of its write calls (codeTargets). A write whose target is not read is not known, whatever else
+  // is named. Until 2026-11-15 code from -c, -e or a here-document fell back to the paths it names that exist, and was
+  // not known only when that named nothing: `node -e` code that imported one file and wrote computed paths named the
+  // imported file, and a write next to a named path was silent (in this session's transcript the fallback was right in
+  // 1 command of 4 where it made a difference). `expands` (a here-document under a tag not quoted): bash expands `$`
+  // and backticks in the body before the code runs, so a literal target holding one is not known, never that text.
   // Only code counts (runner: what runs it): a write inside a string or a comment is data (lex, the one reader of
   // code, with Python's rules for python, ruby and perl and JavaScript's for the rest). A test file holds commands as
   // data, and `node -e` code quoting `open('e' + 'x', 'w')` named a file it held the path of (2026-11-14).
   // The code inside a template's `${ }` or an f-string's `{ }` is code too (lex marks it 'p'): a write there was
   // missed in silence (review of #222). `read` (a script file read before in this command) keeps its marks.
-  const codeWrites = (code, runner, args, part, why, { fallback = true, read = null } = {}) => {
+  const codeWrites = (code, runner, args, part, why, { read = null, expands = false } = {}) => {
     const marks = read?.marks ?? lex(code.split('\n'), /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js').map((r) => r.mark).join('\n');
     if (read) read.marks = marks;
     const inCode = (i) => marks[i] === 'c' || marks[i] === 'p';
-    if (fallback) {
-      if (![...code.matchAll(CODE_WRITES_ALL)].some((m) => inCode(m.index))) return;
-      let open = false;
-      const targets = codeTargets(code, { args, exists: here, glob, unresolved: () => { open = true; }, fallback, inCode });
-      targets.forEach(add);
-      if (open && !targets.length) missing({ part, word: part, why, prefix: '' });
-      return;
-    }
-    // A script file: its writes into a temporary folder are left out (withoutTempWrites). Each other write call it
+    // Its writes into a temporary folder are left out (withoutTempWrites). Each other write call it
     // finds by its brackets (CODE_WRITES' open( misses `open(os.path.join(a, b), 'w')`) names its target when that is
     // a literal or a name assigned one, and is not known otherwise, as is a write codeTargets cannot place.
     // A name assigned a literal names it only when each of its assignments is one (`p = 'x'` then `p = f()` is not
@@ -2042,23 +2047,29 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // What a file gives for its arguments, in the folder it runs from, is worked out once per command (`read.given`):
     // the temporary-folder pass (scopes) took about 35 ms each time, so 60 runs of one 741 KB script took 3.7 s on
     // Node 20 (CI on be7fbaf), against a test's 3 s.
-    const key = `${state.base}\0${args.join('\0')}`;
+    const key = `${state.base}\0${expands}\0${args.join('\0')}`;
     let result = read?.given?.get(key);
     if (!result) {
       const t = read?.temp ?? withoutTempWrites(code, inCode, /^(?:python|ruby|perl)/u.test(runner) ? 'py' : 'js');
       if (read) read.temp = t;
       let open = false;
-      const names = codeTargets(t.code, { args, glob, unresolved: () => { open = true; }, fallback: false, inCode });
+      const names = codeTargets(t.code, { args, glob, unresolved: () => { open = true; }, fallback: false, inCode }).filter((v) => {
+        if (expands && /[$`]/u.test(v)) { open = true; return false; }
+        return true;
+      });
       const lit = new RegExp(String.raw`^${LIT}$`, 'u');
       for (const { target, unsure } of t.others) {
         if (unsure) { open = true; continue; }
         const l = target.match(lit);
         const id = target.match(/^[A-Za-z_$][\w$]*$/u)?.[0];
         const n = id?.replace(/\$/gu, '\\$');
-        const all = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*(?:[-+*/%|&^]|\*\*|\/\/)?=(?![=>])\s*([^;\n]*)`, 'gmu'))].map((m) => m[1].trim()) : [];
+        // Assignments in code only: ` p = f(x)` inside a string is data (a python here-document holding JavaScript made
+        // its `open(p, 'w')` not known until 2026-11-15).
+        const all = id ? [...t.code.matchAll(new RegExp(String.raw`(?:^|[^\w$.])${n}\s*(?:[-+*/%|&^]|\*\*|\/\/)?=(?![=>])\s*([^;\n]*)`, 'gmu'))].filter((m) => inCode(m.index + m[0].indexOf(id))).map((m) => m[1].trim()) : [];
         const literals = all.map((v) => v.match(lit)?.[2]).filter((v) => v !== undefined);
-        if (l) names.push(l[2]);
-        else if (all.length && literals.length === all.length) names.push(...literals);
+        const given = l ? [l[2]] : all.length && literals.length === all.length ? literals : null;
+        if (given && expands && given.some((v) => /[$`]/u.test(v))) open = true;
+        else if (given) names.push(...given);
         else if (!(ARGV.test(target) && args.length)) open = true;
       }
       result = { names, open };
@@ -2101,7 +2112,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       read = { code, marks: null };
       scriptsRead.set(`${lang}\0${at}`, read);
     }
-    codeWrites(read.code, cmd, rest.filter((a) => !a.startsWith('-')), part, `${cmd} runs that file, and it writes files whose names are known only when it runs`, { fallback: false, read });
+    codeWrites(read.code, cmd, rest.filter((a) => !a.startsWith('-')), part, `${cmd} runs that file, and it writes files whose names are known only when it runs`, { read });
   };
   const scriptsRead = new Map();
   let scriptBytes = 0;
@@ -2286,7 +2297,9 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     // body is read by that shell alone, which sees only exported variables; without, the outer shell expands it first.
     const fed = runner != null && SHELLS.test(runner.split('/').pop());
     if (fed) inner(body, quote ? exportedOnly(state.vars) : state.vars);
-    else if (runner != null && CODE_WRITES.test(body)) { const by = `${runner.split('/').pop()} <<`; codeWrites(body, runner.split('/').pop(), args, by, `${by} runs code that writes files whose names are known only when it runs`); }
+    // Code fed to a runner is read whole, as a script file is: CODE_WRITES on the body missed `open(os.path.join(a, b),
+    // 'w')` before codeWrites saw it.
+    else if (runner != null) { const by = `${runner.split('/').pop()} <<`; codeWrites(body, runner.split('/').pop(), args, by, `${by} runs code that writes files whose names are known only when it runs`, { expands: !quote }); }
     // With a tag not quoted, the shell expands the body before the command gets it: each $( ) and backtick in it runs,
     // as a subshell where the command stands (`cat <<E` with `$(echo > f)` in its body makes f; nothing was named
     // until 2026-11-14). A shell fed the body reads them with its commands (above).
@@ -2486,7 +2499,9 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       const { scripts, rest } = runnerScripts(cmd, args);
       scripts.forEach((w) => runScript(cmd, w, rest));
     } else if (dq(ws[0] ?? '').includes('/')) runFile(dq(ws[0]), 'the command', { part: dq(ws[0]).replaceAll(HOLE, ''), script: true });
-    else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e') && CODE_WRITES.test(segment)) {
+    // The code is the word after -c / -e as the shell gives it, read whole: CODE_WRITES on the command's raw text missed
+    // python's `open('{}','w')` inside `find -exec`, whose quotes are written `'\''` there (2026-11-15).
+    else if (RUNNER.test(cmd) && args.some((w) => w === '-c' || w === '-e')) {
       const i = args.findIndex((w) => w === '-c' || w === '-e');
       codeWrites(args[i + 1] ?? '', cmd, args.slice(i + 2).filter((w) => !w.startsWith('-')), `${cmd} ${args[i]}`, `${cmd} ${args[i]} runs code that writes files whose names are known only when it runs`);
     }
