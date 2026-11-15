@@ -571,7 +571,10 @@ function scanJs(toks, lastLine, wantParams = false) {
     if (punct(t, '=') && f.cur?.rec) f.cur.rec.assigned = true;
     // moduleOwn: the bracket is the value the module exports as a whole, or inside it (`export default wrap({ ... })`).
     const moduleOwn = (isStmt(f) && Boolean(f.cur?.module)) || Boolean(f.moduleOwn);
-    if (punct(t, '(')) push('paren', { moduleOwn });
+    // A `=>` right after the parameters a member waits with (`{async () => {`, in an object or a JSX `{ }`) makes them
+    // an arrow's: no member is waiting, and the brace after the `=>` is the arrow's body, not a type.
+    if (punct(t, '=>') && f.pend && f.pendClose === i - 1) f.pend = null;
+    if (punct(t, '(')) push('paren', f.pend?.open === i ? { moduleOwn, pendParams: true } : { moduleOwn });
     else if (punct(t, '[')) push('bracket');
     else if (punct(t, '{')) {
       const before = prev ? prev.v : '';
@@ -598,6 +601,7 @@ function scanJs(toks, lastLine, wantParams = false) {
       if (g.member) g.member.end = prev.endLine;
       if (isStmt(g) && g.cur) endStatement(g, prev.endLine);
       f = frames.at(-1);
+      if (g.pendParams) f.pendClose = i; // where the waiting member's parameters close
       if (g.decl) {
         g.decl.end = t.line;
         // A declaration that is the whole statement ends the statement with its body.
