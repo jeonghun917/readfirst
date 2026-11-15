@@ -103,6 +103,8 @@ const GATE_DENY = [
   `X=1 false && ${W}`, `env true || ${W}`, `[() { ${W}; }; [`, `p?() { ${W}; }; p?`, `a*() { ${W}; }; a*`,
   `eval 'true() { return 1; }'; true || ${W}`, `shopt -s expand_aliases\nalias true=false\ntrue || ${W}`, `enable -n exit; exit; ${W}`,
   `builtin enable -n exit; exit; ${W}`, `eval 'enable -n exit'; exit; ${W}`,
+  // Review of 41ec531: an eval readfirst cannot spell out.
+  `e=eval; $e "true() { return 1; }"; true || ${W}`, `\\eval 'true() { return 1; }'; true || ${W}`, `"eval" 'enable -n exit'; exit; ${W}`, `e''val 'true() { return 1; }'; true || ${W}`,
   // And the writes that surely never run: named all the same, so refused as on main.
   `true || ${W}`, `false && ${W}`, `exit; ${W}`, `false && { ${W}; }`,
 ];
