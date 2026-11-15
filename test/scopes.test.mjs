@@ -400,6 +400,47 @@ test('scopes: a class field\'s type names are types used, decorated or not; its 
   assert.ok(t.references.filter((r) => r.name === 'A').every((r) => r.type));
 });
 
+test('scopes: only a method sees its class as this; a field\'s function and an object\'s method have their own', () => {
+  const t = scopes('a.ts', 'class C extends B {\n  x = function () { return this; };\n  y = () => this;\n  static z = function* () { yield this; };\n  m() { return this; }\n  w = { k() { return this; } };\n  constructor() { super(); }\n  get g() { return this; }\n  [k]() { return this; }\n  "s"() { return this; }\n  *gen() { yield this; }\n  static { this.t = 1; }\n}\n');
+  assert.deepEqual(t.references.filter((r) => r.name === 'this' || r.name === 'super').map((r) => `${r.name}@${r.line}:${r.to.unknown ?? bindingOf(t, r).how}`),
+    ['this@2:this-outside-class', 'this@3:this', 'this@4:this-outside-class', 'this@5:this', 'this@6:this-outside-class', 'super@7:super', 'this@8:this', 'this@9:this', 'this@10:this', 'this@11:this', 'this@12:this']);
+});
+
+test('scopes: a word that is a keyword only in its own construct is a name elsewhere: bound, used, assigned', () => {
+  const words = ['override', 'type', 'module', 'get', 'set', 'of', 'from', 'as', 'async', 'declare', 'readonly', 'global', 'namespace', 'is', 'accessor', 'static', 'let',
+    'abstract', 'keyof', 'infer', 'unique', 'asserts', 'satisfies', 'implements', 'interface', 'package', 'private', 'protected', 'public', 'enum', 'await', 'yield'];
+  for (const w of words) {
+    for (const path of ['a.js', 'a.ts']) {
+      const t = scopes(path, `function f(${w}) { return ${w}.x(); }\nconst g = [1].reduce((acc, ${w}) => acc + ${w}.startTime, 0);\nconst h = ${w} => ${w}.n;\n`);
+      assert.deepEqual(resolved(t).filter((r) => r.startsWith(`${w}@`)), [`${w}@1->parameter@1`, `${w}@2->parameter@2`, `${w}@3->parameter@3`], `${path}: ${w}`);
+      const u = scopes(path, `let ${w} = 1;\n${w} = 2;\n${w}.k = 3;\n`);
+      assert.deepEqual([u.bindings.filter((b) => b.name === w).map((b) => b.how), resolved(u)], [['let', 'assign'], [`${w}@3->assign@2`]], `${path}: ${w}`);
+    }
+  }
+  // In their constructs they are keywords: no reference to any of them.
+  const t = scopes('a.ts', ['for (const x of xs) {}', 'const y = x as T, z = x satisfies T;', 'async function a() { await p; }', 'const b = async (x) => x;', 'function* g() { yield; yield 1; yield* g(); }',
+    'class C { static s = 1; get g() { return 1; } set g(v) {} async m() {} static {} private p = 1; public q = 2; readonly r = 3; override o() {} accessor c = 1; }',
+    'declare const d: number;', 'type A = keyof B;', 'interface I { a: string }', 'enum E { A }', 'const enum F { B }', 'namespace N {}', 'declare module "m" {}', 'declare global {}',
+    'import x from "m";', 'export { y as w } from "m";', 'let [l1] = xs;', 'let { l2 } = o;', 'abstract class K {}', 'function is2(x): x is string { return true; }'].join('\n') + '\n');
+  assert.deepEqual(t.references.filter((r) => words.includes(r.name)).map((r) => `${r.name}@${r.line}`), []);
+  // `await` and `yield` are keywords in an async function or generator (a function's, a method's, an arrow's head
+  // says which), names in any other function, even alone.
+  const y = scopes('a.js', 'async function a() { await p; const f = async (x) => { await x; }; }\nfunction* g() { yield; yield 1; yield* g(); }\nclass C { async m() { await q; } *n() { yield 1; } static async *o() { await r; yield 2; } async [k]() { await t; } async \'m2\'() { await u; } *[Symbol.iterator]() { yield 3; } }\nconst o = { async k() { await s; }, *l() { yield; } };\nfunction plain(await, yield) { return h(await, yield); }\nconst ar = async x => await x;\n');
+  assert.deepEqual(resolved(y).filter((r) => /^(await|yield)@/u.test(r)), ['await@5->parameter@5', 'yield@5->parameter@5']);
+  // A top-level `await` makes a module, with no import or export (and a .mjs or .mts file is one); `of` is a keyword
+  // only in a `for`'s parentheses, so rxjs's `of(1)` is a call.
+  for (const [path, text] of [['a.mjs', 'const { x } = await import("./y.mjs");\nx();\n'], ['a.ts', 'await main();\nasync function main() {}\n'], ['a.js', 'const rl = [];\nfor await (const l of rl) l;\n'], ['a.mjs', 'function f() { return await; }\n']]) {
+    assert.deepEqual(scopes(path, text).references.filter((r) => r.name === 'await' || r.to.unknown), [], `${path}: ${text}`);
+  }
+  assert.deepEqual(resolved(scopes('a.js', 'import { of, from } from "rxjs";\nof(1); from([2]);\nfor (const a of (xs)) a;\n')).filter((r) => /^(of|from)@/u.test(r)), ['of@2->import@1', 'from@2->import@1']);
+  // A line's end ends the construct: `type` and `module` at the end of a line are names, whatever starts the next.
+  assert.deepEqual(resolved(scopes('a.ts', 'function f(type, module) {\n  const a = type\n  const b = module\n  g()\n}\n')).filter((r) => /^(type|module)@/u.test(r)), ['type@2->parameter@1', 'module@3->parameter@1']);
+  // Strict-mode words are keywords anywhere in a module or a class body; Node's `global` is a builtin.
+  assert.equal(scopes('a.js', 'import m from "m";\nfunction f(static) { return static.x; }\n').references.some((r) => r.name === 'static'), false);
+  assert.equal(scopes('a.js', 'class C { m(let) { return let.x; } }\n').references.some((r) => r.name === 'let'), false);
+  assert.deepEqual(referenceAt(scopes('a.js', 'global.x = 1;\n'), 'global', 1).to, { builtin: true });
+});
+
 test('scopes: every reason given is one of REASONS', () => {
   const t = scopes('a.js', "with (o) { a; }\neval('x');\nimport(name);\nrequire(name);\n");
   for (const r of [...t.references.filter((x) => x.to.unknown).map((x) => x.to.unknown), ...t.unknown.map((x) => x.reason)]) assert.ok(REASONS.includes(r), r);
@@ -463,6 +504,8 @@ const SCOPE_SHAPES = {
   'js: a long import list': (n) => `import { ${Array.from({ length: n / 6 }, (_, i) => `n${i}`).join(', ')} } from 'm';\n`,
   'js: deep functions': (n) => `${'function f(a) {'.repeat(n / 32)}${'a + '.repeat(n / 8)}a;${'}'.repeat(n / 32)}`,
   'js: deep blocks with var': (n) => `function f() {${'{ var x = 1;'.repeat(n / 14)}x;${'}'.repeat(n / 14)}}`,
+  // Whether `yield` or `await` is a keyword asks the class or function around once, not by walking every scope out.
+  'js: deep blocks with yield and await': (n) => `async function* f() {${'{ yield await 1;'.repeat(n / 18)}${'}'.repeat(n / 18)}}`,
   'js: deep arrows': (n) => `const f = ${'a => '.repeat(n / 5)}a;\n`,
   'js: a long else-if chain': (n) => `let y;\nif (x === 0) { y = 0; }${Array.from({ length: n / 30 }, (_, i) => ` else if (x === ${i}) { y = x; }`).join('')}\n`,
   'js: many reassignments': (n) => `let z = 0;\n${'z = z + 1;\n'.repeat(n / 11)}`,
