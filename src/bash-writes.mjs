@@ -1443,6 +1443,7 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
   // pipeline or the background; dead: -1). Any other && or || may run, as before. A never command is not visited.
   let status = null;
   let dead = null;
+  let aliased = false;
   const inSub = (list) => list.some((o) => o.sub);
   // `case W in a) cd /a;;` is one segment up to the first `;`: its head `case W in` opens the block, and the rest is
   // the first arm. Until 2026-11-13 the arm was not read: `a)` stood where the command name should be, so a cd in an
@@ -1618,8 +1619,14 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     // name the command defines as a function (`true() { return 1; }`): review of ae3fea9, which let a write through.
     if (never) { if (dead === null && (state.blocks?.length ?? 0) + groups.length + outer.length > deep) dead = deep; }
     else {
-      const name = unquote(unwrap(opening(raw))[0] ?? '');
-      const plain = !p.lead && !p.closes && !p.opened && !ticks && !raw.includes('!') && !how.pipe && op !== '|' && op !== '|&' && withoutRedirects(raw).length === raw.length && !state.fns?.has(name);
+      // The name is the command's first word, or the word after a bare `command` or `builtin` (which run the builtin);
+      // after NAME=value, env, exec or any other wrapper it is not read as constant. Once the command has run alias,
+      // enable or shopt, a name may stand for anything else, and no result is constant from there on.
+      const ow = opening(raw).map(unquote);
+      const k = /^(?:command|builtin)$/u.test(ow[0] ?? '') ? 1 : 0;
+      const name = ow[k] ?? '';
+      if (/^(?:alias|enable|shopt)$/u.test(unquote(unwrap(opening(raw))[0] ?? ''))) aliased = true;
+      const plain = !aliased && !p.lead && !p.closes && !p.opened && !ticks && !raw.includes('!') && !how.pipe && op !== '|' && op !== '|&' && withoutRedirects(raw).length === raw.length && !state.fns?.has(name);
       status = plain && (name === 'true' || name === ':') ? 'true' : plain && name === 'false' ? 'false' : null;
       if (name === 'exit' && plain && deep === 0 && !subBefore && op !== '&' && before !== '&&' && before !== '||' && !how.body && !keeping && inside === 0) dead = -1;
     }
