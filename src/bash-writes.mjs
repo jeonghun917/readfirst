@@ -1636,6 +1636,14 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false, skip 
     }
     const defined = state.fnBody;
     if (!never) visit(p, raw, how, op);
+    // Skipped, a command still leaves not known what it may change: the guess that it never runs can be wrong, and
+    // then its cd or assignment did run (review of #229: `true || cd a; readfirst read y.md` credited y.md in the
+    // first folder). Followed on the state, then made unsure from before it, as the end of an && list does.
+    else if (!how.body) {
+      const from = snapshot(state);
+      follow(state, opening(raw), how);
+      unsure(state, from, 'is set only on some paths through the command (in a command that may never run)');
+    }
     // A ( ) closing puts back what the shell held, not how deep a function's body is (the text's syntax): put back, the
     // depth of `f() { cd a; ( echo ) }` went back to 1 at the ), so the body never ended (review of #217).
     for (let k = 0; k < p.closes; k++) Object.assign(state, outer.pop(), { fnDepth: state.fnDepth });
