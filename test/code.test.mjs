@@ -131,6 +131,20 @@ test('members: an async arrow in braces is an arrow, not a method named async', 
   assert.equal(bounds('a.ts', L('const o = {', '  m(): () => void {', '    return () => {};', '  },', '};'), { members: true }), 'o:1-5 m:2-4');
 });
 
+test('members: an async arrow in braces with a return type is an arrow too; a method with one is a method', () => {
+  const handler = (head) => L('const el = (', '  <D', `    onDelete={${head} {`, '      setOpen(false);', '      if (done) {', '        refresh();', '      }', '    }}', '  />', ');', 'const z = 1;');
+  for (const head of ['async (): Promise<void> =>', 'async (e): e is E =>', 'async <T,>(x: T): T =>', 'async (): Promise<Map<A, B>> =>', 'async (): { a: 1 } =>', 'async (e: Event): Promise<[A, B]> =>']) {
+    assert.equal(bounds('a.tsx', handler(head), { members: true }), 'el:1-10 z:11-11', head);
+  }
+  assert.equal(bounds('a.ts', L('const o = {', '  async(): number {', '    go(1);', '    if (x) {', '    }', '  },', '  async m(): Promise<(a: A) => B> {', '    go(2);', '    if (x) {', '    }', '  },', '};'), { members: true }), 'o:1-12 async:2-6 m:7-11');
+  assert.equal(bounds('a.ts', L('const o = {', '  m(): (a: A) => { b: B } {', '    return null;', '  },', '};'), { members: true }), 'o:1-5 m:2-4');
+});
+
+// Not read right yet: a return type in parentheses before the arrow's `=>` is taken for a function type's parameters.
+test('members: an async arrow in braces whose return type ends in parentheses', { todo: 'a guess of the reader, named where the wait ends' }, () => {
+  assert.equal(bounds('a.tsx', L('const el = (', '  <D', '    onDelete={async (): A | (() => void) => {', '      setOpen(false);', '      if (done) {', '        refresh();', '      }', '    }}', '  />', ');', 'const z = 1;'), { members: true }), 'el:1-10 z:11-11');
+});
+
 // ---- The comment and decorators above a declaration (top), and what is around it (parent).
 const around = (path, body, opts) => declarations(path, body, opts).map((d) => `${d.name}:${d.top}/${d.parent ?? '-'}`).join(' ');
 
