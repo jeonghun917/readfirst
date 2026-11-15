@@ -247,7 +247,7 @@ function declarations(path, body) {
 // and the removed lines after it go on from there. Without the file (or a change given without `at`), each line is
 // read alone.
 function changedCode(path, c, rows) {
-  const lang = lexLang(path); // as codeRows reads the file, so a removed line goes on from its row's state
+  const lang = rows?.lang ?? lexLang(path); // as codeRows read the file, so a removed line goes on from its row's state
   let carry = null; // { before: the line a run of removed lines stood before, state }
   return c.text.map((text, i) => {
     const n = c.at?.[i];

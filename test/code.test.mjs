@@ -69,6 +69,17 @@ const SHAPES = [
   ['jsx: brackets and a semicolon in JSX text over lines', 'a.jsx', ['const el = <p>a (', '  ; [ b {', 'x', '}</p>', 'const z = 1'], 'el:1-4 z:5-5'],
   ['jsx: an attribute string holding > and a comment opener', 'a.tsx', ['const el = <a title="a > b /* c">t</a>;', 'const z = 1;'], 'el:1-1 z:2-2'],
   ['jsx: an attribute string holding > in a self-closing tag', 'a.jsx', ['const el = <input title="a > b" />;', 'const z = 1;'], 'el:1-1 z:2-2'],
+  ['jsx: a TSX generic arrow with a default is no JSX', 'a.tsx', ['const f = <T = unknown>(x: T) => x;', 'const el = <p>see /* here</p>;', 'const z = 1;'], 'f:1-1 el:2-2 z:3-3'],
+  ['jsx: a comment holding a quote inside a tag', 'a.tsx', ["const a = <div /* it's */ x=\"1\">t</div>;", 'const el = <p>see /* here</p>;', 'const z = 1;'], 'a:1-1 el:2-2 z:3-3'],
+  ['jsx: a line comment inside a tag over lines', 'a.jsx', ['const a = (', '  <div // a note {see below', '    x="1"', '  >t</div>', ');', 'const el = <p>see /* here</p>;', 'const z = 1;'], 'a:1-5 el:6-6 z:7-7'],
+  // What the TypeScript compiler does not parse: Flow's generics in .js, an element never closed (an edit cut short),
+  // `<T>(` in .tsx. Its JSX never closes, and the file is read as it was before JSX was read: these bounds are that
+  // reading's, never worse.
+  ['jsx: a Flow generic arrow in .js', 'a.js', ['// @flow', 'const id = <T>(x: T): T => x;', 'const after1 = 1;', 'const after2 = 2;'], 'id:2-2 after1:3-3 after2:4-4'],
+  ['jsx: a Flow generic function type in .js', 'a.js', ['// @flow', 'type F = <T>(x: T) => T;', 'const after1 = 1;'], 'F:2-2 after1:3-3'],
+  ['jsx: an element never closed', 'a.jsx', ['const el = <p>never closed;', 'const after = 1;', 'function g() {}'], 'el:1-1 after:2-2 g:3-3'],
+  ['jsx: a generic arrow without a comma in .tsx', 'a.tsx', ['const f = <T>(x: T) => x;', 'const after1 = 1;'], 'f:1-1 after1:2-2'],
+  ['jsx: text that begins with a parenthesis', 'a.jsx', ['const el = <a>(optional) ; [</a>;', 'const z = 1;'], 'el:1-1 z:2-2'],
   ['asi: `as` at a line end', 'a.ts', ['const a = b as', '  Listener | null', 'const z = 1'], 'a:1-2 z:3-3'],
   ['asi: `satisfies` starting a line does not continue (no line break is allowed before it)', 'a.ts', ['const c = {', '  d: 1,', '}', '  satisfies Shape', 'const z = 1'], 'c:1-3 z:5-5'],
   ['asi: class fields without semicolons', 'a.ts', ['class Abc {', '  count = 1', '  items = []', '  static make = () => new Abc()', '  run() {', '    return 1', '  }', '}', 'const z = 1'], 'Abc:1-8 run:5-7 z:9-9'],
@@ -456,6 +467,12 @@ const JSX_SHAPES = {
   'deep JSX over lines': (n) => `const e = (\n${'<div>\n'.repeat(n / 12)}x\n${'</div>\n'.repeat(n / 12)})\n`,
   'long JSX text with comment and quote openers': (n) => `const e = <p>${'a /* b // c \' d ` e '.repeat(n / 24)}</p>\nconst z = 1\n`,
   'many JSX elements with placeholders': (n) => `const e = <ul>${'<li a={x}>t {y}</li>\n'.repeat(n / 22)}</ul>\n`,
+  // A minified bundle: one long line, with a `<`, a `/` or a `!` after a name again and again. Whether the line so far
+  // ends in a keyword is read from its last characters (`tail` in lex), not from the line again (30 times the time for
+  // 4 times a line of `for(i=0;i<n;i++)`, before).
+  'one long line of comparisons': (n) => 'for(i=0;i<n;i++)s+=i;'.repeat(n / 21),
+  'one long line of divisions and regular expressions': (n) => 'x = a/b; return /x/.test(a);'.repeat(n / 27),
+  'one long line of negations and non-null assertions': (n) => 'y = !a && b!.c;'.repeat(n / 15),
 };
 
 test('jsx: linear steps and time in the depth of elements over lines and the length of their text', async () => {
