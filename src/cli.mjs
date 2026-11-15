@@ -1300,14 +1300,16 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
   const byRoot = new Map();
   const firstSeen = new Map(); // the earliest time a file of each repository was marked
   const lost = []; // marked files whose repository git does not find now
+  const gone = []; // marked files whose folder is gone, in no repository now
+  const roots = new Map(); // rootOf's answers, by folder
   const unlooked = new Map(); // by repository: files let through with no time to look them up, never looked up since
   const here = repoOf(event.cwd ?? process.cwd());
   for (const recorded of Object.keys(seen)) {
     // `pending:` (upkeep said) and `notrun:` (checks said not run) are notes, not files; `start:<root>` is when the
     // session first wrote in a repository through a command readfirst cannot read; `touched:<file>` a file the hook had
     // no time to look up. The last two are checked like any edited file.
-    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|findat|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone):(.*)$/su);
-    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|findat|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone)$/u.test(tag[1])) continue;
+    const tag = recorded.match(/^(pending|notrun|start|touched|call|denied|resent|find|findwords|findat|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone|gone):(.*)$/su);
+    if (tag && /^(?:pending|notrun|call|denied|resent|find|findwords|findat|nofind|nofindwrite|shown|read|unknown|misread|failed|ask|answer|unsure|untrue|head|base|unchecked|unasked|refused|redone|gone)$/u.test(tag[1])) continue;
     if (tag?.[1] === 'start') {
       if (!byRoot.has(tag[2])) byRoot.set(tag[2], []);
       firstSeen.set(tag[2], Math.min(firstSeen.get(tag[2]) ?? Infinity, seen[recorded]));
@@ -1316,11 +1318,32 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     // Keys recorded before paths were resolved through symlinks are resolved here.
     const raw = tag ? tag[2] : recorded;
     const key = isAbsolute(raw) ? physical(raw) : raw;
-    const root = isAbsolute(key) ? repoOf(existsSync(dirname(key)) ? dirname(key) : here ?? '/') : here;
+    // A file whose folder is gone is placed by its nearest existing folder (rootOf): a folder deleted inside a repository
+    // that is still there is a change of that repository and is checked (until 2026-11-15 it was said as not checked),
+    // when that repository tracks the file (in its index or HEAD). One it does not track was in a checkout that is gone
+    // (a worktree or a nested repository kept inside it, ignored there), which that repository's checks never see.
+    const folderThere = isAbsolute(key) && existsSync(dirname(key));
+    let root = isAbsolute(key) ? rootOf(key, roots) : here;
+    let broken = false;
+    if (root && isAbsolute(key) && !folderThere) {
+      const rel = relative(root, key).replace(/\\/gu, '/');
+      // A git that fails here leaves the file not checked, said on every stop (lost), never dropped as gone. A repository
+      // with no commit has no HEAD: its index is the answer.
+      try {
+        let tracked = Boolean(git(root, 'ls-files', '--cached', '--', rel).trim());
+        let head = true;
+        try { git(root, 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}'); } catch { head = false; }
+        if (!tracked && head) tracked = Boolean(git(root, 'ls-tree', '-r', '--name-only', 'HEAD', '--', rel).trim());
+        if (!tracked) root = null;
+      } catch { root = null; broken = true; }
+    }
     // The hook marks only files inside a repository, so a marked file whose repository git no longer finds (a .git file
     // pointing at a gitdir that is gone, a moved folder) is a file whose checks cannot run: said below, never dropped
-    // (review of readfirst#207).
-    if (!root) { if (isAbsolute(key)) lost.push(key); continue; }
+    // (review of readfirst#207). One whose folder is gone and no repository holds what is left (a worktree removed in
+    // the session) is said once and then dropped: `gone:<path>` keeps it from being said again, and is read only while the
+    // path is still gone, so a checkout made again at that path is checked as any (review of readfirst#247: the mark
+    // left a worktree added again at the same path unchecked). Until 2026-11-15 it was said on every stop.
+    if (!root) { if (folderThere || broken) lost.push(key); else if (isAbsolute(key) && seen[`gone:${key}`] === undefined) gone.push(key); continue; }
     const path = isAbsolute(key) ? relative(root, key).replace(/\\/gu, '/') : key;
     if (path.startsWith('..')) continue;
     if (!byRoot.has(root)) byRoot.set(root, []);
@@ -1361,6 +1384,17 @@ export function runStopHook(input, { stateDir = tmpdir(), timeout = 600 } = {}) 
     const line = `readfirst: the stop could not check ${lost.sort().map((f) => `\`${f}\``).join(', ')}: git finds no repository holding ${lost.length === 1 ? 'it' : 'them'} now (${why}), so the checks the map lists for ${lost.length === 1 ? 'it' : 'them'} did not run and no answer was compared with the change. Fix what stopped it, or say why it cannot be fixed, before you finish.`;
     for (const d of dirs) unchecked.push(`${d}: ${why}`);
     if (said(key)) notes.push(line); else { say(key); blocks.push(line); }
+  }
+  if (gone.length) {
+    // Refused once, as a file not checked is, then each file is marked gone and left out of every later stop: what is
+    // gone cannot be checked again, and saying so on every stop refused the stop on every turn (2026-11-15).
+    const files = [...gone].sort();
+    const them = files.length === 1 ? 'it' : 'them';
+    blocks.push(`readfirst: the stop could not check ${files.map((f) => `\`${f}\``).join(', ')}: ${files.length === 1 ? 'its folder is' : 'their folders are'} gone and no repository holds what is left of the path (a worktree or checkout removed in this session, or moved), so the checks the map lists for ${them} did not run. If the work in ${them} was kept (committed and pushed, or moved to another checkout), say where; if not, say so before you finish. Readfirst says this once: later stops leave ${them} out.`);
+    // One for each folder removed (the topmost missing folder of the path), as the line counts repositories.
+    const removed = (f) => { let d = dirname(f); while (!existsSync(dirname(d)) && dirname(d) !== d) d = dirname(d); return d; };
+    for (const d of new Set(files.map(removed))) unchecked.push(`${d}: folder gone`);
+    try { addSeen(stateDir, event.session_id, {}, Object.fromEntries(files.map((f) => [`gone:${f}`, Date.now()]))); } catch { /* said again next time */ }
   }
   for (const [root, edited] of [...byRoot].sort(([a], [b]) => a.localeCompare(b))) {
     const r = stopFor(root, edited, timeout, byRoot.size > 1, firstSeen.get(root), { said, say, answers: givenAnswers(seen), head: headOf(seen, root), start: baseOf(seen, root), unlooked: gated ? unlooked.get(root) ?? [] : [], asked, unanswered });
