@@ -205,3 +205,34 @@ test('after a move between commits the Stop hook does not check what it brought,
   run(root, 'git stash pop -q');
   assert.match(String(stop(root, id)), /`false`/u, 'stash pop leaves src/a.js changed: its check is asked for');
 });
+
+// patch -d DIR (--directory) moves into DIR before anything else: the file it is given, -o, -i and the names in the
+// patch are all under DIR, and a patch on stdin is opened by the shell where the command runs. Until 2026-11-15 -d was
+// left out: `patch -d sub -p1 < fix.diff` named a.txt, where patch changed sub/a.txt, and `--directory sub` named sub.
+test('patch -d DIR names the files under DIR, and bash agrees', { skip: !hasGit && 'bash, git or patch is not installed' }, () => {
+  const p0 = '--- a.txt\n+++ a.txt\n@@ -1 +1 @@\n-one\n+fixed\n';
+  for (const [script, want] of [
+    ['patch -s -d sub -p1 < fix.diff', ['sub/a.txt']],
+    ['patch -s --directory=sub -p1 < fix.diff', ['sub/a.txt']],
+    ['patch -s --directory sub -p1 < fix.diff', ['sub/a.txt']],
+    ['patch -s -dsub -p1 < fix.diff', ['sub/a.txt']],
+    ['patch -s -p1 -d sub < fix.diff', ['sub/a.txt']],
+    ['patch -s -d sub -p1 -i in.diff', ['sub/a.txt']],
+    ['patch -s -d sub -p1 -i ../fix.diff', ['sub/a.txt']],
+    ['patch -s -d sub b.txt < fix0.diff', ['sub/b.txt']],
+    ['patch -s -d sub -o out.txt a.txt < fix0.diff', ['sub/out.txt']],
+    ['patch -s -d sub -p0 < fix0.diff', ['sub/a.txt']],
+    ['patch -s --strip 1 -d sub < fix.diff', ['sub/a.txt']],
+  ]) {
+    const dir = setUp();
+    mkdirSync(join(dir, 'sub'));
+    for (const f of ['sub/a.txt', 'sub/b.txt']) writeFileSync(join(dir, f), 'one\n');
+    writeFileSync(join(dir, 'sub/in.diff'), readFileSync(join(dir, 'fix.diff'), 'utf8'));
+    writeFileSync(join(dir, 'fix0.diff'), p0);
+    assert.deepEqual(named(script, dir), want, script);
+    assert.deepEqual(bashChanged(script, dir).filter((f) => !/\.orig$/u.test(f)), want, `bash: ${script}`);
+  }
+  // A folder known only when the command runs: nothing is named, and the write is not known.
+  const unplaced = named('patch -d $D -p1 < fix.diff', setUp());
+  assert.ok(unplaced.length > 0 && unplaced.every((w) => w.startsWith('?')), unplaced.join(', '));
+});

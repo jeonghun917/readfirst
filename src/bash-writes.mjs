@@ -252,16 +252,6 @@ function opening(ws) {
     out = out.slice(1);
   }
 }
-// The files patch writes: the positional file after its options; -p/-i/-d/-o and the rest take a value.
-function patchFiles(args) {
-  const out = [];
-  for (let i = 0; i < args.length; i++) {
-    if (/^-[pidoDrBFVYz]$/u.test(args[i])) { i++; continue; }
-    if (!args[i].startsWith('-')) out.push(args[i]);
-  }
-  // cut: not a list: patch writes its first positional argument; a second one is the patch it reads
-  return out.slice(0, 1);
-}
 // The files a unified diff changes, made, or removes, from its `--- ` and `+++ ` lines (the new name; the old one when
 // the new is /dev/null, as for a removal), each with its first `strip` folders taken off as patch -pN and git apply
 // -pN take them (git's default is 1: `b/src/x.js` is src/x.js). A name with fewer folders than that stays out, as
@@ -784,6 +774,9 @@ const OPTIONS = {
   unlink: { next: '', long: {} },
   sort: { next: 'oSTkt', long: { output: 'o', 'buffer-size': 'S', 'temporary-directory': 'T', key: 'k', 'field-separator': 't', parallel: 'p', 'files0-from': 'F' } },
   awk: { next: 'fEvFWil', long: { file: 'f', exec: 'E', assign: 'v', 'field-separator': 'F', include: 'i', load: 'l' } },
+  // GNU patch 2.7.6: every option that takes a value (`--directory sub` named sub as the file it patches until
+  // 2026-11-15); the long-only ones are put under letters patch does not use.
+  patch: { next: 'BDdFgioprVYzx', long: { prefix: 'B', ifdef: 'D', directory: 'd', fuzz: 'F', get: 'g', input: 'i', output: 'o', strip: 'p', 'reject-file': 'r', 'version-control': 'V', 'basename-prefix': 'Y', suffix: 'z', debug: 'x', 'quoting-style': 'Q', 'reject-format': 'R', 'read-only': 'O' } },
 };
 // { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given }
 function options(args, spec) {
@@ -2398,17 +2391,21 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
     else if (cmd === 'tee' || cmd === 'truncate') o.files.forEach(add);
     // patch: the file named first, or, with none (`patch -p1 < fix.diff`, missed until 2026-11-14), the files the
-    // patch it reads names.
-    else if (cmd === 'patch') {
-      const named = patchFiles(args);
-      // -o FILE writes the patched text there, not over the file (review of #225: nothing was named).
-      const out = args.find((w) => /^--output=/u.test(w))?.slice(9) ?? (args.includes('-o') ? args[args.indexOf('-o') + 1] : undefined);
-      if (out !== undefined && !args.includes('--dry-run')) add(out);
-      else if (named.length) named.forEach(add);
-      else if (!args.includes('--dry-run')) {
-        const p = args.find((w) => /^-p\d+$/u.test(w)) ?? (args.includes('-p') ? `-p${args[args.indexOf('-p') + 1]}` : undefined);
-        const input = args.find((w) => /^--input=/u.test(w))?.slice(8) ?? (args.includes('-i') ? args[args.indexOf('-i') + 1] : stdinFile(ws) && dq(stdinFile(ws)));
-        applyPatch('patch', input === undefined ? null : readText(input), p === undefined ? undefined : Number(p.slice(2)), '.');
+    // patch it reads names. -d DIR (--directory) moves it into DIR before anything else, so every path it is given
+    // (the file, -o, -i, a second operand: the patch) and every name in the patch is under DIR; a patch on stdin was
+    // opened by the shell, where the command runs. Until 2026-11-15 -d was left out: `patch -d sub -p1 < fix.diff`
+    // named a.txt where patch changed sub/a.txt, and `--directory sub` named sub as the file.
+    else if (cmd === 'patch' && !args.includes('--dry-run')) {
+      const dir = o.values.d?.at(-1) ?? '.';
+      const at = (w) => (isAbsolute(w) ? w : join(dir, w));
+      const file = o.files[0];
+      if (o.values.o) add(at(o.values.o.at(-1)));
+      else if (file !== undefined) add(at(file));
+      else {
+        const strip = o.values.p?.at(-1);
+        const input = o.values.i?.at(-1);
+        const text = input !== undefined ? readText(at(input)) : stdinFile(ws) ? readText(dq(stdinFile(ws))) : null;
+        applyPatch('patch', text, strip === undefined || !/^\d+$/u.test(strip) ? undefined : Number(strip), dir);
       }
     }
     // touch and rm write (or take away) the files they are given; sort -o writes its output file.
