@@ -438,11 +438,28 @@ export function evidenceDrift(map, { files = [], read = () => null, history = ()
       // Said only when the line sits inside a declaration, so there is a name to give: top-level code (a script's last
       // lines) has none, and saying so on every check would be noise nobody can act on.
       if (a.state === 'unanchored') { if (declIn(path).some((d) => at >= d.top && at <= d.end)) unanchored.push({ where, ref, path }); continue; }
-      if (a.state === 'ok') continue;
+      // The innermost of the declarations the item names that holds line n.
+      const holder = (n) => a.decls.filter((d) => n >= d.top && n <= d.end).sort((x, y) => (x.end - x.top) - (y.end - y.top))[0] ?? null;
+      const names = [...new Set(a.decls.map((d) => d.name))];
+      const lines = a.decls.map((d) => d.line);
+      // A line inside the one declaration the item names is right with no history read: git's history (a log -S and a
+      // diff per line) is read only for a line outside them, or inside one of several, where it may belong to another.
+      if (a.state === 'ok' && names.length < 2) continue;
       const c = history(path, ref);
       const moved = c ? toNew(c, at) : null;
+      if (a.state === 'ok') {
+        // Right only in the declaration the line was written for: where git carries it (2026-11-14: a line in any
+        // declaration the item names counted, so evidence written for beta that the code pushed into alpha was never
+        // said). `inside`: the declaration it sits in instead.
+        const was = moved !== null && moved !== at ? holder(moved) : null;
+        const here = holder(at);
+        if (was && was.name !== here?.name) drift.push({ where, ref, path, at, now: moved, names, lines, movedWith: was.name, inside: here?.name ?? null });
+        continue;
+      }
       const now = moved !== null && moved !== at && a.decls.some((d) => moved >= d.top && moved <= d.end) ? moved : null;
-      drift.push({ where, ref, path, at, now, names: [...new Set(a.decls.map((d) => d.name))], lines: a.decls.map((d) => d.line) });
+      // movedWith: the declaration the line is in now, the innermost of those the item names (2026-11-14: `fix` named
+      // the first one the item names, so of two lines moved with alpha and beta both were said to move with alpha).
+      drift.push({ where, ref, path, at, now, names, lines, movedWith: now === null ? null : holder(now)?.name ?? null });
     }
   }
   return { drift, unanchored };
