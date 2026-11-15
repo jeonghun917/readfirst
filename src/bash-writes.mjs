@@ -252,16 +252,6 @@ function opening(ws) {
     out = out.slice(1);
   }
 }
-// The files patch writes: the positional file after its options; -p/-i/-d/-o and the rest take a value.
-function patchFiles(args) {
-  const out = [];
-  for (let i = 0; i < args.length; i++) {
-    if (/^-[pidoDrBFVYz]$/u.test(args[i])) { i++; continue; }
-    if (!args[i].startsWith('-')) out.push(args[i]);
-  }
-  // cut: not a list: patch writes its first positional argument; a second one is the patch it reads
-  return out.slice(0, 1);
-}
 // The files a unified diff changes, made, or removes, from its `--- ` and `+++ ` lines (the new name; the old one when
 // the new is /dev/null, as for a removal), each with its first `strip` folders taken off as patch -pN and git apply
 // -pN take them (git's default is 1: `b/src/x.js` is src/x.js). A name with fewer folders than that stays out, as
@@ -784,6 +774,9 @@ const OPTIONS = {
   unlink: { next: '', long: {} },
   sort: { next: 'oSTkt', long: { output: 'o', 'buffer-size': 'S', 'temporary-directory': 'T', key: 'k', 'field-separator': 't', parallel: 'p', 'files0-from': 'F' } },
   awk: { next: 'fEvFWil', long: { file: 'f', exec: 'E', assign: 'v', 'field-separator': 'F', include: 'i', load: 'l' } },
+  // GNU patch 2.7.6: every option that takes a value (`--directory sub` named sub as the file it patches until
+  // 2026-11-15); the long-only ones are put under letters patch does not use.
+  patch: { next: 'BDdFgioprVYzx', long: { prefix: 'B', ifdef: 'D', directory: 'd', fuzz: 'F', get: 'g', input: 'i', output: 'o', strip: 'p', 'reject-file': 'r', 'version-control': 'V', 'basename-prefix': 'Y', suffix: 'z', debug: 'x', 'quoting-style': 'Q', 'reject-format': 'R', 'read-only': 'O' } },
 };
 // { files: the words that are not options or option values, values: letter -> [values], inPlace, script: -e/-E/-f given }
 function options(args, spec) {
@@ -812,6 +805,23 @@ function options(args, spec) {
     }
   }
   return { files, values, inPlace, script: Boolean(values.e || values.E || values.f) };
+}
+
+// The folder a command works in after each of its change-folder options, in order (patch -d, git -C), dq'd: each
+// moves on from the one before, an absolute one from /, and one that begins with a part known only when it runs
+// (`-d $X`) may be absolute too, so from there on the folder starts with that part and is under nothing known; what
+// follows is put after it as written, never joined (join's `..` would take the part away). Review of #236: `-d sub -d
+// $X` was placed under sub/.
+// A part not known inside a value is never joined through either: `sub/$X/..` keeps its `..` after $X (join made it
+// sub, a sure folder, though $X may be empty).
+function foldDirs(dirs, start = '.') {
+  return dirs.reduce((at, d) => {
+    if (d.startsWith(HOLE) || isAbsolute(d)) return d;
+    if (at.includes(HOLE)) return `${at}/${d}`;
+    const cut = d.indexOf(HOLE);
+    // join keeps the head's last /: `sub/` then $X stays sub/$X, `zz-` then $X stays zz-$X.
+    return cut < 0 ? join(at, d) : `${join(at, d.slice(0, cut))}${d.slice(cut)}`;
+  }, start);
 }
 
 // A word runs on through quotes, a $( ) (one level of parentheses inside it) and backticks: `sed -i ... $(grep -rl x src
@@ -1969,7 +1979,20 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       const to = q.indexOf('/', last);
       const dir = !made && from > 0 && to > last && !q.slice(first, last).includes('/') && (isAbsolute(q) || state.base != null) ? knownPrefix(q.slice(0, from)) : '';
       const within = dir ? { dir, pre: q.slice(from, first), post: q.slice(last + 1, to) } : null;
-      missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: made ? `${made.replace(/\/$/u, '')}/` : knownPrefix(p.slice(0, p.indexOf(HOLE))), ...(made ? { fresh: true } : {}), ...(direct ? { direct: true } : {}), ...(within ? { within } : {}) });
+      const known = made ? `${made.replace(/\/$/u, '')}/` : knownPrefix(p.slice(0, p.indexOf(HOLE)));
+      // A `..` after what is not known climbs from the folder known before it, as that part may be empty: `sub/$X/../f`
+      // may be ./f, so it is under the folder above sub, and neither fresh, direct nor within (until 2026-11-15 it was
+      // under sub/, and `$(mktemp -d)/../f` a new name).
+      // A name mktemp makes is one folder in `made`, so its first `..` comes back to made.
+      const ups = q.slice(first).split('/').filter((s) => s === '..').length;
+      if (ups) {
+        const climbs = ups - (made ? 1 : 0);
+        let above = known;
+        for (let k = 0; k < climbs && above; k++) { const t = above.replace(/\/+$/u, ''); above = t && dirname(t) !== '/' ? `${dirname(t)}/` : '/'; }
+        missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: above });
+        return;
+      }
+      missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: known, ...(made ? { fresh: true } : {}), ...(direct ? { direct: true } : {}), ...(within ? { within } : {}) });
       return;
     }
     if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1));
@@ -2128,7 +2151,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const under = state.base == null ? state.why?.prefix ?? '' : `${resolve(state.base, dir)}/`;
     if (text == null) { missing({ part: by, word: by, why: `${by} changes the files the patch names, and readfirst does not read the patch`, prefix: under }); return; }
     if (strip === undefined) { missing({ part: by, word: by, why: `${by} without -p takes the names in the patch in ways that depend on the files there`, prefix: under }); return; }
-    diffPaths(text, strip).forEach((p) => add(join(dir, p)));
+    diffPaths(text, strip).forEach((p) => add(foldDirs([dir, p])));
   };
   // A git command that changes tracked files the command does not name (sub: the subcommand; rest: its words; dir:
   // where it runs, as `-C` gives it): merge, rebase, pull, cherry-pick, revert, am, a stash put back (pop, apply,
@@ -2149,7 +2172,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       const make = rest.findIndex((w) => /^(?:-[bBc]|-C|--orphan|--create|--force-create)$/u.test(w));
       const others = rest.filter((w, k) => !w.startsWith('-') && !(make >= 0 && k === make + 1));
       // A checkout of words that are files names those files (gitPaths, above); a word that is no file is a commit.
-      const commits = sub === 'checkout' ? others.filter((w) => !here(join(dir, w))) : others;
+      const commits = sub === 'checkout' ? others.filter((w) => !here(foldDirs([dir, w]))) : others;
       moves = commits.length > 0 || (rest.includes('-') && make < 0);
     }
     if (!moves) return;
@@ -2406,17 +2429,23 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     if ((cmd === 'sed' || cmd === 'perl') && o.inPlace) (o.script ? o.files : o.files.slice(1)).forEach(add);
     else if (cmd === 'tee' || cmd === 'truncate') o.files.forEach(add);
     // patch: the file named first, or, with none (`patch -p1 < fix.diff`, missed until 2026-11-14), the files the
-    // patch it reads names.
-    else if (cmd === 'patch') {
-      const named = patchFiles(args);
-      // -o FILE writes the patched text there, not over the file (review of #225: nothing was named).
-      const out = args.find((w) => /^--output=/u.test(w))?.slice(9) ?? (args.includes('-o') ? args[args.indexOf('-o') + 1] : undefined);
-      if (out !== undefined && !args.includes('--dry-run')) add(out);
-      else if (named.length) named.forEach(add);
-      else if (!args.includes('--dry-run')) {
-        const p = args.find((w) => /^-p\d+$/u.test(w)) ?? (args.includes('-p') ? `-p${args[args.indexOf('-p') + 1]}` : undefined);
-        const input = args.find((w) => /^--input=/u.test(w))?.slice(8) ?? (args.includes('-i') ? args[args.indexOf('-i') + 1] : stdinFile(ws) && dq(stdinFile(ws)));
-        applyPatch('patch', input === undefined ? null : readText(input), p === undefined ? undefined : Number(p.slice(2)), '.');
+    // patch it reads names. -d DIR (--directory) moves it into DIR before anything else, so every path it is given
+    // (the file, -o, -i, a second operand: the patch) and every name in the patch is under DIR; a patch on stdin was
+    // opened by the shell, where the command runs. Until 2026-11-15 -d was left out: `patch -d sub -p1 < fix.diff`
+    // named a.txt where patch changed sub/a.txt, and `--directory sub` named sub as the file.
+    else if (cmd === 'patch' && !args.includes('--dry-run')) {
+      // Each -d moves on from the folder the one before it moved to (`-d sub -d b` is sub/b), an absolute one from /
+      // (review of #236: only the last was taken, so `-d sub -d b` named b/a.txt where patch changed sub/b/a.txt).
+      const dir = foldDirs(o.values.d ?? []);
+      const at = (w) => (isAbsolute(w) ? w : foldDirs([dir, w]));
+      const file = o.files[0];
+      if (o.values.o) add(at(o.values.o.at(-1)));
+      else if (file !== undefined) add(at(file));
+      else {
+        const strip = o.values.p?.at(-1);
+        const input = o.values.i?.at(-1);
+        const text = input !== undefined ? readText(at(input)) : stdinFile(ws) ? readText(dq(stdinFile(ws))) : null;
+        applyPatch('patch', text, strip === undefined || !/^\d+$/u.test(strip) ? undefined : Number(strip), dir);
       }
     }
     // touch and rm write (or take away) the files they are given; sort -o writes its output file.
@@ -2430,15 +2459,16 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       // git's own options before the subcommand: -C <dir> runs it in that folder, -c <k=v> and --no-pager change nothing.
       let i = 0;
       let dir = '.';
-      const cs = []; // the -C folders as given, for resolve (join drops the / of an absolute one)
+      const cs = []; // the -C folders as given, for foldDirs
       while (i < args.length && args[i].startsWith('-')) {
-        if (args[i] === '-C') { dir = join(dir, args[i + 1] ?? ''); cs.push(args[i + 1] ?? ''); i += 2; } else if (args[i] === '-c') i += 2; else i++;
+        if (args[i] === '-C') { cs.push(args[i + 1] ?? ''); i += 2; } else if (args[i] === '-c') i += 2; else i++;
       }
       // An absolute -C folder is where git runs, not a folder under this one: join made `git -C /w checkout -- f` a
       // write to ./w/f, which once variables were followed showed this repository's notes for a path that does not
-      // exist (2026-11-13).
-      if (cs.some((c) => isAbsolute(c))) dir = resolve('/', ...cs);
-      if (/^(?:checkout|restore)$/u.test(args[i] ?? '')) gitPaths(args.slice(i), (w) => here(join(dir, w))).forEach((p) => add(join(dir, p)));
+      // exist (2026-11-13). One known only when it runs may be absolute too (foldDirs): `git -C a -C $X` was placed
+      // under a/, and `git -C $X checkout -- ../f` named ./f, until 2026-11-15.
+      dir = foldDirs(cs);
+      if (/^(?:checkout|restore)$/u.test(args[i] ?? '')) gitPaths(args.slice(i), (w) => here(foldDirs([dir, w]))).forEach((p) => add(foldDirs([dir, p])));
       // A checkout the command makes (worktree add, clone, init): a write below it lands in a repository, though none
       // is there yet when the hook runs (`git worktree add $S/w-$rev` then a write into $S/w-$rev).
       const sub = args[i];
@@ -2454,14 +2484,14 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
           const into = ap.find((w) => w.startsWith('--directory='))?.slice(12) ?? '';
           const patches = ap.filter((w, k) => !w.startsWith('-') && !/^-[pCx]$/u.test(ap[k - 1] ?? ''));
           const input = patches.length ? patches : stdinFile(ws) ? [dq(stdinFile(ws))] : [null];
-          for (const f of input) applyPatch('git apply', f == null ? null : readText(f), p === undefined ? 1 : Number(p.slice(2)), join(dir, into));
+          for (const f of input) applyPatch('git apply', f == null ? null : readText(f), p === undefined ? 1 : Number(p.slice(2)), foldDirs([dir, into]));
         }
       } else if (sub === 'rm' || sub === 'mv') {
         // git rm takes its paths away (not with --cached: the index only); git mv names where they were and go.
         const gr = args.slice(i + 1);
         if (!(sub === 'rm' && gr.includes('--cached')) && !gr.some((w) => /^(?:-n|--dry-run)$/u.test(w))) {
           const dd = gr.indexOf('--');
-          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => add(join(dir, p)));
+          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => add(foldDirs([dir, p])));
         }
       } else if (sub !== undefined) gitMoves(sub, args.slice(i + 1), dir);
       for (const m of made ? perTurn(made) ?? [made] : []) {
