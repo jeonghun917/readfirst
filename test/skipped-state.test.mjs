@@ -5,7 +5,7 @@
 // && list), so a read that depends on it is not credited. A skipped command that changes nothing leaves all known.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -44,6 +44,14 @@ test('the write #229 changed: a JS object read as shell writes nothing, as in ba
   const js = run('module.exports = {\n  makeUser() {},\n  buildOrder: () => 1,\n};\n');
   assert.equal(js.wrote('1,'), false, 'bash writes nothing');
   assert.deepEqual(js.named, [], 'and readfirst names nothing');
+  // The other two the review of #229 counted (its strings ran between two literals of test/code.test.mjs): JS that
+  // starts `, () =>` and a class with decorators, `@d() @d m(...)`. bash stops at the syntax error in both and writes
+  // nothing; readfirst names no file (the second gives `@d` as a write it cannot place, which costs one refusal).
+  for (const script of [", () => assert.equal(bounds(path, lines.join('\\n')), want));\n\n// Known and not read right\n", 'import d from "d";\n@d @d.e class E {\n  @d x = 1;\n  @d() @d m(@d p: number) { return p; }\n  @d\n  n() {}\n}\n']) {
+    const r = run(script);
+    assert.deepEqual(readdirSync(r.dir), [], `bash writes nothing: ${JSON.stringify(script.slice(0, 30))}`);
+    assert.deepEqual(r.named, [], `readfirst names no file: ${JSON.stringify(script.slice(0, 30))}`);
+  }
   const colon = run('buildOrder:() { echo x > made; }; buildOrder:');
   assert.equal(colon.wrote('made'), true, 'bash runs a function named with a colon');
   assert.deepEqual(colon.named, [join(colon.dir, 'made')], 'and readfirst reads its body where it is called');
