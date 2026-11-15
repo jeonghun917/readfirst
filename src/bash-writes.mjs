@@ -2107,11 +2107,55 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
 // into a pipe (`| head`, `| grep`: cut or filtered), to the background (`&`) or when --limit cuts the list. 2> and >&2
 // leave stdout where it is. It is read from the command before it runs (a PreToolUse hook): a read that then fails
 // (npx cannot install, the file is not tracked) still counts.
-// The command is readfirst, readfirst@version or a path ending in readfirst.mjs, run directly or through npx or node,
-// followed by `read`; any other way of running it (an alias, a script, inside $( )) is not seen here. Relative paths
+// The command runs readfirst as `readfirstRun` reads it, with `read` as its subcommand; a -c string is read the same
+// way (three deep); any other way of running it (an alias, a script, inside $( )) is not seen here. Relative paths
 // start where the cds before it moved to, or at --root when it is given, as `readfirst read` resolves them.
 const READ_VALUES = new Set(['root', 'limit', 'timeout', 'base', 'out', 'for', 'labels', 'lang']);
-export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {}) {
+// Where one command's words run readfirst, for every reader of a readfirst command (bashReads, answerRuns and
+// findQueries through readfirstAt, readfirstHookOf; until 2026-11-15 each had a spelling pattern of its own, and each
+// missed forms another knew): the words that launch it (a shell, node, npx, npm exec or x, pnpm or yarn dlx, bun x,
+// bunx, env, `--`, NAME=value and their options, skipping the value of one that takes a value such as -p <package>),
+// then the readfirst program (readfirst, readfirst@<any version>, a path ending in readfirst or readfirst.mjs, read as
+// written so a backslash stays a separator), then its own options (READ_VALUES take a value) up to its subcommand.
+// words: [{ text, raw }]. { program, sub }: the indexes of the program and of its subcommand (words.length when there
+// is none); { code }: the text of a -c string (sh -c, bash -lc, npx -c or --call), to be read as a command of its own;
+// null: no readfirst is run here.
+const RUN_LAUNCHERS = new Set(['sh', 'bash', 'zsh', 'dash', 'node', 'npx', 'npm', 'bun', 'bunx', 'pnpm', 'yarn', 'dlx', 'exec', 'x', 'env', '--']);
+const RUN_VALUE = /^(?:-[prC]|--(?:package|require|import|loader|experimental-loader|conditions|env-file|workspace|prefix|dir|cache))$/u;
+const RUN_CODE = /^(?:-[a-z]*c|--call)$/u;
+export function readfirstRun(words) {
+  const said = (k) => String(words[k]?.raw ?? words[k]?.text ?? '').replace(/^["']|["']$/gu, '');
+  let i = 0;
+  while (i < words.length) {
+    const w = said(i);
+    if (!RUN_LAUNCHERS.has(w.split(/[\\/]/u).pop()) && !w.startsWith('-') && !/^\w+=/u.test(w)) break;
+    if (i > 0 && RUN_CODE.test(w)) return { code: words[i + 1]?.text ?? '' };
+    i += RUN_VALUE.test(w) ? 2 : 1;
+  }
+  if (!/^readfirst(?:@\S+)?(?:\.mjs)?$/u.test(said(i).split(/[\\/]/u).pop())) return null;
+  let j = i + 1;
+  while (j < words.length && String(words[j].text).startsWith('-')) j += !words[j].text.includes('=') && READ_VALUES.has(words[j].text.replace(/^--?/u, '')) ? 2 : 1;
+  return { program: i, sub: Math.min(j, words.length) };
+}
+// Each command of a shell text as commandWords gives it, with the commands of a -c string (readfirstRun's code) read
+// in its place, three deep, so every reader of a readfirst command sees `sh -c "readfirst ..."`. An inner command runs
+// where the outer one does, in its pipeline or body; when the string is not written out, none of its words is known,
+// nor when it takes anything from a variable, even one the command sets (`X='{}'; sh -c "readfirst answer \"$X\""`
+// was an answer in the first draft of this, 2026-11-15): a $ or backtick in the outer words as written is enough.
+export function readfirstCommands(command, cwd = process.cwd(), depth = 0) {
+  const out = [];
+  for (const c of commandWords(command, cwd)) {
+    const run = readfirstRun(c.words);
+    if (!run || !('code' in run)) { out.push(c); continue; }
+    if (depth >= 3) continue;
+    const known = c.words.every((w) => w.known && !/[$`]/u.test(String(w.raw ?? '')));
+    for (const inner of readfirstCommands(run.code, c.at ?? cwd, depth + 1)) {
+      out.push({ ...inner, words: known ? inner.words : inner.words.map((w) => ({ ...w, known: false })), pipe: c.pipe || inner.pipe, body: c.body || inner.body, at: c.at == null ? null : inner.at });
+    }
+  }
+  return out;
+}
+export function bashReads(command, cwd = process.cwd(), { vars = new Map(), depth = 0 } = {}) {
   const out = [];
   // cd and the variables the command sets are followed as bashWrites follows them (`S=/a; cd $S && readfirst read f`);
   // `vars`: those it starts with (the hook's environment).
@@ -2123,18 +2167,25 @@ export function bashReads(command, cwd = process.cwd(), { vars = new Map() } = {
   // No mark free (liftBegin): no read is counted.
   try { if (!liftBegin(shell)) return out; eachCommand(shell, state, (p, raw, how, op) => {
     const opened = opening(raw);
-    const ws = unwrap(opened).map((w) => shellWord(w, state.vars).text);
-    const at = ws.findIndex((w) => /^(?:readfirst(?:@[\w.-]+)?|\S*readfirst\.mjs)$/u.test(w));
+    const said = unwrap(opened).map((w) => ({ raw: w, text: shellWord(w, state.vars).text }));
+    const ws = said.map((w) => w.text);
+    const run = readfirstRun(said);
     const base = state.base;
     if (follow(state, opened, how)) { /* a cd or an assignment */ }
-    else if (at >= 0 && ws[at + 1] === 'read' && ws.slice(0, at).every((w) => /^(?:\S*\/)?(?:npx|node)$|^(?:--yes|-y)$/u.test(w))) {
+    else if (run?.code != null) {
+      // A -c string is a command of its own, run where this one is; its reads are not seen when this command sends
+      // its output away.
+      const away = op === '|' || op === '|&' || op === '&' || ws.some((w) => /^(?:1|&)?>/u.test(w) && !/^(?:1)?>&/u.test(w));
+      if (depth < 3) for (const r of bashReads(run.code, base, { vars: new Map([...state.vars].filter(([, x]) => x.exported)), depth: depth + 1 })) out.push(away ? { ...r, seen: false, why: 'its output was sent elsewhere' } : r);
+    } else if (run && ws[run.sub] === 'read') {
       const files = [];
       let root = null;
       let limit = false;
       // A pipe takes its output; `&` (the segments split there) sends it to the background, where it need not come
       // back with the call.
       let thrown = op === '|' || op === '|&' || op === '&';
-      const args = ws.slice(at + 2);
+      // readfirst's own options before `read` (`readfirst --root d read f`) are read as those after it.
+      const args = [...ws.slice(run.program + 1, run.sub), ...ws.slice(run.sub + 1)];
       let names = false; // after `--` every word but a redirect is a file
       for (let i = 0; i < args.length; i++) {
         const w = args[i];

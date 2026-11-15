@@ -21,5 +21,7 @@ test('bashReads: output sent to a file, /dev/null or a pipe, or a list cut by --
   // An escaped \& is part of the name, not the background (the backslash itself is not taken out here: the path is not pinned).
   assert.deepEqual(seen('readfirst read a\\&b.js'), [true]);
   assert.deepEqual(seen('FOO=1 npx readfirst read a.js; env X=1 npx readfirst read a.js; (readfirst read a.js >/dev/null)'), [true, true, false]);
-  assert.deepEqual(bashReads('x=$(readfirst read a.js); echo $(readfirst read a.js); bash -c "readfirst read a.js"', '/w'), [], 'inside $( ) or another shell: not seen here');
+  assert.deepEqual(bashReads('x=$(readfirst read a.js); echo $(readfirst read a.js)', '/w'), [], 'inside $( ): its output goes to the command around it');
+  // Another shell's -c string hands its output to this command's (until 2026-11-15 it was not read at all).
+  assert.deepEqual(seen('bash -c "readfirst read a.js"; bash -c "readfirst read a.js" > x'), [true, false]);
 });

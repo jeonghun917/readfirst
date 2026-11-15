@@ -33,7 +33,7 @@ import { scan, scanTextReport } from './scan.mjs';
 import { MAP_PATH, draftChecks, draftMap, fixMap, mapProblems, matcher, migrateMap, settleMap, unBom, unshownRisks } from './map.mjs';
 import { agentBrief } from './prompt.mjs';
 import { pendingDue, pendingLine, pendingUpkeep } from './pending.mjs';
-import { bashReads, commandWords, shellWrites } from './bash-writes.mjs';
+import { bashReads, commandWords, readfirstCommands, readfirstRun, shellWrites } from './bash-writes.mjs';
 import { ANSWER_HOW, ANSWER_KINDS, ANSWER_KINDS_LINE, answered, answersIn, givenAnswers, itemTally, lastAnswers, openUnsure, parseAnswer, readfirstAt, wideItems } from './answers.mjs';
 import { pinFiles, pinnedReadfirst, pinProblems } from './pins.mjs';
 import { audit, auditText, parseBlame, parseLog } from './audit.mjs';
@@ -697,17 +697,19 @@ export function findQueries(command, cwd) {
   if (!/readfirst/u.test(text) || !/\bfind\b/u.test(text)) return [];
   const loops = new Map();
   const out = [];
-  for (const c of commandWords(text, cwd)) {
+  for (const c of readfirstCommands(text, cwd)) {
     const w = c.words;
     if (w[0]?.known && w[0].text === 'for' && w[2]?.text === 'in') { loops.set(w[1]?.text, w.slice(3).filter((x) => x.known).map((x) => x.text)); continue; }
     if (c.body || c.at == null) continue;
-    const start = readfirstAt(w, 'find');
-    if (start < 0) continue;
+    const run = readfirstAt(w, 'find');
+    if (!run) continue;
     let runs = [[]];
     // --root: find searches that folder (from the command's), so its query counts there; a value not written out
     // leaves the folder not known.
     let root = c.at;
-    for (let i = start; i < w.length; i++) {
+    // readfirst's own options before `find` (`readfirst --root d find q`) count as those after it.
+    for (let i = run.program + 1; i < w.length; i++) {
+      if (i === run.sub) continue;
       const x = w[i];
       // An option is told by the word as written, before it is known: `--root=$D` is an option whose value is not
       // known (review of 099df6e: it was read as neither, and the find counted in the command's folder).
@@ -1725,32 +1727,13 @@ const HOOK_MATCHER = HOOK_TOOLS.join('|');
 // not see it and added a second entry, so the hook ran twice).
 // Read by the command's words (commandWords), never by its spelling (review of #218: a pattern missed
 // `readfirst@^1.2 hook`, `node C:\x\readfirst.mjs hook` and `readfirst --no-color hook`, and took `readfirst hook-x`):
-// what launches it (a shell, node, npx, npm exec, pnpm dlx, bun x, their options and the values those take, `--`,
-// NAME=value), then the readfirst program (readfirst, readfirst@<any version>, a path ending in readfirst or
-// readfirst.mjs, read as written so a backslash stays a separator), then its first word that is not an option or an
-// option's value, which must be `hook`. A -c string (sh -c, bash -lc, npx -c / --call) is read the same way as a
-// command of its own. { stop } says whether it is the Stop hook (`--stop`); null: no readfirst hook.
-const LAUNCHERS = new Set(['sh', 'bash', 'zsh', 'dash', 'node', 'npx', 'npm', 'bun', 'bunx', 'pnpm', 'yarn', 'dlx', 'exec', 'x', 'env', '--']);
-const LAUNCHER_VALUE = /^(?:-[prC]|--(?:package|require|import|loader|experimental-loader|conditions|env-file|workspace|prefix|dir|cache))$/u;
-const LAUNCHER_CODE = /^(?:-[a-z]*c|--call)$/u;
-export function readfirstHookOf(command, depth = 0) {
-  for (const c of commandWords(String(command ?? ''), process.cwd())) {
-    const w = c.words.map((x) => String(x.raw ?? x.text).replace(/^["']|["']$/gu, ''));
-    let i = 0;
-    let code = null;
-    while (i < w.length && (LAUNCHERS.has(w[i].split(/[\\/]/u).pop()) || w[i].startsWith('-') || /^\w+=/u.test(w[i]))) {
-      if (i > 0 && LAUNCHER_CODE.test(w[i])) { code = c.words[i + 1]?.text ?? ''; break; }
-      i += LAUNCHER_VALUE.test(w[i]) ? 2 : 1;
-    }
-    if (code !== null) {
-      const inner = depth < 3 ? readfirstHookOf(code, depth + 1) : null;
-      if (inner) return inner;
-      continue;
-    }
-    if (!/^readfirst(?:@\S+)?(?:\.mjs)?$/u.test((w[i] ?? '').split(/[\\/]/u).pop())) continue;
-    let j = i + 1;
-    while (j < w.length && w[j].startsWith('-')) j += !w[j].includes('=') && VALUES.has(w[j].replace(/^--?/u, '')) ? 2 : 1;
-    if (w[j] === 'hook') return { stop: w.slice(j + 1).includes('--stop') };
+// readfirst run as `readfirstRun` (src/bash-writes.mjs) reads it, the reader the gate's read, answer and find readers
+// share, with `hook` as its subcommand; a -c string (sh -c, bash -lc, npx -c / --call) is read the same way, as a
+// command of its own (readfirstCommands). { stop } says whether it is the Stop hook (`--stop`); null: no readfirst hook.
+export function readfirstHookOf(command) {
+  for (const c of readfirstCommands(String(command ?? ''), process.cwd())) {
+    const run = readfirstRun(c.words);
+    if (run && 'sub' in run && c.words[run.sub]?.text === 'hook') return { stop: c.words.slice(run.sub + 1).some((w) => w.text === '--stop') };
   }
   return null;
 }
