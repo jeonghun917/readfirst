@@ -1910,20 +1910,21 @@ export function bashWrites(command, cwd = process.cwd()) {
 // its environment); a here-document or a `bash -c` string is read with those of the shell around it that it sees.
 export function shellWrites(command, cwd = process.cwd(), options = {}) {
   try {
-    if (!liftBegin(command)) return { files: [], unknown: [{ part: 'the command', word: '', why: NO_MARK, prefix: '' }], repos: [], removes: [] };
+    if (!liftBegin(command)) return { files: [], unknown: [{ part: 'the command', word: '', why: NO_MARK, prefix: '' }], repos: [], noEditTool: [] };
     return writesOf(command, cwd, options);
   } finally { liftDone(); }
 }
 function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   const found = new Set();
-  // gone: what a removal or a move names (rm, unlink, git rm, mv, git mv: no edit tool does either); wrote: what any
-  // other write names. A file only in gone is a `removes` of the result (the gate's hint to use the edit tools leaves
-  // those out, 2026-11-15).
+  // gone: what a removal or a move names (rm, unlink, git rm: the file removed; mv: where it goes, which is written, not
+  // removed; git mv: both); wrote: what any other write names. A file only in gone is a `noEditTool` of the result: a
+  // write no edit tool can make, so the gate's hint to use one leaves it out (2026-11-15). It is not a list of the files
+  // removed: mv's destination is in it, and its source is in no list of the result.
   const gone = new Set();
   const wrote = new Set();
   let removing = false;
   const addFound = (f) => { found.add(f); (removing ? gone : wrote).add(f); };
-  const takeIn = (r) => { for (const f of r.files) { found.add(f); (r.removes?.includes(f) ? gone : wrote).add(f); } };
+  const takeIn = (r) => { for (const f of r.files) { found.add(f); (r.noEditTool?.includes(f) ? gone : wrote).add(f); } };
   const unknown = [];
   // The variables it starts with (the hook passes its own environment: Claude Code starts it with the session's), and
   // $PWD where it starts.
@@ -2627,7 +2628,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // and each here-document's opener where its mark stands: since #211 the mark itself was shown (`$(cat  0 )` with a
   // private-use character, where the command said `$(cat <<E ...)`).
   const opener = (t) => (mark && t.includes(mark) ? t.replace(markWord, (m) => { const d = docs[Number(m.slice(mark.length))]; return d ? `<<${d.quote ? `'${d.tag}'` : d.tag}` : m; }) : t);
-  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: opener(unlift(u.part)), word: opener(unlift(u.word)) })), repos: [...repos], removes: [...found].filter((f) => gone.has(f) && !wrote.has(f)) };
+  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: opener(unlift(u.part)), word: opener(unlift(u.word)) })), repos: [...repos], noEditTool: [...found].filter((f) => gone.has(f) && !wrote.has(f)) };
 }
 
 // The files each `readfirst read` in a shell command asks for, and whether its whole output reaches whoever ran the

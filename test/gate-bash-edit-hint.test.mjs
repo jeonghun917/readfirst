@@ -10,9 +10,10 @@ import { test } from 'node:test';
 import { shellWrites } from '../src/bash-writes.mjs';
 import { runHook } from '../src/cli.mjs';
 
-test('shellWrites gives the files a command only removes or moves as removes', () => {
-  const at = realpathSync(mkdtempSync(join(tmpdir(), 'readfirst-removes-')));
-  const r = (c) => shellWrites(c, at).removes.map((f) => f.slice(at.length + 1)).sort();
+// noEditTool is not the files removed: mv's destination is in it (written, by a move), its source in no list.
+test('shellWrites gives the files a command writes only by removing or moving them as noEditTool', () => {
+  const at = realpathSync(mkdtempSync(join(tmpdir(), 'readfirst-noedit-')));
+  const r = (c) => shellWrites(c, at).noEditTool.map((f) => f.slice(at.length + 1)).sort();
   assert.deepEqual(r('rm a b; unlink c'), ['a', 'b', 'c']);
   assert.deepEqual(r('git mv a b'), ['a', 'b']);
   assert.deepEqual(r('mv a d/b'), ['d/b']);
