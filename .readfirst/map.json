@@ -241,6 +241,13 @@
           ]
         },
         {
+          "text": "the find-first gate asks only about names another file could use (`newCode` in src/cli.mjs): those `definitions` (src/find.mjs) marks `reusable` (the file's top level, an export, a member of a reusable class or exported object, read from declarations), and in a test file (`isTest`) only `exported` ones (an export, also by a later `export default`, `export =`, `module.exports =` (`laterExports`: the value read by one reader, a name or the names in the value places and the methods of an object or array, nested ones too, walked with a stack) or `export { X }`, a CommonJS export, Python's top level). Until 2026-11-14 a function's locals and a test's helpers were asked about. A language read by line patterns alone gives neither field, and all its names count.",
+          "files": [
+            "src/cli.mjs",
+            "src/find.mjs"
+          ]
+        },
+        {
           "text": "the gate (`runHook` with --gate) sees one tool call at a time, never the other calls of the response it came in: an agent sends several, they run one after another, and when the gate refuses one, those before it have run and those after it are judged on their own, so a definition refused while the edits that use it went in leaves a file half changed (2026-11-14, three sessions). Every refusal opens by naming the call it refuses (`callWhat`: the tool, the files, an Edit by the first line of its old text; and the hook input's `tool_use_id`) and says the others were not refused by it (`BATCH_LINE`); an error read against the wrong call of a response sent that call twice. Each refusal is kept as `refused:<sig>:<JSON [call, files]>`; a later call let through that writes one of those files, by any tool (a Bash command by the files its write reader names), marks it `redone:<sig>`, so the change made again as a MultiEdit, a Write or a `sed -i` counts. The Stop hook names every refused call with no later `redone:`, once for that set (`refused:said:<hash>`), when the session changed files. The hook input has `transcript_path` and `tool_use_id`, from which the other calls of the response could be read; readfirst does not read it, so any later write of the same file counts as the change made again, whatever it changed.",
           "files": [
             "src/cli.mjs"

@@ -48,7 +48,7 @@ import { keepLocal, labelsBrief, LOCAL_DIR, readLabels } from './labels.mjs';
 import { viewData } from './view.mjs';
 import { mcpHandler, serveMcp } from './mcp.mjs';
 import { cityData, viewHtmlCity } from './view-city.mjs';
-import { emptyList, readList, toMarkdown } from './readlist.mjs';
+import { emptyList, isTest, readList, toMarkdown } from './readlist.mjs';
 import { brokeBefore, readScarLog } from './history.mjs';
 import { cachedBrokeBefore, cachedEdges } from './hook-cache.mjs';
 
@@ -722,12 +722,17 @@ function findAsked(seen, keys, name) {
     return Object.keys(seen).some((k) => k.startsWith(prefix) && k.slice(prefix.length).split(' ').some((q) => (q.startsWith('=') ? plain.includes(q.slice(1)) : mine.some((w) => meets(q, w)))));
   });
 }
-export function newCode(tool, input, abs) {
-  const names = (text) => new Set(definitions(abs, String(text ?? '')).map((d) => d.name));
+// Only names another file could use count (2026-11-14: a const local to a function, an inner function and a test's own
+// helper were asked about too): what definitions reads as reusable (the file's top level, a class's member, an export),
+// and in a test file (isTest, on `rel`, the path in its repository) only what it exports. A language read by line
+// patterns alone says neither, and all its names count, as before.
+export function newCode(tool, input, abs, rel = abs) {
   const texts = editTexts(tool, input, abs);
   if (!texts) return [];
-  const was = names(texts.before);
-  return [...names(texts.after)].filter((n) => !was.has(n));
+  const test = isTest(rel);
+  const was = new Set(definitions(abs, texts.before).map((d) => d.name));
+  const asked = definitions(abs, texts.after).filter((d) => d.reusable !== false && (!test || d.exported !== false));
+  return [...new Set(asked.map((d) => d.name))].filter((n) => !was.has(n));
 }
 // The file an Edit, MultiEdit or Write is about to change, before and after it: { before, after }, or null for any
 // other tool. An edit's old and new strings are fragments (a method's lines without its class, half a statement, a
@@ -874,7 +879,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const askLine = asks.length ? `readfirst: answer each of these before this change, as one quoted JSON argument, then make the same call again: ${ANSWER_HOW} (answer: ${ANSWER_KINDS_LINE}). An answer holds for this session while the change touches the item by the same names.\n- ${asks.map((i) => `\`${i.id}\` (${i.state})${i.shown ? '' : `: ${i.text}`}`).join('\n- ')}` : null;
     const waiting = pendingNotes(targets, seen, now);
     const known = new Map();
-    const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => ({ abs, root: rootOf(abs, known), names: newCode(tool, event.tool_input, abs) }))
+    const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => { const root = rootOf(abs, known); return { abs, root, names: newCode(tool, event.tool_input, abs, root ? relative(root, abs) : abs) }; })
       .filter((f) => f.names.length && f.root && existsSync(join(f.root, MAP_PATH))) : [];
     // The names no find asked about; the ask is kept with them, so the same file given other new names later is asked again.
     // A find is looked for by the repository's id (repoIdOf) and by the file's top level, which state files kept until

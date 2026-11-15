@@ -95,14 +95,77 @@ function docOf(lines, i, py, top = null) {
 // The comment that says what each does comes from the reader's `top` (the comment and decorators right above) and a
 // Python docstring right below. The list also carries the file's own header comment (`header`), which says what the
 // module is for: find matches it for the file as a whole, once, not for each definition in it.
+// The names a module exports by a statement after their declaration, which declarations does not mark as exported
+// (review of 86b02f2: what was exported so, and its members, were no longer asked about). The value of
+// `module.exports = <value>`, `export default <value>` and TypeScript's `export = <value>` is read by one reader
+// (`valueNames`): a name is that name, and an object or array written out gives the names in its value places (a
+// shorthand `{ makeUser }`, `{ key: makeUser }`, `[makeUser]`, `...rest`), never its keys. `export { a, b as c }` gives
+// its local names. Read from the lexed tokens, only when the file says `export`.
+function laterExports(rows) {
+  const out = new Set();
+  if (!rows.some((r) => /\bexports?\b/u.test(r.code ?? r.text ?? String(r)))) return out;
+  const t = tokens(rows);
+  const is = (i, v) => t[i]?.v === v;
+  const opens = (i) => t[i]?.k === 'punct' && /^[{([]$/u.test(t[i].v);
+  const closes = (i) => t[i]?.k === 'punct' && /^[})\]]$/u.test(t[i].v);
+  // Where the statement's value ends after `i`: a ; or a new line at the same bracket depth, or the end.
+  const ends = (i) => i >= t.length || is(i, ';') || closes(i) || is(i, ',');
+  // The names the value that starts at `i` hands over.
+  const valueNames = (i) => {
+    if (t[i]?.k === 'word' && (ends(i + 1) || t[i + 1].line > t[i].line)) { out.add(t[i].v); return; }
+    if (!is(i, '{') && !is(i, '[')) return;
+    // The literal is walked once with a stack of what each open bracket is (review of ce2de88: only its first level
+    // was read): an object or array literal in a value place ('obj', 'arr') is read on, anything else (a method's
+    // parameters or body, a call, a computed key) is 'skip'. In an object, a [ at a key's place is a computed key; in an
+    // array every element is a value. No call per level, so a deep literal costs no stack and no square.
+    const stack = [is(i, '{') ? 'obj' : 'arr'];
+    for (let j = i + 1; j < t.length && stack.length; j++) {
+      const top = stack[stack.length - 1];
+      const before = t[j - 1]?.v;
+      const valued = ['{', '[', ',', ':', '...'].includes(before) && (top === 'arr' || [':', '...'].includes(before));
+      if (opens(j)) { stack.push(top !== 'skip' && valued && (is(j, '{') || is(j, '[')) ? (is(j, '{') ? 'obj' : 'arr') : 'skip'); continue; }
+      if (closes(j)) { stack.pop(); continue; }
+      if (top === 'skip' || t[j].k !== 'word') continue;
+      const after = t[j + 1]?.v;
+      // A word is a value when it stands alone between separators, and is not a key.
+      if (['{', '[', ',', ':', '...'].includes(before) && [',', '}', ']'].includes(after)) out.add(t[j].v);
+      // A method the literal defines (`makeUser() {}`, `async a() {}`, `get total() {}`, `*gen() {}`; review of
+      // c9694c5): its name, at a key's place, before its parameters.
+      else if (top === 'obj' && after === '(' && ['{', ',', 'async', 'get', 'set', '*'].includes(before)) out.add(t[j].v);
+    }
+  };
+  for (let i = 0; i < t.length; i++) {
+    if (is(i, 'module') && is(i + 1, '.') && is(i + 2, 'exports') && is(i + 3, '=')) valueNames(i + 4);
+    else if (t[i].k !== 'word' || t[i].v !== 'export') continue;
+    else if (is(i + 1, 'default')) valueNames(i + 2);
+    else if (is(i + 1, '=')) valueNames(i + 2);
+    else if (is(i + 1, '{')) {
+      for (let j = i + 2; j < t.length && !is(j, '}'); j++) if (t[j].k === 'word' && t[j].v !== 'as' && !is(j - 1, 'as')) out.add(t[j].v);
+    }
+  }
+  return out;
+}
 function readDefinitions(path, body, { lists = false } = {}) {
   const lines = body.split('\n');
   const py = /\.py$/u.test(path);
   const decls = declarations(path, body, { members: true });
   const rows = codeRows(path, body);
+  // reusable: another file could use the name, read from where it is declared: the file's top level, what the module
+  // exports, or a member of a class or an exported object that is itself reusable (a class inside a function is the
+  // function's, and so are its methods: review of 8666556). A name local to a function is not. exported: what another
+  // file imports by name: an export, a CommonJS export (`module.exports = { name }` too), Python's top level, or a
+  // member of what is exported. The find gate asks only about reusable names, and in a test file only exported ones.
+  const at = new Map(decls.map((d) => [`${d.name}\0${d.line}`, d]));
+  const parentOf = (d) => (d.parent == null ? null : at.get(`${d.parent}\0${d.parentLine}`) ?? null);
+  const later = py ? new Set() : laterExports(rows);
+  // shipped: exported where it is declared or by a later statement of the file.
+  const shipped = (d) => Boolean(d.exported || d.ofModule || (!d.depth && later.has(d.name)));
+  const holds = (p) => Boolean(p) && (p.what === 'class' || (p.what === 'var' && shipped(p)));
+  const reusable = (d) => !d.depth || shipped(d) || (holds(parentOf(d)) && reusable(parentOf(d)));
+  const exported = (d) => shipped(d) || (py && !d.depth) || (holds(parentOf(d)) && exported(parentOf(d)));
   const out = decls
     .filter((d) => (d.what !== 'var' || d.fn || d.ofModule) && (!d.member || d.ofModule) && !d.name.startsWith('#') && !KEYWORDS.has(d.name) && d.name.length >= 3)
-    .map((d) => ({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), kind: ['class', 'type', 'alias', 'enum'].includes(d.what) ? 'type' : 'function' }));
+    .map((d) => ({ name: d.name, line: d.line, doc: docOf(lines, d.line - 1, py, d.top), kind: ['class', 'type', 'alias', 'enum'].includes(d.what) ? 'type' : 'function', reusable: reusable(d), exported: exported(d) }));
   out.header = headerOf(path, body, lines, decls, rows);
   // find asks for the lists too, read from the same declarations and lines: a second pass over every file doubled
   // the time of find.
