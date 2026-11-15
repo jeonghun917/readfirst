@@ -1958,12 +1958,21 @@ export function bashWrites(command, cwd = process.cwd()) {
 // its environment); a here-document or a `bash -c` string is read with those of the shell around it that it sees.
 export function shellWrites(command, cwd = process.cwd(), options = {}) {
   try {
-    if (!liftBegin(command)) return { files: [], unknown: [{ part: 'the command', word: '', why: NO_MARK, prefix: '' }], repos: [] };
+    if (!liftBegin(command)) return { files: [], unknown: [{ part: 'the command', word: '', why: NO_MARK, prefix: '' }], repos: [], noEditTool: [] };
     return writesOf(command, cwd, options);
   } finally { liftDone(); }
 }
 function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   const found = new Set();
+  // gone: what a removal or a move names (rm, unlink, git rm: the file removed; mv and git mv: where it was and where it
+  // goes, which is written, not removed); wrote: what any other write names, mv's backup too. A file only in gone is a
+  // `noEditTool` of the result: a write no edit tool can make, so the gate's hint to use one leaves it out (2026-11-15).
+  // It is not a list of the files removed: a move's destination is in it.
+  const gone = new Set();
+  const wrote = new Set();
+  let removing = false;
+  const addFound = (f) => { found.add(f); (removing ? gone : wrote).add(f); };
+  const takeIn = (r) => { for (const f of r.files) { found.add(f); (r.noEditTool?.includes(f) ? gone : wrote).add(f); } };
   const unknown = [];
   // The variables it starts with (the hook passes its own environment: Claude Code starts it with the session's), and
   // $PWD where it starts.
@@ -2068,11 +2077,13 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const relativeUnknown = () => missing({ part: state.why?.part ?? 'cd', word: p, why: state.why?.why ?? 'the folder it is relative to is not known', prefix: state.why?.prefix ?? '', ...(state.why?.fresh ? { fresh: true } : {}) });
     // A glob writes the files it matches (`sed -i ... src/*.js`): one * in the last part is expanded, anything wider
     // or a brace list is left out rather than named as a file called `*.js`.
-    if (/[*?[{]/u.test(p)) { if (isAbsolute(p)) return; if (state.base == null) relativeUnknown(); else glob(p).forEach((f) => found.add(resolve(state.base, f))); return; }
-    if (isAbsolute(p)) found.add(p);
-    else if (state.base != null) found.add(resolve(state.base, p));
+    if (/[*?[{]/u.test(p)) { if (isAbsolute(p)) return; if (state.base == null) relativeUnknown(); else glob(p).forEach((f) => addFound(resolve(state.base, f))); return; }
+    if (isAbsolute(p)) addFound(p);
+    else if (state.base != null) addFound(resolve(state.base, p));
     else relativeUnknown();
   };
+  // w: a word a removal or a move names (rm, unlink, git rm, mv, git mv), added as add does.
+  const takeAway = (w) => { removing = true; try { add(w); } finally { removing = false; } };
   // Where relative paths start, and what the variables are, after some shell text (here-documents already taken out
   // of it). A cd or an assignment inside ( ) ends at its `)`.
   const stateAt = (text) => { const st = start(); return eachCommand(text, st, (p, raw, how) => follow(st, opening(raw), how)); };
@@ -2080,7 +2091,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // variables it sees.
   const inner = (text, innerVars) => {
     const r = shellWrites(text, state.base, { vars: innerVars, why: state.why });
-    r.files.forEach((f) => found.add(f));
+    takeIn(r);
     r.unknown.forEach(missing);
     r.repos.forEach((x) => repos.add(x));
   };
@@ -2265,8 +2276,9 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
     const files = o.files.map(operand);
     const into = o.values.t ? operand(o.values.t.at(-1)) : files.at(-1);
     const sources = o.values.t ? files : files.slice(0, -1);
-    if (cmd === 'mv') sources.forEach(add);
-    add(into);
+    // mv's source and its destination are writes no edit tool makes (noEditTool); a backup it keeps is a file written.
+    if (cmd === 'mv') sources.forEach(takeAway);
+    (cmd === 'mv' ? takeAway : add)(into);
     const backup = backupSuffix(args, OPTIONS[cmd]);
     if (backup == null) return;
     const folder = Boolean(o.values.t) || sources.length > 1 || isFolder(into);
@@ -2354,7 +2366,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
           : inDir
             ? shellWrites(text, null, { vars, why: { part: `find ${args[i]}`, why: `${args[i]} runs it in the folder of each file find finds, known only when it runs`, prefix: startAt ? `${startAt.replace(/\/$/u, '')}/` : '' } })
             : shellWrites(text, state.base, { vars, why: state.why });
-        r.files.forEach((f) => found.add(f));
+        takeIn(r);
         // What it gives is shown as the command was written: `{}` again, with the start folder put before it, never
         // FOUND (`node ./$__readfirst_found_file` was the part of `find . -exec node {} \;`, review of #222).
         const before = inDir ? './' : rootText.includes(HOLE) ? `${root}/` : `${rootText.replace(/\/+$/u, '')}/`;
@@ -2561,7 +2573,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       }
     }
     // touch and rm write (or take away) the files they are given; sort -o writes its output file.
-    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.map(operand).forEach(add);
+    else if (cmd === 'touch' || cmd === 'rm' || cmd === 'unlink') o.files.map(operand).forEach(cmd === 'touch' ? add : takeAway);
     else if (cmd === 'sort' && o.values.o) add(operand(o.values.o.at(-1)));
     else if (cmd === 'npm' || cmd === 'pnpm' || cmd === 'yarn') packages(cmd, args);
     else if (['cp', 'mv', 'install'].includes(cmd) && (o.values.t || o.files.length >= 2)) copies(cmd, args, o);
@@ -2603,7 +2615,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
         const gr = args.slice(i + 1);
         if (!(sub === 'rm' && gr.includes('--cached')) && !gr.some((w) => /^(?:-n|--dry-run)$/u.test(w))) {
           const dd = gr.indexOf('--');
-          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => add(operand(foldDirs([dir, p]))));
+          gr.filter((w, k) => (dd >= 0 ? k > dd : !w.startsWith('-'))).forEach((p) => takeAway(operand(foldDirs([dir, p]))));
         }
       } else if (sub !== undefined) gitMoves(sub, args.slice(i + 1), dir);
       for (const m of made ? perTurn(made) ?? [made] : []) {
@@ -2714,7 +2726,7 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
   // and each here-document's opener where its mark stands: since #211 the mark itself was shown (`$(cat  0 )` with a
   // private-use character, where the command said `$(cat <<E ...)`).
   const opener = (t) => (mark && t.includes(mark) ? t.replace(markWord, (m) => { const d = docs[Number(m.slice(mark.length))]; return d ? `<<${d.quote ? `'${d.tag}'` : d.tag}` : m; }) : t);
-  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: opener(unlift(u.part)), word: opener(unlift(u.word)) })), repos: [...repos] };
+  return { files: [...found], unknown: unknown.map((u) => ({ ...u, part: opener(unlift(u.part)), word: opener(unlift(u.word)) })), repos: [...repos], noEditTool: [...found].filter((f) => gone.has(f) && !wrote.has(f)) };
 }
 
 // The files each `readfirst read` in a shell command asks for, and whether its whole output reaches whoever ran the

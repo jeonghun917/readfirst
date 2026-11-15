@@ -899,7 +899,7 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const keysOnce = () => (keys ??= commandKey(command, cwd));
     if (misread) {
       const whole = { part: 'the whole command', word: command, why: `readfirst hit an error reading it (${misread})`, prefix: '' };
-      written = { files: written?.files ?? [], unknown: [...(written?.unknown ?? []), whole], repos: written?.repos ?? [] };
+      written = { files: written?.files ?? [], unknown: [...(written?.unknown ?? []), whole], repos: written?.repos ?? [], noEditTool: written?.noEditTool ?? [] };
       seen[`misread:${keysOnce().here}`] = now;
     }
     const unplaced = written?.unknown.length ? couldLandIn(written.unknown, seen, cwd, written.repos, Date.now() + budget / 5) : [];
@@ -941,7 +941,14 @@ export function runHook(input, { now = Date.now(), stateDir = tmpdir(), gate = f
     const answers = gate ? givenAnswers(seen) : [];
     const asks = gate ? items.filter((i) => i.need && !answered(answers, i.id, i.by)) : [];
     for (const i of asks) seen[`ask:${JSON.stringify([i.id, i.by])}`] = now;
-    const askLine = asks.length ? `readfirst: answer each of these before this change, as one quoted JSON argument, then make the same call again: ${ANSWER_HOW} (answer: ${ANSWER_KINDS_LINE}). An answer holds for this session while the change touches the item by the same names.\n- ${asks.map((i) => `\`${i.id}\` (${i.state})${i.shown ? '' : `: ${i.text}`}`).join('\n- ')}` : null;
+    // A file a Bash command writes has no edit to judge, so every item of it is asked; said, so a code change is made
+    // with the edit tools, which are judged and ask only what they touch (2026-11-15: a sed over src/cli.mjs asked 23).
+    // Only when it changes a file's content: a file it only removes or moves (rm, unlink, git rm, mv, git mv: shellWrites'
+    // `noEditTool`) is nothing an edit tool can do, so the hint would be wrong there (review of #243).
+    const edits = Boolean(written?.files.some((f) => !written.noEditTool?.includes(f)));
+    const bashAsks = tool === 'Bash' && edits && asks.some((i) => i.state === itemState(null));
+    const bashLine = bashAsks ? '\nA file a Bash command writes gives readfirst no edit to judge, so each of its items is asked; the same change made with Edit, MultiEdit or Write is judged, and asks only the items it touches.' : '';
+    const askLine = asks.length ? `readfirst: answer each of these before this change, as one quoted JSON argument, then make the same call again: ${ANSWER_HOW} (answer: ${ANSWER_KINDS_LINE}). An answer holds for this session while the change touches the item by the same names.\n- ${asks.map((i) => `\`${i.id}\` (${i.state})${i.shown ? '' : `: ${i.text}`}`).join('\n- ')}${bashLine}` : null;
     const waiting = pendingNotes(targets, seen, now);
     const known = new Map();
     const added = /^(?:Edit|Write|MultiEdit)$/u.test(tool) ? targets.map((abs) => { const root = rootOf(abs, known); return { abs, root, names: newCode(tool, event.tool_input, abs, root ? relative(root, abs) : abs) }; })
