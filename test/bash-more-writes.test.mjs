@@ -264,3 +264,26 @@ test('a change-folder option known only when the command runs puts its writes un
     assert.deepEqual(got, want, command);
   }
 });
+
+// A `..` after a part known only when the command runs climbs from the folder known before it, as the part may be
+// empty: `sub/$X/../f` may be ./f. Until 2026-11-15 it was under sub/ (`within`), `patch -d sub/$X/.. a.txt` and `git -C
+// sub/$X/.. checkout -- f` named sub/a.txt and sub/f as sure, and `$(mktemp -d)/../f` was a new name (review of #236).
+test('a `..` after a part known only when the command runs climbs from what is known before it', () => {
+  const dir = setUp();
+  const at = (v) => (v ?? '').replace(dir, '<d>');
+  for (const [command, want] of [
+    ['echo x > sub/$X/../f', [['sub/$X/../f', '<d>/']]],
+    ['echo x > /r/zz-$X/../f', [['/r/zz-$X/../f', '/']]],
+    ['echo x > /r/s/$X/../../f', [['/r/s/$X/../../f', '/']]],
+    ['echo x > $(mktemp -d -p /w)/../f', [['$(mktemp -d -p /w)/../f', '/w/']]],
+    ['patch -d sub/$X/.. a.txt < fix.diff', [['sub/$X/../a.txt', '<d>/']]],
+    ['git -C sub/$X/.. checkout -- f', [['sub/$X/../f', '<d>/']]],
+    // No `..`: as before.
+    ['echo x > sub/$X/f', [['sub/$X/f', '<d>/sub/']]],
+    ['echo x > $(mktemp -d -p /w)/f', [['$(mktemp -d -p /w)/f', '/w/', 'fresh']]],
+  ]) {
+    const r = shellWrites(command, dir);
+    assert.deepEqual(r.files, [], `${command}: nothing named`);
+    assert.deepEqual(r.unknown.map((u) => [u.word, at(u.prefix), ...(u.fresh ? ['fresh'] : [])]), want, command);
+  }
+});

@@ -812,10 +812,15 @@ function options(args, spec) {
 // (`-d $X`) may be absolute too, so from there on the folder starts with that part and is under nothing known; what
 // follows is put after it as written, never joined (join's `..` would take the part away). Review of #236: `-d sub -d
 // $X` was placed under sub/.
+// A part not known inside a value is never joined through either: `sub/$X/..` keeps its `..` after $X (join made it
+// sub, a sure folder, though $X may be empty).
 function foldDirs(dirs, start = '.') {
   return dirs.reduce((at, d) => {
     if (d.startsWith(HOLE) || isAbsolute(d)) return d;
-    return at.startsWith(HOLE) ? `${at}/${d}` : join(at, d);
+    if (at.includes(HOLE)) return `${at}/${d}`;
+    const cut = d.indexOf(HOLE);
+    // join keeps the head's last /: `sub/` then $X stays sub/$X, `zz-` then $X stays zz-$X.
+    return cut < 0 ? join(at, d) : `${join(at, d.slice(0, cut))}${d.slice(cut)}`;
   }, start);
 }
 
@@ -1966,7 +1971,20 @@ function writesOf(command, cwd, { vars = new Map(), why = null } = {}) {
       const to = q.indexOf('/', last);
       const dir = !made && from > 0 && to > last && !q.slice(first, last).includes('/') && (isAbsolute(q) || state.base != null) ? knownPrefix(q.slice(0, from)) : '';
       const within = dir ? { dir, pre: q.slice(from, first), post: q.slice(last + 1, to) } : null;
-      missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: made ? `${made.replace(/\/$/u, '')}/` : knownPrefix(p.slice(0, p.indexOf(HOLE))), ...(made ? { fresh: true } : {}), ...(direct ? { direct: true } : {}), ...(within ? { within } : {}) });
+      const known = made ? `${made.replace(/\/$/u, '')}/` : knownPrefix(p.slice(0, p.indexOf(HOLE)));
+      // A `..` after what is not known climbs from the folder known before it, as that part may be empty: `sub/$X/../f`
+      // may be ./f, so it is under the folder above sub, and neither fresh, direct nor within (until 2026-11-15 it was
+      // under sub/, and `$(mktemp -d)/../f` a new name).
+      // A name mktemp makes is one folder in `made`, so its first `..` comes back to made.
+      const ups = q.slice(first).split('/').filter((s) => s === '..').length;
+      if (ups) {
+        const climbs = ups - (made ? 1 : 0);
+        let above = known;
+        for (let k = 0; k < climbs && above; k++) { const t = above.replace(/\/+$/u, ''); above = t && dirname(t) !== '/' ? `${dirname(t)}/` : '/'; }
+        missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: above });
+        return;
+      }
+      missing({ part: u?.part ?? h[1], word: shown, why: u?.why ?? 'it is not known before the command runs', prefix: known, ...(made ? { fresh: true } : {}), ...(direct ? { direct: true } : {}), ...(within ? { within } : {}) });
       return;
     }
     if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1));
