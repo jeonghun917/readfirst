@@ -1284,11 +1284,13 @@ function mayCd(state, name) {
 // A function definition at the start of some words (`f()`, `f ()`, `f ( )`, `f(){`, `function f`, `function f ()`):
 // its name and the words after the `()`, or null. Until 2026-11-13 `f ( )` was not one: `f ( ) { cd /a; }; f` was
 // read as a call of f and a group that runs where it is written.
+// A name is any word bash takes for one, not only an identifier: `:() { return 1; }` makes `:` fail (review of
+// ae3fea9: the constant results of eachCommand ask whether the command defined the name).
 function definition(ws) {
   const named = ws[0] === 'function' ? 1 : 0;
-  const m = (ws[named] ?? '').match(/^([A-Za-z_][\w-]*)(.*)$/su);
+  const m = (ws[named] ?? '').match(/^([^\s()<>|&;'"$`\\=]+)(\(.*)?$/su);
   if (!m) return null;
-  let tail = m[2];
+  let tail = m[2] ?? '';
   let j = named + 1;
   while (tail.length < 2 && j < ws.length) {
     const joined = tail + ws[j];
@@ -1612,11 +1614,12 @@ function eachCommand(text, state, visit, tail = () => {}, { calls = false } = {}
     for (let k = 0; k < p.opened; k++) outer.push({ ...snapshot(state), sub: true });
     // What a command that ran leaves for the next of its list: a constant result (true, :, false, not negated, not in a
     // pipeline or a subshell), or an exit that ends this shell. One that never ran keeps the status, and makes what it
-    // opens never run.
+    // opens never run. Never with a redirect (`true < missing` fails, and bash goes on after `exit < missing`) or a
+    // name the command defines as a function (`true() { return 1; }`): review of ae3fea9, which let a write through.
     if (never) { if (dead === null && (state.blocks?.length ?? 0) + groups.length + outer.length > deep) dead = deep; }
     else {
       const name = unquote(unwrap(opening(raw))[0] ?? '');
-      const plain = !p.lead && !p.closes && !p.opened && !ticks && !raw.includes('!') && !how.pipe && op !== '|' && op !== '|&';
+      const plain = !p.lead && !p.closes && !p.opened && !ticks && !raw.includes('!') && !how.pipe && op !== '|' && op !== '|&' && withoutRedirects(raw).length === raw.length && !state.fns?.has(name);
       status = plain && (name === 'true' || name === ':') ? 'true' : plain && name === 'false' ? 'false' : null;
       if (name === 'exit' && plain && deep === 0 && !subBefore && op !== '&' && before !== '&&' && before !== '||' && !how.body && !keeping && inside === 0) dead = -1;
     }

@@ -28,6 +28,13 @@ test('a command that may run is read as before', () => {
   for (const before of ['x && ', 'x || ', 'true && ', 'false || ', ': && ', 'false; ', 'false && x || ', 'false && true || ', '! true || ', '(exit 0); ', 'exit 0 | cat; ', 'exit 0 & ', 'if x; then exit; fi; ', '{ x; exit; } || ', 'false | true && ']) {
     assert.deepEqual(reads(`${before}readfirst read a.js`), ['/r/a.js'], before);
   }
+  // Review of ae3fea9: a name alone is no constant result. A redirect can fail (`true < missing` fails, and bash goes
+  // on after `exit < missing`), and a function can take the name (`true() { return 1; }`).
+  for (const before of ['true < missing || ', 'true > nodir/x || ', ': > nodir/x || ', 'exit < missing; ', 'true() { return 1; }; true || ', ':() { return 1; }; : || ', 'exit() { :; }; exit; ', 'false() { :; }; false && ']) {
+    assert.deepEqual(reads(`${before}readfirst read a.js`), ['/r/a.js'], before);
+    assert.ok(shellWrites(`${before}echo x > f`, CWD).files.includes('/r/f'), before);
+  }
+  assert.deepEqual(reads('true < m || cd a; readfirst read y.md'), [], 'the cd may have run: the read is in a folder not known');
   assert.deepEqual(reads('false && { x; }; readfirst read a.js'), ['/r/a.js'], 'after the block that never ran ends');
   assert.deepEqual(reads('false && { x; } || readfirst read a.js'), ['/r/a.js'], 'the || after a block skipped by false && runs');
 });
