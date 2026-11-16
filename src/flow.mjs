@@ -12,13 +12,15 @@
 // - a step has op and line:
 //   assign { targets, value, aug? } (`a = b = v`: two targets; aug: '+=' and the like, value: the right-hand side),
 //   call { value } and expr { value } (an expression statement: a call, or anything else),
-//   return { value|null }, raise { value|null, cause? } (`raise E from c`), assert { cond }, break, continue,
-//   import { bindings },
+//   return { value|null }, raise { value|null, cause? } (`raise E from c`), assert { cond }, break and continue
+//   { label? } (JS `break outer`; the labelled statement's first step has the label), import { bindings },
+//   global and nonlocal { names, bindings } (the table's hidden bindings of the names it moves),
 //   def { scope, name, decorators } and class { scope, name, decorators } (their bodies are entries of bodies),
 //   branch { cond, then, else } (`elif` is a branch inside else; a `match` is a branch per case, its conds opaque),
 //   loop { kind: 'for'|'while', target?, over?, cond?, body, else }, try { body, handlers, else, finally }
 //   (handlers[i]: { types: [value]|null, binding|null, body }), with { items: [{ value, target|null }], body },
-//   opaque { text, body? } (a statement read no further: del, global, a stray else, with what it holds).
+//   opaque { text, body? } (a statement read no further: del, a stray else, with what it holds).
+//   A JS function declaration's def has hoisted: true (bound from the start of the body around it).
 // - a target: { k: 'name', name, binding } (the binding it makes, an index into table.bindings), { k: 'tuple', items }
 //   (items may carry star: true), or a value (`self.x`, `a[i]`).
 // - a value: { k: 'ref', name, ref } (ref: an index into table.references), { k: 'attr', of, name },
@@ -41,11 +43,12 @@ export function flowSteps(path, body) {
   if (!got) return null;
   const { table, T, refAt } = got;
   const bindAt = new Map();
-  T.bindings.forEach((b, i) => { if (b.at !== undefined && !b.hidden) bindAt.set(b.at, i); });
+  const hiddenAt = new Map();
+  T.bindings.forEach((b, i) => { if (b.at !== undefined) (b.hidden ? hiddenAt : bindAt).set(b.at, i); });
   if (T.lang !== 'py') return { table, bodies: scriptBodies({ T, toks: T.toks, match: T.match, refAt, bindAt, table }) };
   const lambdaAt = new Map();
   T.scopes.forEach((s, i) => { if (s.kind === 'function' && s.name === null) lambdaAt.set(s.a, i); });
-  return { table, bodies: pythonBodies({ T, toks: T.toks, match: T.match, refAt, bindAt, lambdaAt, table }) };
+  return { table, bodies: pythonBodies({ T, toks: T.toks, match: T.match, refAt, bindAt, hiddenAt, lambdaAt, table }) };
 }
 
 const AUGMENTED = new Set(['+=', '-=', '*=', '/=', '//=', '%=', '&=', '|=', '^=', '**=', '<<=', '>>=', '@=']);
@@ -457,7 +460,22 @@ function pythonBodies(F) {
         steps.push({ op: 'import', ...at, bindings });
         continue;
       }
-      if (w === 'del' || w === 'global' || w === 'nonlocal') { steps.push({ op: 'opaque', ...at, text: textOf(toks, r.i, r.e) }); continue; }
+      if (w === 'global' || w === 'nonlocal') {
+        // The names it moves, and the table's hidden binding of each (how 'global' or 'nonlocal'): their assignments
+        // in this body bind the module's or the enclosing function's name.
+        const names = [];
+        const bindings = [];
+        for (let q = r.k + 1; q < r.e; q++) {
+          countStep();
+          if (!isWord(toks[q])) continue;
+          names.push(toks[q].v);
+          const b = F.hiddenAt.get(q);
+          if (b !== undefined) bindings.push(b);
+        }
+        steps.push({ op: w, ...at, names, bindings });
+        continue;
+      }
+      if (w === 'del') { steps.push({ op: 'opaque', ...at, text: textOf(toks, r.i, r.e) }); continue; }
       steps.push(assignment(r.i, r.e, at));
     }
     return steps;
@@ -489,6 +507,8 @@ function pythonBodies(F) {
 //   object literal is a dict whose entries are { name, value } (a word, string or number key, a shorthand `{ a }`),
 //   { key, value } (a computed `[k]`), { spread: '...', value }, a method or accessor as its function's value;
 //   { k: 'fn', scope } for an arrow or a function expression, { k: 'class', scope } for a class expression;
+//   an assignment inside an expression (`(m = re.exec(s))`) is its value with binds (an augmented one, `x ||= y`,
+//   is opaque with binds and aug), as a walrus is in Python;
 //   optional: true on an attr, index or call read through `?.`; a tagged template is a call with tagged: true and
 //   the template as its one argument; a `void f()` statement is f()'s call step; as: the type text of `x as T` or `x satisfies T`
 //   (a claim of the code, not a proof). `a ?? b`, `a || b`, `a && b` and a comma expression are opaque.
@@ -685,6 +705,17 @@ function scriptReader(F) {
     if (isWord(toks[a], 'await')) return { ...value(a + 1, b, noComma), await: true };
     if (isWord(toks[a], 'void') && !refAt.has(a) && b === a + 2 && toks[a + 1].k === 'val') return { k: 'lit', v: 'undefined' };
     if (!noComma && firstAt(T, a, b, (u) => isPunct(u, ',')) < b) return opaque(a, b);
+    // An assignment inside an expression (`(m = re.exec(s))`, `(x ||= y)`): its value (an augmented one's is
+    // opaque) with binds, the target it sets. Assignment binds loosest, so the first depth-0 `=` splits it, unless
+    // a `?` comes before (`c ? x = 1 : y`: the assignment is in the middle).
+    // A JSX element's attributes (`<a href={x}>`) hold `=` too: an element is a literal, read before.
+    if (jsx && isPunct(toks[a], '<')) return { k: 'lit', v: 'jsx' };
+    const assignAt = firstAt(T, a, b, (u) => isPunct(u, '=') || (u.k === 'punct' && JS_AUGMENTED.has(u.v)) || isPunct(u, '?'));
+    if (assignAt < b && assignAt > a && !isPunct(toks[assignAt], '?')) {
+      const binds = target(a, assignAt);
+      if (isPunct(toks[assignAt], '=')) return { ...value(assignAt + 1, b, true), binds };
+      return { ...opaque(a, b), binds, aug: toks[assignAt].v };
+    }
     const q = firstAt(T, a, b, (u) => isPunct(u, '?'));
     if (q < b && q > a) {
       const c = colonOf(q, b);
@@ -905,7 +936,13 @@ function scriptBodies(F) {
     const at = { line: lineOf(i) };
     if (isPunct(t, ';')) return i + 1;
     if (isPunct(t, '{')) { const c = closeOf(i); out.push(...statements(i + 1, c)); return c + 1; }
-    if (isWord(t) && isPunct(toks[i + 1], ':') && !F.refAt.has(i) && !bindAt.has(i)) return statement(i + 2, q, out);
+    // `outer: for (…)`: the statement's first step carries the label a `break outer` or `continue outer` names.
+    if (isWord(t) && isPunct(toks[i + 1], ':') && !F.refAt.has(i) && !bindAt.has(i)) {
+      const before = out.length;
+      const end = statement(i + 2, q, out);
+      if (out.length > before) out[before].label = t.v;
+      return end;
+    }
     const w = isWord(t) && !F.refAt.has(i) && !bindAt.has(i) ? t.v : null;
     if (w === 'if' && isPunct(toks[i + 1], '(')) {
       const c = closeOf(i + 1);
@@ -1022,9 +1059,11 @@ function scriptBodies(F) {
       return past(e, q);
     }
     if (w === 'break' || w === 'continue') {
+      // `break outer`: the label names the loop (or block) it leaves.
+      const step = { op: w, ...at };
       let j = i + 1;
-      if (isWord(toks[j]) && !toks[j].first && j < q) j++;
-      out.push({ op: w, ...at });
+      if (isWord(toks[j]) && !toks[j].first && j < q) { step.label = toks[j].v; j++; }
+      out.push(step);
       return past(j, q);
     }
     if (t.k === 'punct' && t.v === '@') {
@@ -1039,7 +1078,8 @@ function scriptBodies(F) {
     if (w === 'function' || (w === 'async' && word(i + 1, 'function'))) {
       const s = scopeFrom(i + 1, q, 'function');
       if (s === null) return stmtEnd(i, q) + 1;
-      out.push({ op: 'def', ...at, scope: s, name: T.scopes[s].name, decorators: [] });
+      // A function declaration is bound from the start of the body around it (hoisted), not from where it stands.
+      out.push({ op: 'def', ...at, scope: s, name: T.scopes[s].name, decorators: [], hoisted: true });
       return Math.max(T.scopes[s].b, i + 1);
     }
     if (w === 'class' || (w === 'abstract' && word(i + 1, 'class'))) {

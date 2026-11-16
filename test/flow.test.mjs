@@ -388,6 +388,24 @@ test('flow, JS: `!` binds tighter than a comparison; a comma statement is its pa
   assert.deepEqual(shape(steps[6].targets[0]), { k: 'tuple', items: [{ k: 'name', name: 'd', default: { k: 'lit', v: 'num', text: '1' } }, { k: 'name', name: 'e' }] });
 });
 
+test('flow: what a reader of paths needs: labels, global and nonlocal, hoisting, assignments inside expressions', () => {
+  const js = flowSteps('a.js', 'let m, x;\nif ((m = re.exec(s))) {}\nwhile ((x = it.next()) !== null) {}\nf((x ||= 2));\nouter: for (const a of b) { for (;;) { break outer; } }\nfunction g() {}\n').bodies[0].steps;
+  assert.equal(js[2].cond.of.binds.name, 'm');
+  assert.equal(js[3].cond.of.binds.name, 'x');
+  assert.equal(js[3].cond.exact, 'null');
+  assert.deepEqual(shape(js[4].value.args[0].value), { k: 'opaque', text: 'x||=2', binds: { k: 'name', name: 'x' }, aug: '||=' });
+  assert.equal(js[5].label, 'outer');
+  assert.deepEqual(shape(js[5].body[0].body[0]), { op: 'break', label: 'outer' });
+  assert.equal(js[6].hoisted, true);
+  assert.equal(jsValue('c ? x = 1 : y').k, 'choice');
+  const out = flowSteps('a.py', 'x = 1\ndef f():\n    def g():\n        nonlocal y\n    global x\n    x = 2\n');
+  const f = out.bodies.find((b) => b.name === 'f').steps;
+  assert.equal(f[1].op, 'global');
+  assert.deepEqual(f[1].names, ['x']);
+  assert.equal(out.table.bindings[f[1].bindings[0]].how, 'global');
+  assert.equal(out.bodies.find((b) => b.name === 'g').steps[0].op, 'nonlocal');
+});
+
 test('flow, JS: params: patterns, defaults, rest, optional, decorators, parameter properties, this, one bare name', () => {
   const out = flowSteps('a.ts', [
     'class C {',
