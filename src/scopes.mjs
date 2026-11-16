@@ -132,6 +132,13 @@ const AUGMENTED = new Set(['+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '**='
 // - unknown[i]: { line, reason, text }: what makes a scope's names, or an import, unknowable (import *, eval, with,
 //   import() or require() of something that is not one string).
 export function scopes(path, body) {
+  return readScopes(path, body)?.table ?? null;
+}
+
+// The table with what the walks saw on the way, for src/flow.mjs (not part of the table): T (toks, match, rows, lang,
+// statements: Python's statements in order as { i, k, e, colon, opens }, bindings with the token `at` each is made at),
+// refAt (token → reference index). null for a file src/code.mjs does not read.
+export function readScopes(path, body) {
   if (!reads(path)) return null;
   const rows = codeRows(path, body);
   // The code in a template's `${ }` and an f-string's `{ }` comes as tokens between synthetic parentheses.
@@ -143,9 +150,11 @@ export function scopes(path, body) {
   T.path = path;
   // A script's first line `#!/usr/bin/env node` names the program that runs it, not code.
   if (lang === 'js' && String(body).startsWith('#!')) for (let j = 0; j < toks.length && toks[j].line === 1; j++) T.marks[j] = SKIP;
+  T.rows = rows;
   if (lang === 'py') readPython(T, rows);
   else readScript(T);
-  return finishTable(T, rows.length);
+  const table = finishTable(T, rows.length);
+  return { table, T, refAt: T.refAt };
 }
 
 function newTable(toks, lang) {
@@ -161,7 +170,7 @@ function newTable(toks, lang) {
   // where it is written (a parameter is bound from its function's start).
   t.bind = (s, name, at, how, extra = {}) => {
     const { pos = at, ...rest } = extra;
-    const b = { name, scope: s, line: toks[at]?.line ?? 1, how, ...rest, pos };
+    const b = { name, scope: s, line: toks[at]?.line ?? 1, how, ...rest, pos, at };
     t.bindings.push(b);
     if (!rest.hidden) {
       const list = t.scopes[s].names.get(name);
@@ -214,7 +223,7 @@ function typeMemberName(toks, j) {
 }
 
 // The parts of the inside of a bracket, from token a to the one before b, split at its own commas: [start, end) pairs.
-function partsBetween(T, a, b) {
+export function partsBetween(T, a, b) {
   const out = [];
   let start = a;
   for (let j = a; j < b; j++) {
@@ -230,7 +239,7 @@ function partsBetween(T, a, b) {
 
 // The first token from a to the one before b, at a's bracket depth, that `stop` accepts, or b. Type angles
 // (T.typeAngles) are passed whole like brackets.
-function firstAt(T, a, b, stop) {
+export function firstAt(T, a, b, stop) {
   for (let j = a; j < b; j++) {
     countStep();
     if (stop(T.toks[j], j)) return j;
@@ -413,6 +422,7 @@ function readPython(T, rows) {
         if (isPunct(toks[c + 1], '-') && isPunct(toks[c + 2], '>')) { marks[c + 1] = SKIP; marks[c + 2] = SKIP; annotationOf(T, c + 3, e); }
       }
       decorated(fnScope);
+      T.statements.at(-1).opens = fnScope;
       blocks.push({ scope: fnScope, indent });
       return;
     }
@@ -426,6 +436,7 @@ function readPython(T, rows) {
       T.scopes[cls].isClass = true;
       T.scopes[cls].line = toks[k].line;
       decorated(cls);
+      T.statements.at(-1).opens = cls;
       blocks.push({ scope: cls, indent });
       return;
     }
@@ -553,7 +564,8 @@ function readPython(T, rows) {
       countStep();
       if (j > i && toks[j].first && !backslashCarried(toks[j].line)) { e = j; break; }
       if (isPunct(toks[j], ';')) { e = j; break; }
-      if (compound && isPunct(toks[j], ':')) { e = j; colon = true; break; }
+      // A walrus's `:` (`while line := f():`) is no header's end.
+      if (compound && isPunct(toks[j], ':') && !(isPunct(toks[j + 1], '=') && toks[j + 1].line === toks[j].line)) { e = j; colon = true; break; }
       if (isOpen(toks[j])) { const c = match.get(j); if (c === undefined) { e = n; break; } j = c; }
       e = j + 1;
     }
@@ -562,6 +574,7 @@ function readPython(T, rows) {
       while (blocks.length && blocks.at(-1).indent >= ind) { const b = blocks.pop(); if (b.scope !== undefined) T.scopes[b.scope].b = i; if (b.typeOnly) typeOnlyOpen--; }
       while (matches.length && matches.at(-1) >= ind) matches.pop();
     }
+    (T.statements ??= []).push({ i, k: head, e, colon: colon && compound, opens: null });
     pyStatement(i, head, e, colon && compound);
     i = e < n && (isPunct(toks[e], ';') || colon) ? e + 1 : Math.max(e, i + 1);
   }
@@ -1471,7 +1484,7 @@ function finishTable(T, lineCount) {
       early = got.early;
       if (T.lang === 'js' && (mark === ASSIGN || mark === AREF)) {
         const pos = T.assignEnds?.get(p) ?? p;
-        bindings.push({ name, scope: homeScope, line: toks[p].line, how: 'assign', pos });
+        bindings.push({ name, scope: homeScope, line: toks[p].line, how: 'assign', pos, at: p });
         let at = got.at + 1;
         while (at < list.length && bindings[list[at]].pos <= pos) { countStep(); at++; }
         list.splice(at, 0, bindings.length - 1);
@@ -1485,6 +1498,7 @@ function finishTable(T, lineCount) {
     refAt.set(p, references.length);
     references.push(ref);
   });
+  T.refAt = refAt;
   const lastLine = toks.length ? toks.at(-1).line : 1;
   return {
     scopes: scopes.map((s, i) => ({
