@@ -295,6 +295,12 @@
           "files": [
             "src/cli.mjs"
           ]
+        },
+        {
+          "text": "`addFound` (src/bash-writes.mjs, 2026-11-15) is how `writesOf` records a file in `noEditTool`: a removal or move (rm, unlink, git rm, mv, git mv through `takeAway`) goes in `gone`, any other write in `wrote`, and a file is a `noEditTool` only when it is in `gone` and not in `wrote`. `takeIn` does the same for the result of a `bash -c` string, a here-document or find's -exec command. A new write that adds to `found` directly, not through `add` or `takeIn`, is in neither set, so `rm a && cp b a` would still be told to use an edit tool or, the other way, a file only removed would not be: the gate's hint (`bashLine` in src/cli.mjs) is wrong either way. A new command that only removes or moves files goes through `takeAway`; mv's backup stays a write.",
+          "files": [
+            "src/bash-writes.mjs"
+          ]
         }
       ]
     },
@@ -1087,7 +1093,7 @@
     {
       "file": "src/bash-writes.mjs",
       "symbol": "writesOf",
-      "line": 1965,
+      "line": 2005,
       "labels": [
         "fs-write"
       ],
@@ -1099,7 +1105,7 @@
     {
       "file": "src/bash-writes.mjs",
       "symbol": "codeWrites",
-      "line": 2127,
+      "line": 2171,
       "labels": [
         "fs-write"
       ],
@@ -1111,7 +1117,7 @@
     {
       "file": "src/bash-writes.mjs",
       "symbol": "writesIn",
-      "line": 2501,
+      "line": 2555,
       "labels": [
         "fs-write"
       ],
@@ -1141,8 +1147,8 @@
         "fs-write"
       ],
       "rules": [
-        "no-silent-cut",
-        "only-init-and-fix-write"
+        "only-init-and-fix-write",
+        "no-silent-cut"
       ],
       "note": "Writes files"
     },
@@ -1178,7 +1184,7 @@
     {
       "file": "src/cli.mjs",
       "symbol": "stopFor",
-      "line": 1504,
+      "line": 1511,
       "labels": [
         "exec",
         "crypto"
@@ -1205,7 +1211,7 @@
     {
       "file": "src/scopes.mjs",
       "symbol": "readScript",
-      "line": 699,
+      "line": 712,
       "labels": [
         "authz"
       ],
@@ -1217,7 +1223,7 @@
     {
       "file": "src/scopes.mjs",
       "symbol": "inForHead",
-      "line": 725,
+      "line": 738,
       "labels": [
         "authz"
       ],
@@ -1229,7 +1235,7 @@
     {
       "file": "src/scopes.mjs",
       "symbol": "callableAt",
-      "line": 880,
+      "line": 893,
       "labels": [
         "authz"
       ],
