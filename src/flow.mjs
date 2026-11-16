@@ -2,7 +2,7 @@
 // that is the same for every language, so a reader of values walks one shape instead of each language's syntax. Built
 // on src/scopes.mjs (`readScopes`: its tokens, its statements and which reference each name token is), so nothing here
 // reads strings, comments or brackets again. It reads only what values need; anything else is `opaque` with its text,
-// never a guess. Python only for now: a JavaScript or TypeScript file gives `bodies: null`.
+// never a guess. Python, JavaScript and TypeScript; what the scripts add is written above scriptReader.
 //
 // flowSteps(path, body) → { table, bodies } (table: the scopes() table the references point into), or null for a
 // file src/code.mjs does not read.
@@ -29,15 +29,15 @@
 // Linear in the text: a value is taken apart only once it is known to be one chain (isChain), so no part is read again
 // for an outer value that turns out opaque; countStep counts the walks.
 import { readScopes, partsBetween, firstAt } from './scopes.mjs';
-import { countStep, isWord, isPunct } from './code.mjs';
+import { countStep, isWord, isPunct, needsMore, continues } from './code.mjs';
 
 export function flowSteps(path, body) {
   const got = readScopes(path, body);
   if (!got) return null;
   const { table, T, refAt } = got;
-  if (T.lang !== 'py') return { table, bodies: null };
   const bindAt = new Map();
   T.bindings.forEach((b, i) => { if (b.at !== undefined && !b.hidden) bindAt.set(b.at, i); });
+  if (T.lang !== 'py') return { table, bodies: scriptBodies({ T, toks: T.toks, match: T.match, refAt, bindAt, table }) };
   const lambdaAt = new Map();
   T.scopes.forEach((s, i) => { if (s.kind === 'function' && s.name === null) lambdaAt.set(s.a, i); });
   return { table, bodies: pythonBodies({ T, toks: T.toks, match: T.match, refAt, bindAt, lambdaAt, table }) };
@@ -417,5 +417,651 @@ function pythonBodies(F) {
   };
 
   bodies[0].steps = lower(top);
+  return bodies;
+}
+
+// ---------------------------------------------------------------------------------------------- JavaScript, TypeScript
+
+// What JavaScript and TypeScript add to the steps and values above:
+// - steps: loop kind 'do' (its body runs before its cond) and keys: true for `for (k in o)`; a classic `for (i; c; u)`
+//   is its init's steps before the loop, then the loop with cond c and u's step last in its body. A `switch` is a
+//   branch per case like a `match` (conds opaque, `default` the last else, a case's own last `break` left out), a
+//   case that falls through keeps only its own statements. field { name, value|null, static, decorators } in a
+//   class body. A TypeScript declaration that only names types (`type`, `interface`, `declare`) gives no step;
+//   `enum` and `namespace` give an opaque step with their header.
+// - targets: { k: 'object', items: [{ key, target, default? }], rest? } for `{ a, b: c = 1, ...r }`, and a tuple's
+//   holes as null.
+// - values: lit v 'null'|'undefined'|'true'|'false'|'regex'|'jsx' too (a template literal is 'str' with uses);
+//   { k: 'fn', scope } for an arrow or a function expression, { k: 'class', scope } for a class expression;
+//   optional: true on an attr, index or call read through `?.`; a tagged template is a call with tagged: true and
+//   the template as its one argument; a `void f()` statement is f()'s call step; as: the type text of `x as T` or `x satisfies T`
+//   (a claim of the code, not a proof). `a ?? b`, `a || b`, `a && b` and a comma expression are opaque.
+// - conds: `x === null`, `x === undefined`, `typeof x === 'undefined'` are none with exact 'null' or 'undefined'
+//   (`x == null` is none with no exact: either); { k: 'typeof', of, is, neg } for `typeof x === 'string'`;
+//   `x instanceof C` is isinstance; `!` is not, `&&` and `||` are and and or.
+const JS_AUGMENTED = new Set(['+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '|=', '^=', '&&=', '||=', '??=']);
+const JS_EQUALITY = new Set(['===', '!==', '==', '!=']);
+const JS_COMPARE = new Set(['===', '!==', '==', '!=', '<', '>', '<=', '>=']);
+const JS_LITERALS = new Set(['null', 'true', 'false']);
+const TS_TYPE_ONLY = new Set(['type', 'interface', 'declare']);
+const MEMBER_MODIFIERS = new Set(['public', 'private', 'protected', 'static', 'readonly', 'abstract', 'override', 'declare', 'accessor', 'async', 'get', 'set']);
+
+function scriptReader(F) {
+  const { T, toks, match, refAt, table, starts } = F;
+  const opaque = (a, b) => ({ k: 'opaque', text: textOf(toks, a, b) });
+  const closeOf = (j) => match.get(j) ?? -1;
+  const quoted = (t) => t?.k === 'val' && /^['"]/u.test(t.text ?? '');
+  const template = (t) => t?.k === 'val' && /^`/u.test(t.text ?? '');
+  const regex = (t) => t?.k === 'val' && /^\//u.test(t.text ?? '');
+  const isNumber = (t) => t?.k === 'val' && /^\.?\d/u.test(t.v);
+  const opens = (t) => (isPunct(t, '(') || isPunct(t, '[') || isPunct(t, '{')) && !t.synthetic;
+  const jsx = !/\.[mc]?ts$/u.test(T.path ?? '');
+  // The function or class scope that starts at token j, of the kind asked.
+  const scopeAt = (j, kind) => starts.get(j)?.find((s) => T.scopes[s].kind === kind) ?? null;
+  // The scope of the arrow that starts at token a (its parameters, or `async` before them).
+  const arrowAt = (a) => {
+    for (const j of [a, a + 1]) { const s = scopeAt(j, 'function'); if (s !== null && T.scopes[s].arrow) return s; }
+    return null;
+  };
+  const builtinUndefined = (j) => isWord(toks[j], 'undefined') && refAt.has(j) && table.references[refAt.get(j)].to.builtin;
+
+  const templateEnd = (j) => {
+    for (j++; toks[j]?.synthetic && isPunct(toks[j], '('); j = closeOf(j) + 1) countStep();
+    return j;
+  };
+  const primaryEnd = (a, b) => {
+    const t = toks[a];
+    if (!t || a >= b) return -1;
+    if (t.k === 'word') {
+      if (JS_LITERALS.has(t.v)) return a + 1;
+      if (t.v === 'new') {
+        if (isPunct(toks[a + 1], '.')) return isWord(toks[a + 2]) ? a + 3 : -1;
+        let q = primaryEnd(a + 1, b);
+        if (q < 0) return -1;
+        while (q < b && isPunct(toks[q], '.') && isWord(toks[q + 1])) { countStep(); q += 2; }
+        const angle = T.typeAngles?.get(q);
+        if (angle !== undefined && angle <= b) q = angle;
+        if (isPunct(toks[q], '(') && !toks[q].synthetic) { const c = closeOf(q); return c < 0 || c >= b ? -1 : c + 1; }
+        return q;
+      }
+      return refAt.has(a) ? a + 1 : -1;
+    }
+    if (quoted(t) || regex(t)) return a + 1;
+    if (template(t)) return templateEnd(a);
+    if (isNumber(t)) return a + 1;
+    if (isPunct(t, '-') && isNumber(toks[a + 1])) return a + 2;
+    if (opens(t)) { const c = closeOf(a); return c < 0 || c >= b ? -1 : c + 1; }
+    if (jsx && isPunct(t, '<')) return b;
+    return -1;
+  };
+  // The token after a postfix at q (`.x`, `?.x`, `[…]`, `?.[…]`, `(…)`, `?.(…)`, `<T>(…)`, a non-null `!`), or -1.
+  const postfixEnd = (q, b) => {
+    let j = q;
+    if (isPunct(toks[j], '?.')) { if (isWord(toks[j + 1]) && j + 1 < b) return j + 2; j++; }
+    if (isPunct(toks[j], '.') && isWord(toks[j + 1]) && j + 1 < b) return j + 2;
+    if (isPunct(toks[j], '!') && j === q) return j + 1;
+    if (template(toks[j]) && j === q) return templateEnd(j);
+    const angle = T.typeAngles?.get(j);
+    if (angle !== undefined && angle < b && isPunct(toks[angle], '(')) j = angle;
+    if ((isPunct(toks[j], '[') || isPunct(toks[j], '(')) && !toks[j].synthetic) { const c = closeOf(j); return c < 0 || c >= b ? -1 : c + 1; }
+    return -1;
+  };
+  const isChain = (a, b) => {
+    let q = primaryEnd(a, b);
+    if (q < 0) return false;
+    while (q < b) { countStep(); q = postfixEnd(q, b); if (q < 0) return false; }
+    return true;
+  };
+
+  const items = (a, b) => partsBetween(T, a, b).map(([pa, pb]) => (pa === pb ? null : isPunct(toks[pa], '...') ? { ...value(pa + 1, pb), spread: '...' } : value(pa, pb)));
+  const args = (open, close) => partsBetween(T, open + 1, close).map(([pa, pb]) => (isPunct(toks[pa], '...') ? { spread: '...', value: value(pa + 1, pb) } : { value: value(pa, pb) }));
+  const isClassRef = (v) => {
+    if (v.k !== 'ref') return false;
+    const b = table.references[v.ref]?.to?.binding;
+    return b !== undefined && table.bindings[b]?.how === 'class';
+  };
+
+  const primary = (a, e) => {
+    const t = toks[a];
+    if (t.k === 'word') {
+      if (JS_LITERALS.has(t.v)) return { k: 'lit', v: t.v };
+      if (t.v === 'new') {
+        if (isPunct(toks[a + 1], '.')) return opaque(a, e);
+        let q = primaryEnd(a + 1, e);
+        let callee = primary(a + 1, q);
+        while (q < e && isPunct(toks[q], '.')) { callee = { k: 'attr', of: callee, name: toks[q + 1].v }; q += 2; }
+        const angle = T.typeAngles?.get(q);
+        if (angle !== undefined && angle <= e) q = angle;
+        return { k: 'new', callee, args: q < e ? args(q, closeOf(q)) : [] };
+      }
+      if (builtinUndefined(a)) return { k: 'lit', v: 'undefined' };
+      return { k: 'ref', name: t.v, ref: refAt.get(a) };
+    }
+    if (quoted(t)) return { k: 'lit', v: 'str' };
+    if (regex(t)) return { k: 'lit', v: 'regex' };
+    if (template(t)) {
+      const uses = [];
+      for (let j = a + 1; j < e; j = closeOf(j) + 1) { countStep(); uses.push(value(j + 1, closeOf(j))); }
+      return uses.length ? { k: 'lit', v: 'str', uses } : { k: 'lit', v: 'str' };
+    }
+    if (isNumber(t) || isPunct(t, '-')) return { k: 'lit', v: 'num', text: textOf(toks, a, e) };
+    if (isPunct(t, '(')) {
+      // `(0, f)`, as TypeScript writes an unbound call: a comma expression whose earlier parts are literals is its last.
+      const parts = partsBetween(T, a + 1, e - 1);
+      if (parts.length > 1 && parts.slice(0, -1).every(([x, y]) => y === x + 1 && (toks[x].k === 'val' || JS_LITERALS.has(toks[x].v)))) return value(...parts.at(-1));
+      return value(a + 1, e - 1);
+    }
+    if (isPunct(t, '[')) return { k: 'lit', v: 'list', items: items(a + 1, e - 1) };
+    if (isPunct(t, '{')) return { k: 'lit', v: 'dict' };
+    return { k: 'lit', v: 'jsx' };
+  };
+
+  let depth = 0;
+  const nested = (read) => (a, b, known) => {
+    if (depth >= MAX_NESTING) return { ...opaque(a, b), nesting: true };
+    depth++;
+    try { return read(a, b, known); } finally { depth--; }
+  };
+  // The `:` that ends the middle of the conditional whose `?` is at q, or b. One walk from q pairs every `?` it meets
+  // at its depth with its `:` (a stack), so a conditional nested in a middle (`a ? b ? c : d : e`) is not walked again.
+  const colons = new Map();
+  const colonOf = (q, b) => {
+    if (!colons.has(q)) {
+      const open = [];
+      for (let j = q; j < b; j++) {
+        countStep();
+        const t = toks[j];
+        if (opens(t) || (t.synthetic && isPunct(t, '('))) { const c = closeOf(j); if (c < 0) break; j = c; continue; }
+        if (isPunct(t, '?')) open.push(j);
+        else if (isPunct(t, ':') && open.length) { colons.set(open.pop(), j); if (!open.length) break; }
+      }
+    }
+    const c = colons.get(q);
+    return c !== undefined && c < b ? c : b;
+  };
+  const value = nested((a, b, noComma = false) => {
+    if (a >= b) return opaque(a, b);
+    // A function or a class written here: its scope, read as a body of its own.
+    const arrow = arrowAt(a);
+    if (arrow !== null && T.scopes[arrow].b >= b) return { k: 'fn', scope: arrow };
+    const fnAt = isWord(toks[a], 'async') && isWord(toks[a + 1], 'function') ? a + 1 : a;
+    if (isWord(toks[fnAt], 'function') || isWord(toks[a], 'class')) {
+      const kind = isWord(toks[a], 'class') ? 'class' : 'function';
+      for (let j = fnAt + 1; j < b; j++) {
+        countStep();
+        const s = scopeAt(j, kind);
+        if (s !== null) return T.scopes[s].b >= b ? { k: kind === 'class' ? 'class' : 'fn', scope: s } : opaque(a, b);
+        if (isPunct(toks[j], '{') && kind === 'function') break;
+      }
+      return opaque(a, b);
+    }
+    if (isWord(toks[a], 'await')) return { ...value(a + 1, b, noComma), await: true };
+    if (isWord(toks[a], 'void') && !refAt.has(a) && b === a + 2 && toks[a + 1].k === 'val') return { k: 'lit', v: 'undefined' };
+    if (!noComma && firstAt(T, a, b, (u) => isPunct(u, ',')) < b) return opaque(a, b);
+    const q = firstAt(T, a, b, (u) => isPunct(u, '?'));
+    if (q < b && q > a) {
+      const c = colonOf(q, b);
+      if (c < b) return { k: 'choice', cond: cond(a, q), then: value(q + 1, c, true), else: value(c + 1, b, true) };
+      return opaque(a, b);
+    }
+    const asAt = firstAt(T, a, b, (u, j) => (isWord(u, 'as') || isWord(u, 'satisfies')) && !refAt.has(j));
+    if (asAt < b && asAt > a) return { ...value(a, asAt, true), as: textOf(toks, asAt + 1, b) };
+    if (!isChain(a, b)) return opaque(a, b);
+    let e = primaryEnd(a, b);
+    let v = primary(a, e);
+    while (e < b) {
+      countStep();
+      const next = postfixEnd(e, b);
+      let j = e;
+      const optional = isPunct(toks[j], '?.');
+      if (optional) j++;
+      if (isPunct(toks[j], '!') && !optional) { e = next; continue; }
+      // A tagged template (`` sql`… ${x}` ``) is a call of its tag with the template.
+      if (template(toks[j]) && !optional) { v = { k: 'call', callee: v, args: [{ value: primary(j, next) }], tagged: true }; e = next; continue; }
+      const angle = T.typeAngles?.get(j);
+      if (angle !== undefined && angle < b && isPunct(toks[angle], '(')) j = angle;
+      if (isWord(toks[j])) v = { k: 'attr', of: v, name: toks[j].v };
+      else if (isPunct(toks[j], '.')) v = { k: 'attr', of: v, name: toks[j + 1].v };
+      else if (isPunct(toks[j], '[')) v = { k: 'index', of: v, key: value(j + 1, closeOf(j)) };
+      else v = { k: isClassRef(v) ? 'new' : 'call', callee: v, args: args(j, closeOf(j)) };
+      if (optional) v.optional = true;
+      e = next;
+    }
+    return v;
+  });
+
+  const isEquality = (u) => u.k === 'punct' && JS_COMPARE.has(u.v);
+  const nullish = (x, y) => {
+    if (y !== x + 1) return null;
+    if (isWord(toks[x], 'null')) return 'null';
+    return builtinUndefined(x) ? 'undefined' : null;
+  };
+  const stringOf = (x, y) => (y === x + 1 && quoted(toks[x]) ? toks[x].text.slice(1, -1) : null);
+  const cond = nested((a, b, split = 2) => {
+    if (a >= b) return opaque(a, b);
+    if (firstAt(T, a, b, (u) => isPunct(u, '??')) < b) return opaque(a, b);
+    const ors = split > 1 ? splitAt(T, a, b, (u) => isPunct(u, '||')) : [];
+    if (ors.length > 1) return { k: 'or', of: ors.map(([x, y]) => cond(x, y, 1)) };
+    const ands = split > 0 ? splitAt(T, a, b, (u) => isPunct(u, '&&')) : [];
+    if (ands.length > 1) return { k: 'and', of: ands.map(([x, y]) => cond(x, y, 0)) };
+    if (isPunct(toks[a], '!')) return { k: 'not', of: cond(a + 1, b, 0) };
+    if (isPunct(toks[a], '(') && closeOf(a) === b - 1) return cond(a + 1, b - 1);
+    if (firstAt(T, a, b, (u) => isPunct(u, '?') || isPunct(u, ',') || isPunct(u, '=>')) < b) return opaque(a, b);
+    const op = firstAt(T, a, b, (u, j) => isEquality(u) || ((isWord(u, 'instanceof') || isWord(u, 'in')) && !refAt.has(j)));
+    if (op < b) {
+      const t = toks[op];
+      if (firstAt(T, op + 1, b, (u, j) => isEquality(u) || ((isWord(u, 'instanceof') || isWord(u, 'in')) && !refAt.has(j))) < b) return opaque(a, b);
+      if (isWord(t, 'instanceof')) return { k: 'isinstance', of: value(a, op), types: [value(op + 1, b)] };
+      if (!JS_EQUALITY.has(t.v)) return opaque(a, b);
+      const neg = t.v.startsWith('!');
+      const loose = t.v.length === 2;
+      for (const [x, y, ox, oy] of [[op + 1, b, a, op], [a, op, op + 1, b]]) {
+        const n = nullish(x, y);
+        if (n) return loose ? { k: 'none', of: value(ox, oy), neg } : { k: 'none', of: value(ox, oy), neg, exact: n };
+        const s = stringOf(x, y);
+        if (s !== null && isWord(toks[ox], 'typeof') && !refAt.has(ox)) {
+          if (s === 'undefined') return { k: 'none', of: value(ox + 1, oy), neg, exact: 'undefined' };
+          return { k: 'typeof', of: value(ox + 1, oy), is: s, neg };
+        }
+      }
+      return opaque(a, b);
+    }
+    const v = value(a, b);
+    return v.k === 'opaque' ? v : { k: 'truthy', of: v };
+  });
+
+  // A destructuring pattern, or a plain name, from token a to b-1 (a type after a top-level `:` left out).
+  const pattern = (a, b) => {
+    if (a >= b) return null;
+    if (isWord(toks[a]) && F.bindAt.has(a)) return { k: 'name', name: toks[a].v, binding: F.bindAt.get(a) };
+    if (isPunct(toks[a], '[') && closeOf(a) < b) {
+      return { k: 'tuple', items: partsBetween(T, a + 1, closeOf(a)).map(([pa, pb]) => (pa === pb ? null : isPunct(toks[pa], '...') ? { ...pattern(pa + 1, pb), star: true } : withDefault(pa, pb))) };
+    }
+    if (isPunct(toks[a], '{') && closeOf(a) < b) {
+      const out = { k: 'object', items: [] };
+      for (const [pa, pb] of partsBetween(T, a + 1, closeOf(a))) {
+        countStep();
+        if (pa === pb) continue;
+        if (isPunct(toks[pa], '...')) { out.rest = pattern(pa + 1, pb); continue; }
+        const colon = firstAt(T, pa, pb, (u) => isPunct(u, ':'));
+        const key = isPunct(toks[pa], '[') ? opaque(pa, closeOf(pa) + 1).text : toks[pa].text?.slice(1, -1) ?? toks[pa].v;
+        const got = colon < pb ? withDefault(colon + 1, pb) : withDefault(pa, pb);
+        out.items.push(got && !got.k && 'default' in got ? { key, target: got.target, default: got.default } : { key, target: got });
+      }
+      return out;
+    }
+    return null;
+  };
+  // A pattern with a default (`a = 1`): { target, default }; without one, the pattern itself.
+  const withDefault = (a, b) => {
+    const eq = firstAt(T, a, b, (u) => isPunct(u, '='));
+    return eq < b ? { target: pattern(a, eq), default: value(eq + 1, b) } : pattern(a, b);
+  };
+  // What an assignment's left side sets: a name, a pattern, or a value (`this.x`, `a[i]`).
+  const target = (a, b) => {
+    if (b === a + 1 && isWord(toks[a]) && F.bindAt.has(a)) return { k: 'name', name: toks[a].v, binding: F.bindAt.get(a) };
+    if ((isPunct(toks[a], '[') || isPunct(toks[a], '{')) && closeOf(a) === b - 1) return pattern(a, b) ?? opaque(a, b);
+    return value(a, b);
+  };
+
+  return { value, cond, target, pattern, withDefault, opaque, closeOf };
+}
+
+function scriptBodies(F) {
+  const { T, toks, match, bindAt } = F;
+  const n = toks.length;
+  const starts = new Map();
+  T.scopes.forEach((s, i) => { if (s.kind === 'function' || s.kind === 'class') { const l = starts.get(s.a); if (l) l.push(i); else starts.set(s.a, [i]); } });
+  F.starts = starts;
+  const R = scriptReader(F);
+  const { closeOf } = R;
+  const lineOf = (j) => toks[j]?.line ?? toks.at(-1)?.line ?? 1;
+  const endsStatement = (j) => j > 0 && toks[j].first && !needsMore(toks[j - 1]) && !continues(toks[j]);
+  const word = (j, v) => isWord(toks[j], v) && !F.refAt.has(j) && !bindAt.has(j);
+  // Where the simple statement from token i ends (the token after it, a `;` left out), at most q.
+  const stmtEnd = (i, q) => {
+    for (let j = i; j < q; j++) {
+      countStep();
+      const t = toks[j];
+      if (j > i && endsStatement(j)) return j;
+      if (isPunct(t, ';')) return j;
+      if ((isPunct(t, '(') || isPunct(t, '[') || isPunct(t, '{')) || (t.synthetic && isPunct(t, '('))) { const c = match.get(j); if (c === undefined || c >= q) return q; j = c; continue; }
+      const angle = T.typeAngles?.get(j);
+      if (angle !== undefined && angle <= q) j = angle - 1;
+    }
+    return q;
+  };
+  const past = (j, q) => (isPunct(toks[j], ';') && j < q ? j + 1 : j);
+  // The first function or class scope that starts from token a on, before b.
+  const scopeFrom = (a, b, kind) => {
+    for (let j = a; j < b; j++) {
+      countStep();
+      const s = starts.get(j)?.find((x) => T.scopes[x].kind === kind);
+      if (s !== undefined) return s;
+      if (kind === 'function' && isPunct(toks[j], '{')) return null;
+    }
+    return null;
+  };
+  // A decorator from the `@` at j: its end (the token after `@a.b(…)`).
+  const decoratorEnd = (j) => {
+    let q = j + 1;
+    if (isPunct(toks[q], '(')) return closeOf(q) + 1;
+    while (isWord(toks[q]) && isPunct(toks[q + 1], '.')) { countStep(); q += 2; }
+    q++;
+    if (isPunct(toks[q], '(') && toks[q].line === toks[q - 1].line) q = closeOf(q) + 1;
+    return q;
+  };
+
+  // A statement or expression without its own syntax, from token i to e-1: an assignment, a `++`, or an expression.
+  const simple = (i, e, out) => {
+    const at = { line: lineOf(i) };
+    if (i >= e) return;
+    // `void promise()` as a statement still makes the call; only its value is dropped.
+    if (word(i, 'void') && i + 1 < e) { simple(i + 1, e, out); return; }
+    const eqs = [];
+    let aug = -1;
+    for (let q = i; q < e; q++) {
+      countStep();
+      const t = toks[q];
+      if ((isPunct(t, '(') || isPunct(t, '[') || isPunct(t, '{')) || (t.synthetic && isPunct(t, '('))) { const c = match.get(q); if (c === undefined) break; q = c; continue; }
+      const angle = T.typeAngles?.get(q);
+      if (angle !== undefined && angle <= e) { q = angle - 1; continue; }
+      if (isPunct(t, '=>') || isPunct(t, '?')) break;
+      if (isPunct(t, '=')) eqs.push(q);
+      else if (t.k === 'punct' && JS_AUGMENTED.has(t.v) && aug < 0 && !eqs.length) aug = q;
+    }
+    if (aug >= 0) { out.push({ op: 'assign', ...at, targets: [R.target(i, aug)], value: R.value(aug + 1, e), aug: toks[aug].v }); return; }
+    if (!eqs.length && (isPunct(toks[e - 1], '++') || isPunct(toks[e - 1], '--')) && e - 1 > i) { out.push({ op: 'assign', ...at, targets: [R.target(i, e - 1)], value: null, aug: toks[e - 1].v }); return; }
+    if (!eqs.length && (isPunct(toks[i], '++') || isPunct(toks[i], '--'))) { out.push({ op: 'assign', ...at, targets: [R.target(i + 1, e)], value: null, aug: toks[i].v }); return; }
+    if (!eqs.length) {
+      const v = R.value(i, e);
+      out.push({ op: v.k === 'call' || v.k === 'new' ? 'call' : 'expr', ...at, value: v });
+      return;
+    }
+    const targets = [];
+    let start = i;
+    for (const q of eqs) { targets.push(R.target(start, q)); start = q + 1; }
+    out.push({ op: 'assign', ...at, targets, value: R.value(start, e) });
+  };
+  // `const a = 1, { b } = c` from token a (past the word) to e-1: an assignment per declarator.
+  const declarations = (a, e, out) => {
+    for (const [pa, pb] of partsBetween(T, a, e)) {
+      countStep();
+      const eq = firstAt(T, pa, pb, (u) => isPunct(u, '='));
+      const typeAt = firstAt(T, pa, eq, (u) => isPunct(u, ':'));
+      const end = Math.min(eq, typeAt);
+      const bang = isPunct(toks[end - 1], '!') ? end - 1 : end;
+      out.push({ op: 'assign', line: lineOf(pa), targets: [R.pattern(pa, bang) ?? R.opaque(pa, bang)], value: eq < pb ? R.value(eq + 1, pb) : null });
+    }
+  };
+
+  // The statement from token i (before q): pushes its steps on out and gives the token after it. Past MAX_NESTING
+  // statements inside each other, the rest of the block is one opaque step with nesting: true.
+  let depth = 0;
+  const statement = (i, q, out) => {
+    if (depth >= MAX_NESTING) { out.push({ op: 'opaque', line: lineOf(i), text: textOf(toks, i, q), nesting: true }); return q; }
+    depth++;
+    try { return statementIn(i, q, out); } finally { depth--; }
+  };
+  const statementIn = (i, q, out) => {
+    countStep();
+    const t = toks[i];
+    const at = { line: lineOf(i) };
+    if (isPunct(t, ';')) return i + 1;
+    if (isPunct(t, '{')) { const c = closeOf(i); out.push(...statements(i + 1, c)); return c + 1; }
+    if (isWord(t) && isPunct(toks[i + 1], ':') && !F.refAt.has(i) && !bindAt.has(i)) return statement(i + 2, q, out);
+    const w = isWord(t) && !F.refAt.has(i) && !bindAt.has(i) ? t.v : null;
+    if (w === 'if' && isPunct(toks[i + 1], '(')) {
+      const c = closeOf(i + 1);
+      const b = { op: 'branch', ...at, cond: R.cond(i + 2, c), then: [], else: [] };
+      let j = statement(c + 1, q, b.then);
+      if (word(j, 'else')) j = statement(j + 1, q, b.else);
+      out.push(b);
+      return j;
+    }
+    if (w === 'for') {
+      let open = i + 1;
+      if (word(open, 'await')) open++;
+      const c = closeOf(open);
+      const semi = splitAt(T, open + 1, c, (u) => isPunct(u, ';'));
+      const loop = { op: 'loop', ...at, kind: 'for' };
+      if (semi.length === 3) {
+        const [[ia, ib], [ca, cb], [ua, ub]] = semi;
+        if (ia < ib) declOrSimple(ia, ib, out);
+        loop.cond = ca < cb ? R.cond(ca, cb) : null;
+        loop.body = [];
+        const j = statement(c + 1, q, loop.body);
+        if (ua < ub) simple(ua, ub, loop.body);
+        loop.else = [];
+        out.push(loop);
+        return j;
+      }
+      const inAt = firstAt(T, open + 1, c, (u, j) => (isWord(u, 'of') || isWord(u, 'in')) && !F.refAt.has(j) && !bindAt.has(j));
+      let ta = open + 1;
+      if (['const', 'let', 'var'].some((d) => word(ta, d))) ta++;
+      loop.target = R.pattern(ta, inAt) ?? R.target(ta, inAt);
+      loop.over = R.value(inAt + 1, c);
+      if (isWord(toks[inAt], 'in')) loop.keys = true;
+      loop.body = [];
+      const j = statement(c + 1, q, loop.body);
+      loop.else = [];
+      out.push(loop);
+      return j;
+    }
+    if (w === 'while' && isPunct(toks[i + 1], '(')) {
+      const c = closeOf(i + 1);
+      const loop = { op: 'loop', ...at, kind: 'while', cond: R.cond(i + 2, c), body: [], else: [] };
+      const j = statement(c + 1, q, loop.body);
+      out.push(loop);
+      return j;
+    }
+    if (w === 'do') {
+      const loop = { op: 'loop', ...at, kind: 'do', body: [], else: [] };
+      let j = statement(i + 1, q, loop.body);
+      if (word(j, 'while') && isPunct(toks[j + 1], '(')) { const c = closeOf(j + 1); loop.cond = R.cond(j + 2, c); j = past(c + 1, q); }
+      out.push(loop);
+      return j;
+    }
+    if (w === 'try') {
+      const tr = { op: 'try', ...at, body: [], handlers: [], else: [], finally: [] };
+      let j = statement(i + 1, q, tr.body);
+      if (word(j, 'catch')) {
+        const h = { types: null, binding: null, body: [] };
+        j++;
+        if (isPunct(toks[j], '(')) {
+          const c = closeOf(j);
+          const typeAt = firstAt(T, j + 1, c, (u) => isPunct(u, ':'));
+          const p = R.pattern(j + 1, typeAt);
+          if (p?.k === 'name') h.binding = p.binding; else if (p) h.target = p;
+          j = c + 1;
+        }
+        j = statement(j, q, h.body);
+        tr.handlers.push(h);
+      }
+      if (word(j, 'finally')) j = statement(j + 1, q, tr.finally);
+      out.push(tr);
+      return j;
+    }
+    if (w === 'switch' && isPunct(toks[i + 1], '(')) {
+      const c = closeOf(i + 1);
+      const subject = textOf(toks, i + 2, c);
+      const open = c + 1;
+      const close = closeOf(open);
+      // The cases: their label and the statements up to the next case at this depth.
+      const cases = [];
+      let j = open + 1;
+      while (j < close) {
+        countStep();
+        if (word(j, 'case') || word(j, 'default')) {
+          const colon = word(j, 'default') ? j + 1 : firstAt(T, j + 1, close, (u) => isPunct(u, ':'));
+          cases.push({ at: j, label: word(j, 'default') ? null : textOf(toks, j + 1, colon), body: [] });
+          j = colon + 1;
+          continue;
+        }
+        if (!cases.length) { j = stmtEnd(j, close) + 1; continue; }
+        j = statement(j, close, cases.at(-1).body);
+      }
+      let chain = [];
+      for (let k = cases.length - 1; k >= 0; k--) {
+        countStep();
+        const cs = cases[k];
+        if (cs.body.at(-1)?.op === 'break') cs.body.pop();
+        if (cs.label === null) { chain = cs.body; continue; }
+        chain = [{ op: 'branch', line: lineOf(cs.at), cond: { k: 'opaque', text: `switch ${subject} case ${cs.label}` }, then: cs.body, else: chain }];
+      }
+      out.push(...chain);
+      return close + 1;
+    }
+    if (w === 'return' || w === 'throw') {
+      const e = toks[i + 1] && !toks[i + 1].first && i + 1 < q ? stmtEnd(i + 1, q) : i + 1;
+      out.push({ op: w === 'throw' ? 'raise' : 'return', ...at, value: e > i + 1 ? R.value(i + 1, e) : null });
+      return past(e, q);
+    }
+    if (w === 'break' || w === 'continue') {
+      let j = i + 1;
+      if (isWord(toks[j]) && !toks[j].first && j < q) j++;
+      out.push({ op: w, ...at });
+      return past(j, q);
+    }
+    if (t.k === 'punct' && t.v === '@') {
+      const decorators = [];
+      let j = i;
+      while (isPunct(toks[j], '@') && j < q) { countStep(); const e = decoratorEnd(j); decorators.push(R.value(j + 1, e)); j = e; }
+      const before = out.length;
+      const end = statement(j, q, out);
+      if (out.length > before && out[before].decorators) out[before].decorators = decorators;
+      return end;
+    }
+    if (w === 'function' || (w === 'async' && word(i + 1, 'function'))) {
+      const s = scopeFrom(i + 1, q, 'function');
+      if (s === null) return stmtEnd(i, q) + 1;
+      out.push({ op: 'def', ...at, scope: s, name: T.scopes[s].name, decorators: [] });
+      return Math.max(T.scopes[s].b, i + 1);
+    }
+    if (w === 'class' || (w === 'abstract' && word(i + 1, 'class'))) {
+      const s = scopeFrom(i + 1, q, 'class');
+      if (s === null) return stmtEnd(i, q) + 1;
+      out.push({ op: 'class', ...at, scope: s, name: T.scopes[s].name, decorators: [] });
+      return Math.max(T.scopes[s].b, i + 1);
+    }
+    if (w === 'import' && !isPunct(toks[i + 1], '(') && !isPunct(toks[i + 1], '.')) {
+      const e = stmtEnd(i, q);
+      const bindings = [];
+      for (let j = i; j < e; j++) { countStep(); if (bindAt.has(j)) bindings.push(bindAt.get(j)); }
+      out.push({ op: 'import', ...at, bindings });
+      return past(e, q);
+    }
+    if (w === 'export') {
+      if (word(i + 1, 'default')) {
+        const j = i + 2;
+        if (word(j, 'function') || word(j, 'class') || (word(j, 'async') && word(j + 1, 'function')) || word(j, 'abstract')) return statement(j, q, out);
+        const e = stmtEnd(j, q);
+        out.push({ op: 'expr', ...at, value: R.value(j, e), export: 'default' });
+        return past(e, q);
+      }
+      if (isPunct(toks[i + 1], '{') || isPunct(toks[i + 1], '*') || word(i + 1, 'type') && isPunct(toks[i + 2], '{') || isPunct(toks[i + 1], '=')) {
+        const e = stmtEnd(i, q);
+        out.push({ op: 'opaque', ...at, text: textOf(toks, i, e) });
+        return past(e, q);
+      }
+      return statement(i + 1, q, out);
+    }
+    if ((w === 'const' || w === 'let' || w === 'var') && (isWord(toks[i + 1]) || isPunct(toks[i + 1], '[') || isPunct(toks[i + 1], '{')) && !toks[i + 1].first) {
+      if (w === 'const' && word(i + 1, 'enum')) return statement(i + 1, q, out);
+      const e = stmtEnd(i, q);
+      declarations(i + 1, e, out);
+      return past(e, q);
+    }
+    // TypeScript declarations of types only: no step. enum and namespace: their header, opaque.
+    if (w && TS_TYPE_ONLY.has(w) && isWord(toks[i + 1]) && !toks[i + 1].first) {
+      const e = stmtEnd(i, q);
+      return past(e, q);
+    }
+    if (w && (w === 'enum' || w === 'namespace' || w === 'module') && (isWord(toks[i + 1]) || (toks[i + 1]?.k === 'val')) && !toks[i + 1].first) {
+      const brace = firstAt(T, i + 1, q, (u) => isPunct(u, '{'));
+      out.push({ op: 'opaque', ...at, text: textOf(toks, i, brace) });
+      return brace < q ? closeOf(brace) + 1 : q;
+    }
+    const e = stmtEnd(i, q);
+    simple(i, e, out);
+    return past(Math.max(e, i + 1), q);
+  };
+  const declOrSimple = (a, b, out) => {
+    if (['const', 'let', 'var'].some((d) => word(a, d))) declarations(a + 1, b, out);
+    else simple(a, b, out);
+  };
+  const statements = (p, q) => {
+    const out = [];
+    for (let i = p; i < q;) { const j = statement(i, q, out); i = j > i ? j : i + 1; }
+    return out;
+  };
+
+  // A class body: its methods as defs, its fields, its static blocks' statements.
+  const classBody = (s) => {
+    const { a, b } = T.scopes[s];
+    const close = closeOf(a);
+    const out = [];
+    let i = a + 1;
+    while (i < close) {
+      countStep();
+      if (isPunct(toks[i], ';')) { i++; continue; }
+      const decorators = [];
+      while (isPunct(toks[i], '@') && i < close) { const e = decoratorEnd(i); decorators.push(R.value(i + 1, e)); i = e; }
+      if (isWord(toks[i], 'static') && isPunct(toks[i + 1], '{')) { const c = closeOf(i + 1); out.push(...statements(i + 2, c)); i = c + 1; continue; }
+      let isStatic = false;
+      // A modifier is followed, on its line, by what names a member: a word, `[`, `#`, `*` or a string.
+      const named = (u) => u && !u.first && (isWord(u) || isPunct(u, '[') || isPunct(u, '#') || isPunct(u, '*') || u.k === 'val');
+      while (isWord(toks[i]) && MEMBER_MODIFIERS.has(toks[i].v) && named(toks[i + 1])) {
+        if (toks[i].v === 'static') isStatic = true;
+        i++;
+      }
+      const nameAt = i;
+      let j = i;
+      if (isPunct(toks[j], '*')) j++;
+      if (isPunct(toks[j], '#')) j++;
+      if (isPunct(toks[j], '[')) j = closeOf(j) + 1; else j++;
+      const name = textOf(toks, nameAt, j);
+      if (isPunct(toks[j], '?') || isPunct(toks[j], '!')) j++;
+      const fn = starts.get(j)?.find((x) => T.scopes[x].kind === 'function') ?? (T.typeAngles?.has(j) ? starts.get(j)?.[0] ?? scopeFrom(j, close, 'function') : null);
+      if (fn !== null && fn !== undefined && (isPunct(toks[j], '(') || isPunct(toks[j], '<'))) {
+        out.push({ op: 'def', line: lineOf(nameAt), scope: fn, name, decorators, static: isStatic });
+        i = Math.max(T.scopes[fn].b, j + 1);
+        continue;
+      }
+      if (isPunct(toks[j], '(') || isPunct(toks[j], '<')) { i = stmtEnd(j, close); i = past(i, close); continue; } // an overload or an abstract method: no body
+      // An index signature `[k: string]: T` is a type only.
+      const e = stmtEnd(nameAt, close);
+      const eq = firstAt(T, j, e, (u) => isPunct(u, '='));
+      if (!(isPunct(toks[nameAt], '[') && isPunct(toks[j], ':'))) out.push({ op: 'field', line: lineOf(nameAt), name, value: eq < e ? R.value(eq + 1, e) : null, static: isStatic, decorators });
+      i = past(Math.max(e, nameAt + 1), close);
+    }
+    return out;
+  };
+  // A function's body: its statements, or, for an arrow with an expression body, the return of that expression.
+  const functionBody = (s) => {
+    const sc = T.scopes[s];
+    if (sc.arrow) {
+      const arrowAt = firstAt(T, sc.a, sc.b, (u) => isPunct(u, '=>'));
+      const start = arrowAt + 1;
+      if (isPunct(toks[start], '{') && closeOf(start) === sc.b - 1) return statements(start + 1, sc.b - 1);
+      // The expression ends at the scope's end, less the brackets that close around the arrow (`map(x => x.y)`, whose
+      // scope runs to the `)`): taken off from the end, not found by a walk from the start, which deep arrows
+      // (`a => b => c`) would repeat for each.
+      let end = sc.b;
+      while (end - 1 > start && toks[end - 1].k === 'punct' && ')]}'.includes(toks[end - 1].v) && (T.back.get(end - 1) ?? -1) < start) { countStep(); end--; }
+      return [{ op: 'return', line: lineOf(start), value: R.value(start, end) }];
+    }
+    const last = sc.b - 1;
+    const open = isPunct(toks[last], '}') ? T.back?.get(last) ?? -1 : -1;
+    if (open < sc.a) return [];
+    return statements(open + 1, last);
+  };
+
+  const bodies = [{ scope: 0, kind: 'module', name: null, steps: statements(0, n) }];
+  T.scopes.forEach((s, i) => {
+    countStep();
+    if (s.kind === 'function') bodies.push({ scope: i, kind: 'function', name: s.name, steps: functionBody(i) });
+    else if (s.kind === 'class') bodies.push({ scope: i, kind: 'class', name: s.name, steps: classBody(i) });
+  });
   return bodies;
 }

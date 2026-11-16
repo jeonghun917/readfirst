@@ -1484,7 +1484,7 @@ function finishTable(T, lineCount) {
       early = got.early;
       if (T.lang === 'js' && (mark === ASSIGN || mark === AREF)) {
         const pos = T.assignEnds?.get(p) ?? p;
-        bindings.push({ name, scope: homeScope, line: toks[p].line, how: 'assign', pos });
+        bindings.push({ name, scope: homeScope, line: toks[p].line, how: 'assign', pos, at: p });
         let at = got.at + 1;
         while (at < list.length && bindings[list[at]].pos <= pos) { countStep(); at++; }
         list.splice(at, 0, bindings.length - 1);

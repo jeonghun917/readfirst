@@ -222,9 +222,180 @@ test('flow, Python: the netbox shape: a value set to None under a condition, use
   assert.deepEqual(shape(steps[2].cond), { k: 'none', of: { k: 'ref', name: 'obj' }, neg: true });
 });
 
-test('flow: a JavaScript file is not lowered yet; a file the reader does not read is null', () => {
-  assert.equal(flowSteps('a.js', 'const x = 1;').bodies, null);
+test('flow: a file the reader does not read is null', () => {
   assert.equal(flowSteps('a.txt', 'x'), null);
+});
+
+// ------------------------------------------------------------------------------------------- JavaScript, TypeScript
+
+const jsCond = (src, path = 'a.ts') => shape(stepsOf(`function f(x, y, C) {\n  if (${src}) {}\n}\n`, 'f', path)[0].cond);
+const jsValue = (src, path = 'a.ts') => shape(stepsOf(`function f(x, y, C) {\n  const v = ${src};\n}\n`, 'f', path)[0].value);
+
+test('flow, JS: null and undefined: strict comparisons say which, loose ones either; typeof undefined too', () => {
+  assert.deepEqual(jsCond('x === null'), { k: 'none', of: X, neg: false, exact: 'null' });
+  assert.deepEqual(jsCond('x !== undefined'), { k: 'none', of: X, neg: true, exact: 'undefined' });
+  assert.deepEqual(jsCond('x == null'), { k: 'none', of: X, neg: false });
+  assert.deepEqual(jsCond('null != x'), { k: 'none', of: X, neg: true });
+  assert.deepEqual(jsCond("typeof x === 'undefined'"), { k: 'none', of: X, neg: false, exact: 'undefined' });
+  // A local named undefined is not the value undefined.
+  const steps = stepsOf('function f(x, undefined) {\n  if (x === undefined) {}\n}\n', 'f', 'a.js');
+  assert.equal(steps[0].cond.k, 'opaque');
+});
+
+test('flow, JS: typeof, instanceof, !, && and ||', () => {
+  assert.deepEqual(jsCond("typeof x === 'string'"), { k: 'typeof', of: X, is: 'string', neg: false });
+  assert.deepEqual(jsCond("'function' !== typeof x"), { k: 'typeof', of: X, is: 'function', neg: true });
+  assert.deepEqual(jsCond('x instanceof C'), { k: 'isinstance', of: X, types: [{ k: 'ref', name: 'C' }] });
+  assert.deepEqual(jsCond('!x'), { k: 'not', of: { k: 'truthy', of: X } });
+  assert.deepEqual(jsCond('x && !y || x'), { k: 'or', of: [{ k: 'and', of: [{ k: 'truthy', of: X }, { k: 'not', of: { k: 'truthy', of: { k: 'ref', name: 'y' } } }] }, { k: 'truthy', of: X }] });
+  assert.deepEqual(jsCond('(x != null) && x.ok'), { k: 'and', of: [{ k: 'none', of: X, neg: true }, { k: 'truthy', of: { k: 'attr', of: X, name: 'ok' } }] });
+  assert.equal(jsCond('x ?? y').k, 'opaque');
+  assert.equal(jsCond("x === 'a'").k, 'opaque');
+  assert.equal(jsCond('x < y').k, 'opaque');
+});
+
+test('flow, JS: values: optional chains, non-null, generic calls, new, templates, as, choices, functions', () => {
+  assert.deepEqual(jsValue('x?.a!.b<string>(y)?.[0]'), {
+    k: 'index', optional: true, key: { k: 'lit', v: 'num', text: '0' },
+    of: { k: 'call', callee: { k: 'attr', name: 'b', of: { k: 'attr', name: 'a', optional: true, of: X } }, args: [{ value: { k: 'ref', name: 'y' } }] },
+  });
+  assert.deepEqual(jsValue('new C.D<T>(x)'), { k: 'new', callee: { k: 'attr', of: { k: 'ref', name: 'C' }, name: 'D' }, args: [{ value: X }] });
+  assert.deepEqual(jsValue('new C'), { k: 'new', callee: { k: 'ref', name: 'C' }, args: [] });
+  assert.deepEqual(jsValue('`a ${x.b} c`'), { k: 'lit', v: 'str', uses: [{ k: 'attr', of: X, name: 'b' }] });
+  assert.deepEqual(jsValue('x.y as Store'), { k: 'attr', of: X, name: 'y', as: 'Store' });
+  assert.deepEqual(jsValue('x ? y : null'), { k: 'choice', cond: { k: 'truthy', of: X }, then: { k: 'ref', name: 'y' }, else: { k: 'lit', v: 'null' } });
+  assert.deepEqual(jsValue('x ? y ? 1 : 2 : 3').else, { k: 'lit', v: 'num', text: '3' });
+  assert.deepEqual(jsValue('[x, ...y]'), { k: 'lit', v: 'list', items: [X, { k: 'ref', name: 'y', spread: '...' }] });
+  assert.deepEqual(jsValue('(0, x.f)'), { k: 'attr', of: X, name: 'f' });
+  assert.deepEqual(jsValue('void 0'), { k: 'lit', v: 'undefined' });
+  assert.deepEqual(jsValue('x.sql`select ${y}`'), { k: 'call', callee: { k: 'attr', of: X, name: 'sql' }, args: [{ value: { k: 'lit', v: 'str', uses: [{ k: 'ref', name: 'y' }] } }], tagged: true });
+  assert.deepEqual(shape(stepsOf('function f(x) {\n  void x.go();\n}\n', 'f', 'a.js')), [{ op: 'call', value: { k: 'call', callee: { k: 'attr', of: X, name: 'go' }, args: [] } }]);
+  assert.deepEqual(jsValue('/a+/g'), { k: 'lit', v: 'regex' });
+  assert.equal(jsValue('x ?? y').k, 'opaque');
+  assert.equal(jsValue('x + 1').k, 'opaque');
+  assert.equal(jsValue('(a) => a').k, 'fn');
+  assert.equal(jsValue('async function () {}').k, 'fn');
+  assert.equal(jsValue('class extends C {}').k, 'class');
+  assert.deepEqual(jsValue('<div a={x}>t</div>', 'a.jsx'), { k: 'lit', v: 'jsx' });
+});
+
+test('flow, JS: declarations and assignments: patterns with keys, defaults and rest; chains, += and ++', () => {
+  const out = flowSteps('a.ts', 'const { a, b: c = 1, ...r } = x, [d, , ...e] = y;\nlet f: number;\nthis.g = h = 2;\ni += 1;\ni++;\n--i;\nlet h, i;\n');
+  const [one, two, three, four, five, six, seven] = out.bodies[0].steps;
+  assert.deepEqual(shape(one.targets[0]), { k: 'object', items: [{ key: 'a', target: { k: 'name', name: 'a' } }, { key: 'b', target: { k: 'name', name: 'c' }, default: { k: 'lit', v: 'num', text: '1' } }], rest: { k: 'name', name: 'r' } });
+  assert.deepEqual(shape(two.targets[0]), { k: 'tuple', items: [{ k: 'name', name: 'd' }, null, { k: 'name', name: 'e', star: true }] });
+  assert.equal(three.value, null);
+  assert.deepEqual(shape(four.targets), [{ k: 'attr', of: { k: 'ref', name: 'this' }, name: 'g' }, { k: 'name', name: 'h' }]);
+  assert.equal(out.table.bindings[four.targets[1].binding].how, 'assign');
+  assert.equal(five.aug, '+=');
+  assert.equal(six.aug, '++');
+  assert.equal(seven.aug, '--');
+});
+
+test('flow, JS: if and else if, for (;;), for of, for in, while, do; break and continue with labels', () => {
+  const steps = stepsOf([
+    'if (x) a(); else if (y) { b(); } else c();',
+    'for (let i = 0; i < 3; i++) { if (i) continue; }',
+    'outer: for (const [k, v] of Object.entries(x)) break outer;',
+    'for (k in x) {}',
+    'while (!x) x = 1;',
+    'do { x-- } while (x)',
+    '',
+  ].join('\n'), null, 'a.js');
+  assert.deepEqual(steps.map((s) => s.op), ['branch', 'assign', 'loop', 'loop', 'loop', 'loop', 'loop']);
+  assert.equal(steps[0].else[0].op, 'branch');
+  assert.equal(steps[0].else[0].else[0].op, 'call');
+  assert.equal(steps[2].cond.k, 'opaque');
+  assert.deepEqual(steps[2].body.map((s) => s.op), ['branch', 'assign']);
+  assert.equal(steps[3].target.k, 'tuple');
+  assert.equal(steps[3].body[0].op, 'break');
+  assert.equal(steps[4].keys, true);
+  assert.equal(steps[5].kind, 'while');
+  assert.equal(steps[6].kind, 'do');
+  assert.equal(steps[6].cond.k, 'truthy');
+});
+
+test('flow, JS: try, catch with its binding, finally; throw is raise; switch is a branch per case', () => {
+  const steps = stepsOf([
+    'function f(x) {',
+    '  try { g(); } catch (e: unknown) { throw e; } finally { h(); }',
+    '  try { g(); } catch { }',
+    "  switch (x.kind) { case 'a': a(); break; case 'b': case 'c': b(); default: c(); }",
+    '  return',
+    '  x;',
+    '}',
+  ].join('\n'), 'f', 'a.ts');
+  assert.deepEqual(steps.map((s) => s.op), ['try', 'try', 'branch', 'return', 'expr']);
+  assert.ok(steps[0].handlers[0].binding !== null);
+  assert.equal(steps[0].handlers[0].body[0].op, 'raise');
+  assert.equal(steps[0].finally.length, 1);
+  assert.equal(steps[1].handlers[0].binding, null);
+  assert.equal(steps[2].cond.text, "switch x.kind case 'a'");
+  assert.deepEqual(steps[2].then.map((s) => s.op), ['call']);
+  assert.deepEqual(steps[2].else[0].then, []);
+  assert.equal(steps[2].else[0].else[0].then[0].op, 'call');
+  assert.equal(steps[2].else[0].else[0].else[0].op, 'call');
+  assert.equal(steps[3].value, null);
+});
+
+test('flow, JS: functions, arrows and classes are bodies of their own; fields, static blocks, decorators', () => {
+  const out = flowSteps('a.ts', [
+    "import { Inject } from './di';",
+    'export default async function main() { return 1; }',
+    'export const f = (a: number): number => a + 1, g = async (b) => { await b.c(); };',
+    '@Controller()',
+    'export class S extends B {',
+    '  @Inject() private db!: Db;',
+    '  static n = 0;',
+    '  [k: string]: unknown;',
+    '  static { S.n = 1; }',
+    '  constructor(private x: X) { super(); }',
+    '  async get<T>(key: string): Promise<T> { return this.db.get(key); }',
+    '  abstract m(): void;',
+    '}',
+    'type T = { a: string };',
+    'interface I { b: number }',
+    'export { f as h };',
+    '',
+  ].join('\n'));
+  const top = out.bodies[0].steps;
+  assert.deepEqual(top.map((s) => s.op), ['import', 'def', 'assign', 'assign', 'class', 'opaque']);
+  assert.equal(top[4].decorators[0].k, 'call');
+  const named = (name) => out.bodies.find((b) => b.name === name);
+  assert.equal(named('main').steps[0].op, 'return');
+  assert.equal(top[2].value.k, 'fn');
+  assert.deepEqual(shape(out.bodies.find((b) => b.scope === top[2].value.scope).steps), [{ op: 'return', value: { k: 'opaque', text: 'a+1' } }]);
+  assert.deepEqual(out.bodies.find((b) => b.scope === top[3].value.scope).steps.map((s) => s.op), ['call']);
+  const cls = named('S').steps;
+  assert.deepEqual(cls.map((s) => [s.op, s.name]), [['field', 'db'], ['field', 'n'], ['assign', undefined], ['def', 'constructor'], ['def', 'get']]);
+  assert.equal(cls[0].decorators[0].k, 'call');
+  assert.equal(cls[1].static, true);
+  assert.equal(named('get').steps[0].value.k, 'call');
+});
+
+test('flow, JS: blocks nested deeper than 200 are one opaque step with nesting, their text whole', () => {
+  const steps = stepsOf(`function f() {${'{ x(); '.repeat(250)}${'}'.repeat(250)}}\n`, 'f', 'a.js');
+  // Blocks are flattened into their body, so the steps are the calls in order and then the opaque rest.
+  const calls = steps.filter((s) => s.op === 'call').length;
+  const rest = steps.at(-1);
+  assert.equal(rest.op, 'opaque');
+  assert.equal(rest.nesting, true);
+  assert.equal(calls + (rest.text.match(/x\(\)/gu) ?? []).length, 250);
+});
+
+test('flow, JS: the cal.com shape: a local and a module of the same name, and an await under a check', () => {
+  const steps = stepsOf([
+    "import prisma from '@calcom/prisma';",
+    'export async function handler(req) {',
+    '  const eventType = await prisma.eventType.findUnique({ where: { id: req.query.id } });',
+    '  if (!eventType) throw new HttpError({ statusCode: 404 });',
+    '  return eventType.users;',
+    '}',
+  ].join('\n'), 'handler', 'a.js');
+  assert.deepEqual(steps.map((s) => s.op), ['assign', 'branch', 'return']);
+  assert.equal(steps[0].value.await, true);
+  assert.equal(steps[0].value.callee.of.of.name, 'prisma');
+  assert.equal(steps[1].then[0].op, 'raise');
 });
 
 // ------------------------------------------------------------------------------------------------------------ linear
@@ -245,17 +416,35 @@ const FLOW_SHAPES = {
   'py: deep ifs': (n) => Array.from({ length: Math.floor(Math.sqrt(n)) }, (_, i) => `${' '.repeat(i)}if x:\n`).join('') + `${' '.repeat(Math.floor(Math.sqrt(n)))}pass\n`,
   'py: a long try': (n) => `try:\n    pass\n${'except E as e:\n    raise\n'.repeat(n / 27)}`,
   'py: many f-string placeholders': (n) => `s = f"${'{x.a} '.repeat(n / 6)}"\n`,
+  'js: a long else-if chain': (n) => `function f(x) {\n  if (x === null) y = 0;\n${Array.from({ length: n / 36 }, (_, i) => `  else if (x === ${i}) { y = x.a(); }\n`).join('')}}\n`,
+  'js: a long && chain': (n) => `if (${'x != null && '.repeat(n / 13)}x) {}\n`,
+  'js: a run of !': (n) => `if (${'!'.repeat(n / 2)}x) {}\n`,
+  'js: a ternary chain': (n) => `const v = ${'c ? a : '.repeat(n / 8)}z;\n`,
+  'js: a ternary chain in the middle': (n) => `const v = ${'c ? '.repeat(n / 8)}z${' : a'.repeat(n / 8)};\n`,
+  'js: deep calls': (n) => `const v = ${'f('.repeat(n / 2)}x${')'.repeat(n / 2)};\n`,
+  'js: deep arrows': (n) => `const f = ${'a => '.repeat(n / 5)}a;\n`,
+  'js: deep blocks': (n) => `function f() {${'{ x = 1;'.repeat(n / 8)}${'}'.repeat(n / 8)}}\n`,
+  'js: nested functions': (n) => `${'function f() { '.repeat(n / 16)}return 1;${' }'.repeat(n / 16)}\n`,
+  'js: many statements': (n) => `function f(x) {\n${'  const y = x?.a ? g(x.b, ...x.c) : null;\n'.repeat(n / 44)}}\n`,
+  'js: a long switch': (n) => `switch (x) {\n${Array.from({ length: n / 24 }, (_, i) => `  case ${i}: y(); break;\n`).join('')}}\n`,
+  'js: a long member chain with calls': (n) => `const a = 1;\na${'.b(a)[a]?.c'.repeat(n / 12)};\n`,
+  'ts: a class with many members': (n) => `class C {\n${'  @d() private x!: X;\n  async m<T>(a: T): Promise<T> { return a; }\n'.repeat(n / 80)}}\n`,
+  'js: many template placeholders': (n) => `const x = 1;\nconst s = \`${'${x.a} '.repeat(n / 7)}\`;\n`,
 };
 
 test('flow: linear steps in the length of a file, its nesting and its chains', () => {
   for (const [name, make] of Object.entries(FLOW_SHAPES)) {
-    const count = (n) => { const text = make(n); countSteps(true); flowSteps('a.py', text); return countSteps(false); };
+    const path = name.startsWith('py') ? 'a.py' : name.startsWith('ts') ? 'a.ts' : 'a.js';
+    const count = (n) => { const text = make(n); countSteps(true); flowSteps(path, text); return countSteps(false); };
     const [small, big] = [count(2_000), count(32_000)];
     assert.ok(small > 0 && big < small * 20, `${name}: ${small} steps at 2,000 characters, ${big} at 32,000 (${(big / small).toFixed(1)} times)`);
   }
 });
 
 test('flow: linear time in the length of a file, its nesting and its chains', async () => {
-  const { done, said } = await timeShapes(FLOW_SHAPES, new URL('../src/flow.mjs', import.meta.url).href, 'flowSteps', new Function('fn', 'text', 'return fn(\'a.py\', text);'));
-  assert.ok(linearIn(done, FLOW_SHAPES), said);
+  for (const lang of ['py', 'js', 'ts']) {
+    const shapes = Object.fromEntries(Object.entries(FLOW_SHAPES).filter(([name]) => name.startsWith(lang)));
+    const { done, said } = await timeShapes(shapes, new URL('../src/flow.mjs', import.meta.url).href, 'flowSteps', new Function('fn', 'text', `return fn('a.${lang}', text);`));
+    assert.ok(linearIn(done, shapes), said);
+  }
 });
