@@ -80,8 +80,10 @@ test('flow, Python: literals, and the uses an f-string holds', () => {
   assert.deepEqual(valueOf('x if y else C, x'), { k: 'lit', v: 'tuple', items: [{ k: 'choice', cond: { k: 'truthy', of: { k: 'ref', name: 'y' } }, then: X, else: { k: 'ref', name: 'C' } }, X] });
   assert.deepEqual(valueOf('()'), { k: 'lit', v: 'tuple', items: [] });
   assert.deepEqual(valueOf('[x]'), { k: 'lit', v: 'list', items: [X] });
-  assert.deepEqual(valueOf('{x: y}'), { k: 'lit', v: 'dict' });
-  assert.deepEqual(valueOf('{x}'), { k: 'lit', v: 'set' });
+  assert.deepEqual(valueOf('{x: y}'), { k: 'lit', v: 'dict', entries: [{ key: X, value: { k: 'ref', name: 'y' } }] });
+  assert.deepEqual(valueOf('{"form": x, **y}'), { k: 'lit', v: 'dict', entries: [{ key: { k: 'lit', v: 'str' }, name: 'form', value: X }, { spread: '**', value: { k: 'ref', name: 'y' } }] });
+  assert.deepEqual(valueOf('{}'), { k: 'lit', v: 'dict', entries: [] });
+  assert.deepEqual(valueOf('{x}'), { k: 'lit', v: 'set', items: [X] });
   assert.deepEqual(valueOf('(x)'), X);
 });
 
@@ -148,8 +150,27 @@ test('flow, Python: a walrus in a header is no end of it: the body is the loop\'
   const steps = stepsOf('def f(fp):\n    while line := fp.readline():\n        print(line)\n    if m := fp.x(): return m\n', 'f');
   assert.deepEqual(steps.map((s) => s.op), ['loop', 'branch']);
   assert.equal(steps[0].body[0].op, 'call');
-  assert.equal(steps[0].cond.k, 'opaque');
   assert.equal(steps[1].then[0].op, 'return');
+  // The walrus's value is what the condition tests, with the name it binds.
+  assert.deepEqual(shape(steps[0].cond), { k: 'truthy', of: { k: 'call', callee: { k: 'attr', of: { k: 'ref', name: 'fp' }, name: 'readline' }, args: [], binds: { k: 'name', name: 'line' } } });
+  assert.equal(stepsOf('def f(x):\n    if (m := x.get()) is not None:\n        pass\n', 'f')[0].cond.of.binds.name, 'm');
+});
+
+test('flow, Python: raise from keeps its cause apart; params with defaults, stars and keyword-only; lambda bodies', () => {
+  const out = flowSteps('a.py', 'def f(self, request, pk=None, *args, k: int = 1, **kw):\n    raise E(pk) from err\ng = lambda a, b=2: a.x\n');
+  const f = out.bodies.find((b) => b.name === 'f');
+  assert.deepEqual(shape(f.params), [
+    { target: { k: 'name', name: 'self' }, default: null },
+    { target: { k: 'name', name: 'request' }, default: null },
+    { target: { k: 'name', name: 'pk' }, default: { k: 'lit', v: 'None' } },
+    { target: { k: 'name', name: 'args' }, default: null, star: '*' },
+    { target: { k: 'name', name: 'k' }, default: { k: 'lit', v: 'num', text: '1' } },
+    { target: { k: 'name', name: 'kw' }, default: null, star: '**' },
+  ]);
+  assert.deepEqual(shape(f.steps[0]), { op: 'raise', value: { k: 'call', callee: { k: 'ref', name: 'E' }, args: [{ value: { k: 'ref', name: 'pk' } }] }, cause: { k: 'ref', name: 'err' } });
+  const lambda = out.bodies.find((b) => b.scope === out.bodies[0].steps[1].value.scope);
+  assert.deepEqual(shape(lambda.params), [{ target: { k: 'name', name: 'a' }, default: null }, { target: { k: 'name', name: 'b' }, default: { k: 'lit', v: 'num', text: '2' } }]);
+  assert.deepEqual(shape(lambda.steps), [{ op: 'return', value: { k: 'attr', of: { k: 'ref', name: 'a' }, name: 'x' } }]);
 });
 
 test('flow, Python: for and while are loops with their else; try with handlers, else and finally; with items', () => {
@@ -332,10 +353,58 @@ test('flow, JS: try, catch with its binding, finally; throw is raise; switch is 
   assert.equal(steps[1].handlers[0].binding, null);
   assert.equal(steps[2].cond.text, "switch x.kind case 'a'");
   assert.deepEqual(steps[2].then.map((s) => s.op), ['call']);
-  assert.deepEqual(steps[2].else[0].then, []);
-  assert.equal(steps[2].else[0].else[0].then[0].op, 'call');
-  assert.equal(steps[2].else[0].else[0].else[0].op, 'call');
+  // `case 'b': case 'c':` is one branch: 'b' falls through to c's statements.
+  assert.equal(steps[2].else[0].cond.text, "switch x.kind case 'b' | 'c'");
+  assert.equal(steps[2].else[0].then[0].op, 'call');
+  assert.equal(steps[2].else[0].else[0].op, 'call');
   assert.equal(steps[3].value, null);
+  const withDefault = stepsOf("switch (x) { case 1: case 2: default: d(); }\n", null, 'a.js');
+  assert.deepEqual(withDefault.map((s) => s.op), ['call']);
+});
+
+test('flow, JS: an object literal\'s entries: keys, shorthands, computed keys, spreads, methods and accessors', () => {
+  const out = flowSteps('a.ts', 'const k = 1, u = 2;\nconst o = { a: k, u, [k]: 3, "s-x": u, ...u, m(x) { return x }, get p() { return 1 }, n: () => 1, [k](y) {} };\n');
+  const v = out.bodies[0].steps[2].value;
+  assert.deepEqual(shape(v.entries.slice(0, 5)), [
+    { name: 'a', value: { k: 'ref', name: 'k' } },
+    { name: 'u', value: { k: 'ref', name: 'u' } },
+    { key: { k: 'ref', name: 'k' }, value: { k: 'lit', v: 'num', text: '3' } },
+    { name: 's-x', value: { k: 'ref', name: 'u' } },
+    { spread: '...', value: { k: 'ref', name: 'u' } },
+  ]);
+  assert.deepEqual(v.entries.slice(5).map((e) => [e.name ?? e.key.name, e.value.k]), [['m', 'fn'], ['p', 'fn'], ['n', 'fn'], ['k', 'fn']]);
+  assert.equal(out.bodies.find((b) => b.scope === v.entries[5].value.scope).steps[0].op, 'return');
+});
+
+test('flow, JS: `!` binds tighter than a comparison; a comma statement is its parts; a tuple item\'s default', () => {
+  assert.equal(jsCond('!x === y').k, 'opaque');
+  assert.equal(jsCond('!x instanceof C').k, 'opaque');
+  assert.deepEqual(jsCond('!(x === null)'), { k: 'not', of: { k: 'none', of: X, neg: false, exact: 'null' } });
+  assert.deepEqual(jsCond('!!x'), { k: 'not', of: { k: 'not', of: { k: 'truthy', of: X } } });
+  const out = flowSteps('a.js', 'let a, b, c;\na = 1, b = f(1, 2), c++;\nconst [d = 1, e] = c;\n');
+  const steps = out.bodies[0].steps;
+  // `let a, b, c;` is a step per declarator, then the comma statement's three.
+  assert.deepEqual(steps.slice(3, 6).map((s) => [s.op, s.targets[0].name, s.aug]), [['assign', 'a', undefined], ['assign', 'b', undefined], ['assign', 'c', '++']]);
+  assert.deepEqual(shape(steps[6].targets[0]), { k: 'tuple', items: [{ k: 'name', name: 'd', default: { k: 'lit', v: 'num', text: '1' } }, { k: 'name', name: 'e' }] });
+});
+
+test('flow, JS: params: patterns, defaults, rest, optional, decorators, parameter properties, this, one bare name', () => {
+  const out = flowSteps('a.ts', [
+    'class C {',
+    '  constructor(private readonly db: Db, @Inject(T) public t?: T) {}',
+    '  m(this: C, { a, b = 2 }: P = {}, ...rest: string[]) { return a; }',
+    '}',
+    'const g = async x => x;',
+    '',
+  ].join('\n'));
+  const named = (name) => out.bodies.find((b) => b.name === name);
+  assert.deepEqual(shape(named('constructor').params), [{ target: { k: 'name', name: 'db' }, default: null }, { target: { k: 'name', name: 't' }, default: null }]);
+  assert.deepEqual(shape(named('m').params), [
+    { target: { k: 'object', items: [{ key: 'a', target: { k: 'name', name: 'a' } }, { key: 'b', target: { k: 'name', name: 'b' }, default: { k: 'lit', v: 'num', text: '2' } }] }, default: { k: 'lit', v: 'dict', entries: [] } },
+    { target: { k: 'name', name: 'rest' }, default: null, star: '...' },
+  ]);
+  const arrow = out.bodies.find((b) => b.scope === out.bodies[0].steps[1].value.scope);
+  assert.deepEqual(shape(arrow.params), [{ target: { k: 'name', name: 'x' }, default: null }]);
 });
 
 test('flow, JS: functions, arrows and classes are bodies of their own; fields, static blocks, decorators', () => {
@@ -416,6 +485,8 @@ const FLOW_SHAPES = {
   'py: deep ifs': (n) => Array.from({ length: Math.floor(Math.sqrt(n)) }, (_, i) => `${' '.repeat(i)}if x:\n`).join('') + `${' '.repeat(Math.floor(Math.sqrt(n)))}pass\n`,
   'py: a long try': (n) => `try:\n    pass\n${'except E as e:\n    raise\n'.repeat(n / 27)}`,
   'py: many f-string placeholders': (n) => `s = f"${'{x.a} '.repeat(n / 6)}"\n`,
+  'py: a long dict': (n) => `d = {${'"k": x.a(y), **z, '.repeat(n / 22)}}\n`,
+  'js: a long object with methods': (n) => `const o = {${' a: x, b, [c]: d, ...e, m(y) { return y; },'.repeat(n / 46)} };\n`,
   'js: a long else-if chain': (n) => `function f(x) {\n  if (x === null) y = 0;\n${Array.from({ length: n / 36 }, (_, i) => `  else if (x === ${i}) { y = x.a(); }\n`).join('')}}\n`,
   'js: a long && chain': (n) => `if (${'x != null && '.repeat(n / 13)}x) {}\n`,
   'js: a run of !': (n) => `if (${'!'.repeat(n / 2)}x) {}\n`,
