@@ -85,185 +85,11 @@ function splitAt(T, a, b, at) {
   }
 }
 
+// Python's reader of values: the one reader with Python's table, and its own reader of assignment targets.
 function pythonReader(F) {
-  const { T, toks, match, refAt, lambdaAt, table } = F;
-  const opaque = (a, b) => ({ k: 'opaque', text: textOf(toks, a, b) });
-  const closeOf = (j) => match.get(j) ?? -1;
-  const isString = (t) => t?.k === 'val' && /^['"]/u.test(t.text ?? '');
-  const isNumber = (t) => t?.k === 'val' && /^\.?\d/u.test(t.v);
-  const opens = (t) => (isPunct(t, '(') || isPunct(t, '[') || isPunct(t, '{')) && !t.synthetic;
-
-  // A run of strings and their f-string placeholders (synthetic parentheses), with any prefix words between them.
-  const stringEnd = (j, b) => {
-    for (;;) {
-      countStep();
-      if (j < b && isString(toks[j])) { j++; continue; }
-      if (j < b && toks[j].synthetic && isPunct(toks[j], '(')) { j = closeOf(j) + 1; continue; }
-      if (j + 1 < b && isWord(toks[j]) && !refAt.has(j) && isString(toks[j + 1])) { j++; continue; }
-      return j;
-    }
-  };
-  // `1`, `1.5` (three tokens), `1e3`.
-  const numberEnd = (j, b) => (j + 2 < b && isPunct(toks[j + 1], '.') && isNumber(toks[j + 2]) && toks[j + 2].line === toks[j].line ? j + 3 : j + 1);
-  // Where the primary that starts at token a ends (the token after it), or -1 if none starts there.
-  const primaryEnd = (a, b) => {
-    const t = toks[a];
-    if (!t || a >= b) return -1;
-    if (t.k === 'word') {
-      if (PY_LITERALS.has(t.v)) return a + 1;
-      if (refAt.has(a)) return a + 1;
-      // A string's prefix (`f"…"`), which is no name: the string follows it.
-      return isString(toks[a + 1]) && toks[a + 1].line === t.line ? stringEnd(a + 1, b) : -1;
-    }
-    if (isString(t)) return stringEnd(a, b);
-    if (isNumber(t)) return numberEnd(a, b);
-    if (isPunct(t, '-') && isNumber(toks[a + 1])) return numberEnd(a + 1, b);
-    if (opens(t)) { const c = closeOf(a); return c < 0 || c >= b ? -1 : c + 1; }
-    return -1;
-  };
-
-  // Whether a to b-1 is one primary and its postfixes (`.name`, `[…]`, `(…)`), read at depth 0 only.
-  const isChain = (a, b) => {
-    let q = primaryEnd(a, b);
-    if (q < 0) return false;
-    while (q < b) {
-      countStep();
-      if (isPunct(toks[q], '.') && q + 1 < b && isWord(toks[q + 1])) { q += 2; continue; }
-      if ((isPunct(toks[q], '[') || isPunct(toks[q], '(')) && !toks[q].synthetic) { const c = closeOf(q); if (c < 0 || c >= b) return false; q = c + 1; continue; }
-      return false;
-    }
-    return true;
-  };
-
-  const primary = (a, e) => {
-    const t = toks[a];
-    if (t.k === 'word' && PY_LITERALS.has(t.v)) return { k: 'lit', v: t.v };
-    if (t.k === 'word' && refAt.has(a)) return { k: 'ref', name: t.v, ref: refAt.get(a) };
-    if (isNumber(t) || isPunct(t, '-')) return { k: 'lit', v: 'num', text: textOf(toks, a, e) };
-    if (opens(t)) {
-      const [x, y] = [a + 1, e - 1];
-      const compr = firstAt(T, x, y, (u) => isWord(u, 'for')) < y;
-      if (isPunct(t, '(')) {
-        if (x === y) return { k: 'lit', v: 'tuple', items: [] };
-        if (compr) return opaque(a, e);
-        return firstAt(T, x, y, (u) => isPunct(u, ',')) < y ? tuple(x, y) : value(x, y);
-      }
-      if (compr) return { k: 'lit', v: isPunct(t, '[') ? 'list' : 'set', text: textOf(toks, a, e) };
-      if (isPunct(t, '[')) return { k: 'lit', v: 'list', items: items(x, y) };
-      if (x < y && firstAt(T, x, y, (u) => isPunct(u, ':') || isPunct(u, '**')) >= y) return { k: 'lit', v: 'set', items: items(x, y) };
-      // A dict's entries: { key, name?, value } (name: a string key's text) or { spread: '**', value }.
-      const entries = partsBetween(T, x, y).map(([pa, pb]) => {
-        if (isPunct(toks[pa], '**')) return { spread: '**', value: value(pa + 1, pb) };
-        const colon = firstAt(T, pa, pb, (u) => isPunct(u, ':'));
-        const entry = { key: value(pa, colon), value: value(colon + 1, pb) };
-        if (colon === pa + 1 && isString(toks[pa])) entry.name = toks[pa].text.slice(1, -1);
-        return entry;
-      });
-      return { k: 'lit', v: 'dict', entries };
-    }
-    // A string run: what its placeholders hold are uses, up to a conversion or a format spec (`{x!r}`, `{x:>10}`).
-    const uses = [];
-    for (let j = a; j < e; j++) {
-      countStep();
-      if (toks[j].synthetic && isPunct(toks[j], '(')) {
-        const c = closeOf(j);
-        uses.push(value(j + 1, firstAt(T, j + 1, c, (u) => u.k === 'val' && /^[!:]/u.test(u.text ?? ''))));
-        j = c;
-      }
-    }
-    return uses.length ? { k: 'lit', v: 'str', uses } : { k: 'lit', v: 'str' };
-  };
-
-  // The values of a tuple's or a list's parts (a starred one carries spread).
-  const items = (a, b) => partsBetween(T, a, b).map(([pa, pb]) => (isPunct(toks[pa], '*') ? { ...value(pa + 1, pb), spread: '*' } : value(pa, pb)));
-  const tuple = (a, b) => ({ k: 'lit', v: 'tuple', items: items(a, b) });
-
-  const args = (open, close) => partsBetween(T, open + 1, close).map(([pa, pb]) => {
-    if (isPunct(toks[pa], '*') || isPunct(toks[pa], '**')) return { spread: toks[pa].v, value: value(pa + 1, pb) };
-    if (isWord(toks[pa]) && isPunct(toks[pa + 1], '=') && pa + 1 < pb) return { name: toks[pa].v, value: value(pa + 2, pb) };
-    return { value: value(pa, pb) };
-  });
-
-  // A call of a name the file binds as a class constructs it.
-  const isClassRef = (v) => {
-    if (v.k !== 'ref') return false;
-    const b = table.references[v.ref]?.to?.binding;
-    return b !== undefined && table.bindings[b]?.how === 'class';
-  };
-
-  let depth = 0;
-  const nested = (read) => (a, b, known) => {
-    if (depth >= MAX_NESTING) return { ...opaque(a, b), nesting: true };
-    depth++;
-    try { return read(a, b, known); } finally { depth--; }
-  };
-  // noComma: the caller knows a to b-1 holds no depth-0 comma (a part of a choice), so a chain of choices is not
-  // searched for one again at each link.
-  const value = nested((a, b, noComma = false) => {
-    if (a >= b) return opaque(a, b);
-    if (isWord(toks[a], 'await')) return { ...value(a + 1, b, noComma), await: true };
-    if (isWord(toks[a], 'lambda') && lambdaAt.has(a)) return { k: 'fn', scope: lambdaAt.get(a) };
-    // `name := value`: the value, and the name it binds.
-    if (isWord(toks[a]) && F.bindAt.has(a) && isPunct(toks[a + 1], ':') && isPunct(toks[a + 2], '=')) {
-      return { ...value(a + 3, b, noComma), binds: { k: 'name', name: toks[a].v, binding: F.bindAt.get(a) } };
-    }
-    // `return a, b`, `x = 1, 2`: a tuple without its parentheses (its commas bind looser than `if … else`).
-    if (!noComma && firstAt(T, a, b, (u) => isPunct(u, ',')) < b) return tuple(a, b);
-    const ifAt = firstAt(T, a, b, (u) => isWord(u, 'if'));
-    if (ifAt < b && ifAt > a) {
-      const elseAt = firstAt(T, ifAt + 1, b, (u) => isWord(u, 'else'));
-      if (elseAt < b) return { k: 'choice', cond: cond(ifAt + 1, elseAt), then: value(a, ifAt, true), else: value(elseAt + 1, b, true) };
-    }
-    if (!isChain(a, b)) return opaque(a, b);
-    let q = primaryEnd(a, b);
-    let v = primary(a, q);
-    while (q < b) {
-      countStep();
-      if (isPunct(toks[q], '.')) { v = { k: 'attr', of: v, name: toks[q + 1].v }; q += 2; continue; }
-      const c = closeOf(q);
-      if (isPunct(toks[q], '[')) v = { k: 'index', of: v, key: value(q + 1, c) };
-      else v = { k: isClassRef(v) ? 'new' : 'call', callee: v, args: args(q, c) };
-      q = c + 1;
-    }
-    return v;
-  });
-
-  const isCompare = (u) => isWord(u, 'is') || isWord(u, 'in') || isWord(u, 'not') || (u.k === 'punct' && COMPARE.has(u.v));
-  // split: 2 to look for a depth-0 `or` and `and`, 1 for `and` only (a part of an `or`), 0 for neither (what follows
-  // a `not` whose range had none), so a run of `not` is not searched again at each one.
-  const cond = nested((a, b, split = 2) => {
-    if (a >= b) return opaque(a, b);
-    const ors = split > 1 ? splitAt(T, a, b, (u) => isWord(u, 'or')) : [];
-    if (ors.length > 1) return { k: 'or', of: ors.map(([x, y]) => cond(x, y, 1)) };
-    const ands = split > 0 ? splitAt(T, a, b, (u) => isWord(u, 'and')) : [];
-    if (ands.length > 1) return { k: 'and', of: ands.map(([x, y]) => cond(x, y, 0)) };
-    if (isWord(toks[a], 'not')) return { k: 'not', of: cond(a + 1, b, 0) };
-    if (isPunct(toks[a], '(') && closeOf(a) === b - 1 && firstAt(T, a + 1, b - 1, (u) => isPunct(u, ',')) >= b - 1) return cond(a + 1, b - 1);
-    if (firstAt(T, a, b, (u) => isWord(u, 'if') || isWord(u, 'lambda')) < b) return opaque(a, b);
-    const opAt = firstAt(T, a, b, isCompare);
-    if (opAt < b) {
-      const t = toks[opAt];
-      let rhs = opAt + 1;
-      let neg = t.v === '!=';
-      if (isWord(t, 'is') && isWord(toks[rhs], 'not')) { rhs++; neg = true; }
-      const isNone = (x, y) => y === x + 1 && isWord(toks[x], 'None');
-      // One comparison only: a chain (`a == b != c`) is more.
-      const one = (isWord(t, 'is') || t.v === '==' || t.v === '!=') && firstAt(T, rhs, b, isCompare) >= b;
-      if (one && isNone(rhs, b)) return { k: 'none', of: value(a, opAt), neg };
-      if (one && isNone(a, opAt)) return { k: 'none', of: value(rhs, b), neg };
-      return opaque(a, b);
-    }
-    const v = value(a, b);
-    if (v.k === 'call' && v.callee.k === 'ref' && v.callee.name === 'isinstance' && table.references[v.callee.ref]?.to?.builtin && v.args.length === 2 && !v.args.some((x) => x.name || x.spread)) {
-      // The second argument's tokens: a tuple of classes, or one.
-      const open = a + 1;
-      const [, [ta, tb]] = partsBetween(T, open + 1, closeOf(open));
-      const types = isPunct(toks[ta], '(') && closeOf(ta) === tb - 1 ? partsBetween(T, ta + 1, tb - 1).map(([x, y]) => value(x, y)) : [v.args[1].value];
-      return { k: 'isinstance', of: v.args[0].value, types };
-    }
-    return v.k === 'opaque' ? v : { k: 'truthy', of: v };
-  });
-
+  const E = exprReader(F, EXPR.py);
+  const { T, toks } = F;
+  const { value, closeOf } = E;
   // What an assignment's left side from a to b-1 binds or sets.
   const target = (a, b) => {
     if (b === a + 1 && isWord(toks[a]) && F.bindAt.has(a)) return { k: 'name', name: toks[a].v, binding: F.bindAt.get(a) };
@@ -273,8 +99,8 @@ function pythonReader(F) {
     if (wrapped || firstAt(T, x, y, (u) => isPunct(u, ',')) < y) return { k: 'tuple', items: partsBetween(T, x, y).map(([pa, pb]) => target(pa, pb)) };
     return value(a, b);
   };
-
-  return { value, cond, target };
+  E.target = target;
+  return { value, cond: E.cond, target };
 }
 
 function pythonBodies(F) {
@@ -516,42 +342,152 @@ function pythonBodies(F) {
 //   (`x == null` is none with no exact: either); { k: 'typeof', of, is, neg } for `typeof x === 'string'`;
 //   `x instanceof C` is isinstance; `!` is not, `&&` and `||` are and and or.
 const JS_AUGMENTED = new Set(['+=', '-=', '*=', '/=', '%=', '**=', '<<=', '>>=', '>>>=', '&=', '|=', '^=', '&&=', '||=', '??=']);
-const JS_EQUALITY = new Set(['===', '!==', '==', '!=']);
 const JS_COMPARE = new Set(['===', '!==', '==', '!=', '<', '>', '<=', '>=']);
 const JS_LITERALS = new Set(['null', 'true', 'false']);
 const TS_TYPE_ONLY = new Set(['type', 'interface', 'declare']);
 const PARAM_MODIFIERS = new Set(['public', 'private', 'protected', 'readonly', 'override']);
 const MEMBER_MODIFIERS = new Set(['public', 'private', 'protected', 'static', 'readonly', 'abstract', 'override', 'declare', 'accessor', 'async', 'get', 'set']);
 
-function scriptReader(F) {
-  const { T, toks, match, refAt, table, starts } = F;
+// ------------------------------------------------------------------------------------ the one reader of values
+
+// What a language gives the one reader of values and conditions (exprReader): its words, marks and forms. The
+// engine is the same for every language: the order it tries the forms in, the walk of a chain, the split of a
+// condition at its operators, the comparisons with null. A form a language does not have is off. A new language is
+// a table here and a reader of its statements, not a second reader of values.
+const EXPR = {
+  py: {
+    literals: PY_LITERALS,
+    or: (u) => isWord(u, 'or'),
+    and: (u) => isWord(u, 'and'),
+    not: (u) => isWord(u, 'not'),
+    notTight: false, // `not a == b` is not (a == b): `not` binds looser than a comparison
+    comma: 'tuple', // `a, b` is a tuple
+    ternary: 'words', // `a if c else b`
+    fn: 'lambda',
+    binds: 'walrus', // `name := value`
+    nullishOp: null,
+    condOpaque: (u) => isWord(u, 'if') || isWord(u, 'lambda'),
+    compares: (u) => isWord(u, 'is') || isWord(u, 'in') || isWord(u, 'not') || (u.k === 'punct' && COMPARE.has(u.v)),
+    // The comparisons that can test for null, and whether they say which null (Python has one: never).
+    equality: { is: { neg: false, loose: true }, '==': { neg: false, loose: true }, '!=': { neg: true, loose: true } },
+    isNot: true, // `is not`
+    nullWords: new Set(['None']),
+    undefinedWord: false,
+    instanceOf: null,
+    typeofWord: null,
+    isinstanceCall: 'isinstance',
+    argSpreads: new Set(['*', '**']),
+    itemSpread: '*',
+    keywordArgs: true,
+    string: /^['"]/u,
+    stringPrefix: /^[rRbBuUfFtT]{1,2}$/u, // `f"…"`, `rb"…"`
+    concatStrings: true, // `"a" "b"` is one string
+    formatSpec: true, // `{x!r}`, `{x:>10}`: the use ends at the conversion
+    regex: false,
+    numberDot: true, // `1.5` is three tokens
+    comprehensions: true,
+    braces: 'dict',
+    newWord: false,
+    voidWord: false,
+    jsx: false,
+    as: false,
+    optional: false,
+    nonNull: false,
+    tagged: false,
+  },
+  js: {
+    literals: JS_LITERALS,
+    or: (u) => isPunct(u, '||'),
+    and: (u) => isPunct(u, '&&'),
+    not: (u) => isPunct(u, '!'),
+    notTight: true, // `!x === y` is (!x) === y: `!` binds tighter than a comparison
+    comma: 'sequence', // `a, b` is b
+    ternary: 'marks', // `c ? a : b`
+    fn: 'script', // arrows, function and class expressions
+    binds: 'assign', // `(m = re.exec(s))`
+    nullishOp: '??',
+    condOpaque: (u) => isPunct(u, '?') || isPunct(u, ',') || isPunct(u, '=>'),
+    compares: (u, j, refAt) => (u.k === 'punct' && JS_COMPARE.has(u.v)) || ((isWord(u, 'instanceof') || isWord(u, 'in')) && !refAt.has(j)),
+    equality: { '==': { neg: false, loose: true }, '!=': { neg: true, loose: true }, '===': { neg: false, loose: false }, '!==': { neg: true, loose: false } },
+    isNot: false,
+    nullWords: new Set(['null']),
+    undefinedWord: true, // the builtin `undefined`, not a local of that name
+    instanceOf: 'instanceof',
+    typeofWord: 'typeof',
+    isinstanceCall: null,
+    argSpreads: new Set(['...']),
+    itemSpread: '...',
+    keywordArgs: false,
+    string: /^['"`]/u,
+    stringPrefix: null,
+    concatStrings: false,
+    formatSpec: false,
+    regex: true,
+    numberDot: false,
+    comprehensions: false,
+    braces: 'object',
+    newWord: true,
+    voidWord: true,
+    jsx: true, // in a file lexLang reads as JSX (not .ts)
+    as: true, // `x as T`, `x satisfies T`
+    optional: true, // `?.`
+    nonNull: true, // `x!`
+    tagged: true, // `` tag`…` ``
+  },
+};
+
+// The one reader of values and conditions, for the language L. It returns { value, cond, opaque, closeOf, items };
+// the caller sets target (what an assignment's left side sets, a reader of patterns of its own language), which an
+// assignment inside an expression asks.
+function exprReader(F, L) {
+  const { T, toks, match, refAt, table } = F;
+  const api = { target: null };
   const opaque = (a, b) => ({ k: 'opaque', text: textOf(toks, a, b) });
   const closeOf = (j) => match.get(j) ?? -1;
+  const isString = (t) => t?.k === 'val' && L.string.test(t.text ?? '');
   const quoted = (t) => t?.k === 'val' && /^['"]/u.test(t.text ?? '');
-  const template = (t) => t?.k === 'val' && /^`/u.test(t.text ?? '');
-  const regex = (t) => t?.k === 'val' && /^\//u.test(t.text ?? '');
+  const isTemplate = (t) => L.tagged && t?.k === 'val' && /^`/u.test(t.text ?? '');
+  const isRegex = (t) => L.regex && t?.k === 'val' && /^\//u.test(t.text ?? '');
   const isNumber = (t) => t?.k === 'val' && /^\.?\d/u.test(t.v);
+  const isComma = (u) => isPunct(u, ',');
   const opens = (t) => (isPunct(t, '(') || isPunct(t, '[') || isPunct(t, '{')) && !t.synthetic;
-  const jsx = !/\.[mc]?ts$/u.test(T.path ?? '');
+  const jsx = L.jsx && !/\.[mc]?ts$/u.test(T.path ?? '');
+  const word = (j, v) => isWord(toks[j], v) && !refAt.has(j);
+  const compares = (u, j) => L.compares(u, j, refAt);
+  const hasFor = (x, y) => firstAt(T, x, y, (u) => isWord(u, 'for')) < y;
+  // A string's prefix (`f"…"`): a word that is no name, right before a string on its line.
+  const isPrefix = (j) => Boolean(L.stringPrefix) && isWord(toks[j]) && !refAt.has(j) && L.stringPrefix.test(toks[j].v) && isString(toks[j + 1]) && toks[j + 1].line === toks[j].line;
+  const builtinUndefined = (j) => L.undefinedWord && isWord(toks[j], 'undefined') && refAt.has(j) && table.references[refAt.get(j)].to.builtin;
   // The function or class scope that starts at token j, of the kind asked.
-  const scopeAt = (j, kind) => starts.get(j)?.find((s) => T.scopes[s].kind === kind) ?? null;
+  const scopeAt = (j, kind) => F.starts?.get(j)?.find((s) => T.scopes[s].kind === kind) ?? null;
   // The scope of the arrow that starts at token a (its parameters, or `async` before them).
   const arrowAt = (a) => {
     for (const j of [a, a + 1]) { const s = scopeAt(j, 'function'); if (s !== null && T.scopes[s].arrow) return s; }
     return null;
   };
-  const builtinUndefined = (j) => isWord(toks[j], 'undefined') && refAt.has(j) && table.references[refAt.get(j)].to.builtin;
 
-  const templateEnd = (j) => {
-    for (j++; toks[j]?.synthetic && isPunct(toks[j], '('); j = closeOf(j) + 1) countStep();
-    return j;
+  // A string and the placeholders of its f-string or template (synthetic parentheses); where strings written side
+  // by side are one (Python), the strings after it and their prefixes too.
+  const stringEnd = (j, b) => {
+    j++;
+    for (;;) {
+      countStep();
+      if (j < b && toks[j].synthetic && isPunct(toks[j], '(')) { j = closeOf(j) + 1; continue; }
+      if (!L.concatStrings) return j;
+      if (j < b && isString(toks[j])) { j++; continue; }
+      if (j + 1 < b && isPrefix(j)) { j++; continue; }
+      return j;
+    }
   };
+  // `1`, `1e3`, and in Python `1.5` (three tokens).
+  const numberEnd = (j, b) => (L.numberDot && j + 2 < b && isPunct(toks[j + 1], '.') && isNumber(toks[j + 2]) && toks[j + 2].line === toks[j].line ? j + 3 : j + 1);
+  // Where the primary that starts at token a ends (the token after it), or -1 if none starts there.
   const primaryEnd = (a, b) => {
     const t = toks[a];
     if (!t || a >= b) return -1;
     if (t.k === 'word') {
-      if (JS_LITERALS.has(t.v)) return a + 1;
-      if (t.v === 'new') {
+      if (L.literals.has(t.v)) return a + 1;
+      if (L.newWord && t.v === 'new') {
         if (isPunct(toks[a + 1], '.')) return isWord(toks[a + 2]) ? a + 3 : -1;
         let q = primaryEnd(a + 1, b);
         if (q < 0) return -1;
@@ -561,28 +497,31 @@ function scriptReader(F) {
         if (isPunct(toks[q], '(') && !toks[q].synthetic) { const c = closeOf(q); return c < 0 || c >= b ? -1 : c + 1; }
         return q;
       }
-      return refAt.has(a) ? a + 1 : -1;
+      if (refAt.has(a)) return a + 1;
+      return isPrefix(a) ? stringEnd(a + 1, b) : -1;
     }
-    if (quoted(t) || regex(t)) return a + 1;
-    if (template(t)) return templateEnd(a);
-    if (isNumber(t)) return a + 1;
-    if (isPunct(t, '-') && isNumber(toks[a + 1])) return a + 2;
+    if (isString(t)) return stringEnd(a, b);
+    if (isRegex(t)) return a + 1;
+    if (isNumber(t)) return numberEnd(a, b);
+    if (isPunct(t, '-') && isNumber(toks[a + 1])) return numberEnd(a + 1, b);
     if (opens(t)) { const c = closeOf(a); return c < 0 || c >= b ? -1 : c + 1; }
     if (jsx && isPunct(t, '<')) return b;
     return -1;
   };
-  // The token after a postfix at q (`.x`, `?.x`, `[…]`, `?.[…]`, `(…)`, `?.(…)`, `<T>(…)`, a non-null `!`), or -1.
+  // The token after a postfix at q (`.x`, `[…]`, `(…)`; where the language has them `?.x`, `?.[…]`, `?.(…)`,
+  // `<T>(…)`, a non-null `!`, a tagged template), or -1.
   const postfixEnd = (q, b) => {
     let j = q;
-    if (isPunct(toks[j], '?.')) { if (isWord(toks[j + 1]) && j + 1 < b) return j + 2; j++; }
+    if (L.optional && isPunct(toks[j], '?.')) { if (isWord(toks[j + 1]) && j + 1 < b) return j + 2; j++; }
     if (isPunct(toks[j], '.') && isWord(toks[j + 1]) && j + 1 < b) return j + 2;
-    if (isPunct(toks[j], '!') && j === q) return j + 1;
-    if (template(toks[j]) && j === q) return templateEnd(j);
+    if (L.nonNull && isPunct(toks[j], '!') && j === q) return j + 1;
+    if (isTemplate(toks[j]) && j === q) return stringEnd(j, b);
     const angle = T.typeAngles?.get(j);
     if (angle !== undefined && angle < b && isPunct(toks[angle], '(')) j = angle;
     if ((isPunct(toks[j], '[') || isPunct(toks[j], '(')) && !toks[j].synthetic) { const c = closeOf(j); return c < 0 || c >= b ? -1 : c + 1; }
     return -1;
   };
+  // Whether a to b-1 is one primary and its postfixes, read at depth 0 only.
   const isChain = (a, b) => {
     let q = primaryEnd(a, b);
     if (q < 0) return false;
@@ -590,55 +529,43 @@ function scriptReader(F) {
     return true;
   };
 
-  const items = (a, b) => partsBetween(T, a, b).map(([pa, pb]) => (pa === pb ? null : isPunct(toks[pa], '...') ? { ...value(pa + 1, pb), spread: '...' } : value(pa, pb)));
-  const args = (open, close) => partsBetween(T, open + 1, close).map(([pa, pb]) => (isPunct(toks[pa], '...') ? { spread: '...', value: value(pa + 1, pb) } : { value: value(pa, pb) }));
+  // The values of a tuple's, a list's or a set's parts: a hole is null, a starred or spread one carries spread.
+  const items = (a, b) => partsBetween(T, a, b).map(([pa, pb]) => (pa === pb ? null : isPunct(toks[pa], L.itemSpread) ? { ...value(pa + 1, pb), spread: L.itemSpread } : value(pa, pb)));
+  const args = (open, close) => partsBetween(T, open + 1, close).map(([pa, pb]) => {
+    if (toks[pa].k === 'punct' && L.argSpreads.has(toks[pa].v)) return { spread: toks[pa].v, value: value(pa + 1, pb) };
+    if (L.keywordArgs && isWord(toks[pa]) && isPunct(toks[pa + 1], '=') && pa + 1 < pb) return { name: toks[pa].v, value: value(pa + 2, pb) };
+    return { value: value(pa, pb) };
+  });
+  // A call of a name the file binds as a class constructs it.
   const isClassRef = (v) => {
     if (v.k !== 'ref') return false;
     const b = table.references[v.ref]?.to?.binding;
     return b !== undefined && table.bindings[b]?.how === 'class';
   };
 
-  const primary = (a, e) => {
-    const t = toks[a];
-    if (t.k === 'word') {
-      if (JS_LITERALS.has(t.v)) return { k: 'lit', v: t.v };
-      if (t.v === 'new') {
-        if (isPunct(toks[a + 1], '.')) return opaque(a, e);
-        let q = primaryEnd(a + 1, e);
-        let callee = primary(a + 1, q);
-        while (q < e && isPunct(toks[q], '.')) { callee = { k: 'attr', of: callee, name: toks[q + 1].v }; q += 2; }
-        const angle = T.typeAngles?.get(q);
-        if (angle !== undefined && angle <= e) q = angle;
-        return { k: 'new', callee, args: q < e ? args(q, closeOf(q)) : [] };
-      }
-      if (builtinUndefined(a)) return { k: 'lit', v: 'undefined' };
-      return { k: 'ref', name: t.v, ref: refAt.get(a) };
-    }
-    if (quoted(t)) return { k: 'lit', v: 'str' };
-    if (regex(t)) return { k: 'lit', v: 'regex' };
-    if (template(t)) {
-      const uses = [];
-      for (let j = a + 1; j < e; j = closeOf(j) + 1) { countStep(); uses.push(value(j + 1, closeOf(j))); }
-      return uses.length ? { k: 'lit', v: 'str', uses } : { k: 'lit', v: 'str' };
-    }
-    if (isNumber(t) || isPunct(t, '-')) return { k: 'lit', v: 'num', text: textOf(toks, a, e) };
-    if (isPunct(t, '(')) {
-      // `(0, f)`, as TypeScript writes an unbound call: a comma expression whose earlier parts are literals is its last.
-      const parts = partsBetween(T, a + 1, e - 1);
-      if (parts.length > 1 && parts.slice(0, -1).every(([x, y]) => y === x + 1 && (toks[x].k === 'val' || JS_LITERALS.has(toks[x].v)))) return value(...parts.at(-1));
-      return value(a + 1, e - 1);
-    }
-    if (isPunct(t, '[')) return { k: 'lit', v: 'list', items: items(a + 1, e - 1) };
-    if (isPunct(t, '{')) return { k: 'lit', v: 'dict', entries: entries(a + 1, e - 1) };
-    return { k: 'lit', v: 'jsx' };
+  // A Python dict's entries ({ key, name?, value }, name: a string key's text; or { spread: '**', value }), a set's
+  // items, a comprehension's text.
+  const dict = (a, e) => {
+    const [x, y] = [a + 1, e - 1];
+    const colon = x < y && firstAt(T, x, y, (u) => isPunct(u, ':') || isPunct(u, '**')) < y;
+    if (hasFor(x, y)) return { k: 'lit', v: colon ? 'dict' : 'set', text: textOf(toks, a, e) };
+    if (x < y && !colon) return { k: 'lit', v: 'set', items: items(x, y) };
+    const entries = partsBetween(T, x, y).map(([pa, pb]) => {
+      if (isPunct(toks[pa], '**')) return { spread: '**', value: value(pa + 1, pb) };
+      const at = firstAt(T, pa, pb, (u) => isPunct(u, ':'));
+      const entry = { key: value(pa, at), value: value(at + 1, pb) };
+      if (at === pa + 1 && quoted(toks[pa])) entry.name = toks[pa].text.slice(1, -1);
+      return entry;
+    });
+    return { k: 'lit', v: 'dict', entries };
   };
   // An object literal's entries: { name, value } (a word, string or number key; a shorthand `{ a }` is a's
   // reference), { key, value } (a computed `[k]: v`), { spread: '...', value }; a method or an accessor is its
   // function's value.
-  const entries = (a, b) => partsBetween(T, a, b).filter(([pa, pb]) => pa < pb).map(([pa, pb]) => {
+  const objectEntries = (a, b) => partsBetween(T, a, b).filter(([pa, pb]) => pa < pb).map(([pa, pb]) => {
     countStep();
     if (isPunct(toks[pa], '...')) return { spread: '...', value: value(pa + 1, pb) };
-    const fn = scopeFrom(pa, pb, 'function');
+    const fn = methodFrom(pa, pb);
     if (fn !== null) {
       // The name is the token before the method's scope (its parameters or type parameters): `m(`, `[k](`.
       const last = T.scopes[fn].a - 1;
@@ -650,17 +577,60 @@ function scriptReader(F) {
     if (isPunct(toks[pa], '[')) return { key: value(pa + 1, closeOf(pa)), value: value(colon + 1, pb) };
     return { name: quoted(toks[pa]) ? toks[pa].text.slice(1, -1) : toks[pa].v, value: value(colon + 1, pb) };
   });
-  // The first function scope starting from token a, before b, at the parts' depth.
-  const scopeFrom = (a, b, kind) => {
+  // The function scope a method of an object literal starts, from token a, before b, at the parts' depth.
+  const methodFrom = (a, b) => {
     for (let j = a; j < b; j++) {
       countStep();
-      const s = scopeAt(j, kind);
+      const s = scopeAt(j, 'function');
       if (s !== null) return s;
       if (isPunct(toks[j], ':') || isPunct(toks[j], '{')) return null;
       if (opens(toks[j]) && !isPunct(toks[j], '[')) return null;
       if (isPunct(toks[j], '[')) j = closeOf(j);
     }
     return null;
+  };
+
+  const primary = (a, e) => {
+    const t = toks[a];
+    if (t.k === 'word') {
+      if (L.literals.has(t.v)) return { k: 'lit', v: t.v };
+      if (L.newWord && t.v === 'new') {
+        if (isPunct(toks[a + 1], '.')) return opaque(a, e);
+        let q = primaryEnd(a + 1, e);
+        let callee = primary(a + 1, q);
+        while (q < e && isPunct(toks[q], '.')) { callee = { k: 'attr', of: callee, name: toks[q + 1].v }; q += 2; }
+        const angle = T.typeAngles?.get(q);
+        if (angle !== undefined && angle <= e) q = angle;
+        return { k: 'new', callee, args: q < e ? args(q, closeOf(q)) : [] };
+      }
+      if (builtinUndefined(a)) return { k: 'lit', v: 'undefined' };
+      if (refAt.has(a)) return { k: 'ref', name: t.v, ref: refAt.get(a) };
+    }
+    if (isRegex(t)) return { k: 'lit', v: 'regex' };
+    if (isNumber(t) || isPunct(t, '-')) return { k: 'lit', v: 'num', text: textOf(toks, a, e) };
+    if (isPunct(t, '(')) {
+      if (a + 1 === e - 1) return L.comma === 'tuple' ? { k: 'lit', v: 'tuple', items: [] } : opaque(a + 1, e - 1);
+      if (L.comprehensions && hasFor(a + 1, e - 1)) return opaque(a, e);
+      return value(a + 1, e - 1);
+    }
+    if (isPunct(t, '[')) {
+      if (L.comprehensions && hasFor(a + 1, e - 1)) return { k: 'lit', v: 'list', text: textOf(toks, a, e) };
+      return { k: 'lit', v: 'list', items: items(a + 1, e - 1) };
+    }
+    if (isPunct(t, '{')) return L.braces === 'dict' ? dict(a, e) : { k: 'lit', v: 'dict', entries: objectEntries(a + 1, e - 1) };
+    if (jsx && isPunct(t, '<')) return { k: 'lit', v: 'jsx' };
+    // A string run: what its placeholders hold are uses (up to a conversion or a format spec where the language has
+    // them: `{x!r}`, `{x:>10}`).
+    const uses = [];
+    for (let j = a; j < e; j++) {
+      countStep();
+      if (toks[j].synthetic && isPunct(toks[j], '(')) {
+        const c = closeOf(j);
+        uses.push(value(j + 1, L.formatSpec ? firstAt(T, j + 1, c, (u) => u.k === 'val' && /^[!:]/u.test(u.text ?? '')) : c));
+        j = c;
+      }
+    }
+    return uses.length ? { k: 'lit', v: 'str', uses } : { k: 'lit', v: 'str' };
   };
 
   let depth = 0;
@@ -686,44 +656,78 @@ function scriptReader(F) {
     const c = colons.get(q);
     return c !== undefined && c < b ? c : b;
   };
-  const value = nested((a, b, noComma = false) => {
-    if (a >= b) return opaque(a, b);
-    // A function or a class written here: its scope, read as a body of its own.
+
+  // A function written as a value: a lambda (Python), an arrow or a function or class expression (scripts).
+  const fnValue = (a, b) => {
+    if (L.fn === 'lambda') return isWord(toks[a], 'lambda') && F.lambdaAt.has(a) ? { k: 'fn', scope: F.lambdaAt.get(a) } : null;
     const arrow = arrowAt(a);
     if (arrow !== null && T.scopes[arrow].b >= b) return { k: 'fn', scope: arrow };
     const fnAt = isWord(toks[a], 'async') && isWord(toks[a + 1], 'function') ? a + 1 : a;
-    if (isWord(toks[fnAt], 'function') || isWord(toks[a], 'class')) {
-      const kind = isWord(toks[a], 'class') ? 'class' : 'function';
-      for (let j = fnAt + 1; j < b; j++) {
-        countStep();
-        const s = scopeAt(j, kind);
-        if (s !== null) return T.scopes[s].b >= b ? { k: kind === 'class' ? 'class' : 'fn', scope: s } : opaque(a, b);
-        if (isPunct(toks[j], '{') && kind === 'function') break;
-      }
-      return opaque(a, b);
+    if (!isWord(toks[fnAt], 'function') && !isWord(toks[a], 'class')) return null;
+    const kind = isWord(toks[a], 'class') ? 'class' : 'function';
+    for (let j = fnAt + 1; j < b; j++) {
+      countStep();
+      const s = scopeAt(j, kind);
+      if (s !== null) return T.scopes[s].b >= b ? { k: kind === 'class' ? 'class' : 'fn', scope: s } : opaque(a, b);
+      if (isPunct(toks[j], '{') && kind === 'function') break;
     }
-    if (isWord(toks[a], 'await')) return { ...value(a + 1, b, noComma), await: true };
-    if (isWord(toks[a], 'void') && !refAt.has(a) && b === a + 2 && toks[a + 1].k === 'val') return { k: 'lit', v: 'undefined' };
-    if (!noComma && firstAt(T, a, b, (u) => isPunct(u, ',')) < b) return opaque(a, b);
-    // An assignment inside an expression (`(m = re.exec(s))`, `(x ||= y)`): its value (an augmented one's is
-    // opaque) with binds, the target it sets. Assignment binds loosest, so the first depth-0 `=` splits it, unless
-    // a `?` comes before (`c ? x = 1 : y`: the assignment is in the middle).
-    // A JSX element's attributes (`<a href={x}>`) hold `=` too: an element is a literal, read before.
-    if (jsx && isPunct(toks[a], '<')) return { k: 'lit', v: 'jsx' };
-    const assignAt = firstAt(T, a, b, (u) => isPunct(u, '=') || (u.k === 'punct' && JS_AUGMENTED.has(u.v)) || isPunct(u, '?'));
-    if (assignAt < b && assignAt > a && !isPunct(toks[assignAt], '?')) {
-      const binds = target(a, assignAt);
-      if (isPunct(toks[assignAt], '=')) return { ...value(assignAt + 1, b, true), binds };
-      return { ...opaque(a, b), binds, aug: toks[assignAt].v };
+    return opaque(a, b);
+  };
+  // `a, b` at depth 0: a tuple (Python), or a sequence (scripts), whose value is its last part when the parts before
+  // are literals (`(0, f)`, as TypeScript writes an unbound call) and opaque otherwise.
+  const commaValue = (a, b) => {
+    if (L.comma === 'tuple') return { k: 'lit', v: 'tuple', items: items(a, b) };
+    const parts = partsBetween(T, a, b);
+    if (parts.length > 1 && parts.slice(0, -1).every(([x, y]) => y === x + 1 && (toks[x].k === 'val' || L.literals.has(toks[x].v)))) return value(...parts.at(-1));
+    return opaque(a, b);
+  };
+  // A value that binds a name as it is made: a walrus (`(m := f())`), an assignment inside an expression
+  // (`(m = re.exec(s))`, `(x ||= y)`; an augmented one's value is opaque); its value with binds, what it sets.
+  // Assignment binds loosest, so the first depth-0 `=` splits it, unless a `?` comes before (`c ? x = 1 : y`).
+  const bindsValue = (a, b) => {
+    if (L.binds === 'walrus') {
+      if (!(isWord(toks[a]) && F.bindAt.has(a) && isPunct(toks[a + 1], ':') && isPunct(toks[a + 2], '='))) return null;
+      return { ...value(a + 3, b, true), binds: { k: 'name', name: toks[a].v, binding: F.bindAt.get(a) } };
+    }
+    const at = firstAt(T, a, b, (u) => isPunct(u, '=') || (u.k === 'punct' && JS_AUGMENTED.has(u.v)) || isPunct(u, '?'));
+    if (!(at < b && at > a) || isPunct(toks[at], '?')) return null;
+    const binds = api.target(a, at);
+    if (isPunct(toks[at], '=')) return { ...value(at + 1, b, true), binds };
+    return { ...opaque(a, b), binds, aug: toks[at].v };
+  };
+  // A conditional expression: `a if c else b`, or `c ? a : b` (whose missing `:` makes it opaque).
+  const choice = (a, b) => {
+    if (L.ternary === 'words') {
+      const ifAt = firstAt(T, a, b, (u) => isWord(u, 'if'));
+      if (!(ifAt < b && ifAt > a)) return null;
+      const elseAt = firstAt(T, ifAt + 1, b, (u) => isWord(u, 'else'));
+      return elseAt < b ? { k: 'choice', cond: cond(ifAt + 1, elseAt), then: value(a, ifAt, true), else: value(elseAt + 1, b, true) } : null;
     }
     const q = firstAt(T, a, b, (u) => isPunct(u, '?'));
-    if (q < b && q > a) {
-      const c = colonOf(q, b);
-      if (c < b) return { k: 'choice', cond: cond(a, q), then: value(q + 1, c, true), else: value(c + 1, b, true) };
-      return opaque(a, b);
+    if (!(q < b && q > a)) return null;
+    const c = colonOf(q, b);
+    return c < b ? { k: 'choice', cond: cond(a, q), then: value(q + 1, c, true), else: value(c + 1, b, true) } : opaque(a, b);
+  };
+
+  // The forms in the order they bind, loosest first: a function written here, a comma, await, `void 0`, a JSX
+  // element (its attributes hold `=`), a binding value, a conditional, `as`, then one chain or opaque. noComma: the
+  // caller knows a to b-1 holds no depth-0 comma, so a chain of conditionals is not searched for one at each link.
+  const value = nested((a, b, noComma = false) => {
+    if (a >= b) return opaque(a, b);
+    const fn = fnValue(a, b);
+    if (fn) return fn;
+    if (!noComma && firstAt(T, a, b, isComma) < b) return commaValue(a, b);
+    if (isWord(toks[a], 'await')) return { ...value(a + 1, b, true), await: true };
+    if (L.voidWord && word(a, 'void') && b === a + 2 && toks[a + 1].k === 'val') return { k: 'lit', v: 'undefined' };
+    if (jsx && isPunct(toks[a], '<')) return { k: 'lit', v: 'jsx' };
+    const bound = bindsValue(a, b);
+    if (bound) return bound;
+    const ternary = choice(a, b);
+    if (ternary) return ternary;
+    if (L.as) {
+      const asAt = firstAt(T, a, b, (u, j) => (isWord(u, 'as') || isWord(u, 'satisfies')) && !refAt.has(j));
+      if (asAt < b && asAt > a) return { ...value(a, asAt, true), as: textOf(toks, asAt + 1, b) };
     }
-    const asAt = firstAt(T, a, b, (u, j) => (isWord(u, 'as') || isWord(u, 'satisfies')) && !refAt.has(j));
-    if (asAt < b && asAt > a) return { ...value(a, asAt, true), as: textOf(toks, asAt + 1, b) };
     if (!isChain(a, b)) return opaque(a, b);
     let e = primaryEnd(a, b);
     let v = primary(a, e);
@@ -731,11 +735,11 @@ function scriptReader(F) {
       countStep();
       const next = postfixEnd(e, b);
       let j = e;
-      const optional = isPunct(toks[j], '?.');
+      const optional = L.optional && isPunct(toks[j], '?.');
       if (optional) j++;
-      if (isPunct(toks[j], '!') && !optional) { e = next; continue; }
+      if (L.nonNull && isPunct(toks[j], '!') && !optional) { e = next; continue; }
       // A tagged template (`` sql`… ${x}` ``) is a call of its tag with the template.
-      if (template(toks[j]) && !optional) { v = { k: 'call', callee: v, args: [{ value: primary(j, next) }], tagged: true }; e = next; continue; }
+      if (isTemplate(toks[j]) && !optional) { v = { k: 'call', callee: v, args: [{ value: primary(j, next) }], tagged: true }; e = next; continue; }
       const angle = T.typeAngles?.get(j);
       if (angle !== undefined && angle < b && isPunct(toks[angle], '(')) j = angle;
       if (isWord(toks[j])) v = { k: 'attr', of: v, name: toks[j].v };
@@ -748,49 +752,71 @@ function scriptReader(F) {
     return v;
   });
 
-  const isEquality = (u) => u.k === 'punct' && JS_COMPARE.has(u.v);
+  // The null a token range is: 'None', 'null' or 'undefined' (the builtin), or null.
   const nullish = (x, y) => {
     if (y !== x + 1) return null;
-    if (isWord(toks[x], 'null')) return 'null';
+    if (isWord(toks[x]) && L.nullWords.has(toks[x].v)) return toks[x].v;
     return builtinUndefined(x) ? 'undefined' : null;
   };
   const stringOf = (x, y) => (y === x + 1 && quoted(toks[x]) ? toks[x].text.slice(1, -1) : null);
-  const compares = (u, j) => isEquality(u) || ((isWord(u, 'instanceof') || isWord(u, 'in')) && !refAt.has(j));
-  // split: 2 to look for a depth-0 `||` and `&&`, 1 for `&&` only, 0 for neither, -1 for neither and no comparison
-  // either (what follows a `!` whose range had none), so a run of `!` is not searched again at each one. `!` binds
-  // tighter than a comparison: `!x === y` is `(!x) === y`, opaque, not the negation of `x === y`.
+  // A comparison at op, the only one in a to b-1: with null (none: neg for `is not`, `!=`, `!==`; exact for a
+  // strict one, which says which null), with typeof's string (`typeof x === 'string'`), instanceof; else opaque.
+  const comparison = (a, op, b) => {
+    const t = toks[op];
+    let rhs = op + 1;
+    let eq = Object.hasOwn(L.equality, t.v) ? L.equality[t.v] : null;
+    if (L.isNot && isWord(t, 'is') && isWord(toks[rhs], 'not')) { rhs++; eq = { neg: true, loose: true }; }
+    if (firstAt(T, rhs, b, compares) < b) return opaque(a, b);
+    if (L.instanceOf && isWord(t, L.instanceOf)) return { k: 'isinstance', of: value(a, op), types: [value(op + 1, b)] };
+    if (!eq) return opaque(a, b);
+    for (const [x, y, ox, oy] of [[rhs, b, a, op], [a, op, rhs, b]]) {
+      const n = nullish(x, y);
+      if (n) return eq.loose ? { k: 'none', of: value(ox, oy), neg: eq.neg } : { k: 'none', of: value(ox, oy), neg: eq.neg, exact: n };
+      const s = L.typeofWord ? stringOf(x, y) : null;
+      if (s !== null && word(ox, L.typeofWord)) {
+        if (s === 'undefined') return { k: 'none', of: value(ox + 1, oy), neg: eq.neg, exact: 'undefined' };
+        return { k: 'typeof', of: value(ox + 1, oy), is: s, neg: eq.neg };
+      }
+    }
+    return opaque(a, b);
+  };
+  // `isinstance(x, C)` or `isinstance(x, (A, B))`, with the builtin isinstance (not a local of that name).
+  const isinstanceCall = (a, v) => {
+    if (!(L.isinstanceCall && v.k === 'call' && v.callee.k === 'ref' && v.callee.name === L.isinstanceCall && table.references[v.callee.ref]?.to?.builtin && v.args.length === 2 && !v.args.some((x) => x.name || x.spread))) return null;
+    const open = a + 1;
+    const [, [ta, tb]] = partsBetween(T, open + 1, closeOf(open));
+    const types = isPunct(toks[ta], '(') && closeOf(ta) === tb - 1 ? partsBetween(T, ta + 1, tb - 1).map(([x, y]) => value(x, y)) : [v.args[1].value];
+    return { k: 'isinstance', of: v.args[0].value, types };
+  };
+  // split: 2 to look for a depth-0 or and and, 1 for and only (a part of an or), 0 for neither (what follows a
+  // loose `not`), -1 for neither and no comparison either (what follows a tight `!` whose range had none), so a run of
+  // them is not searched again at each one. A loose `not` takes the comparison after it (`not a == b`); a tight `!`
+  // before a comparison is opaque (`!x === y` is `(!x) === y`).
   const cond = nested((a, b, split = 2) => {
     if (a >= b) return opaque(a, b);
-    if (split > 0 && firstAt(T, a, b, (u) => isPunct(u, '??')) < b) return opaque(a, b);
-    const ors = split > 1 ? splitAt(T, a, b, (u) => isPunct(u, '||')) : [];
+    if (L.nullishOp && split > 0 && firstAt(T, a, b, (u) => isPunct(u, L.nullishOp)) < b) return opaque(a, b);
+    const ors = split > 1 ? splitAt(T, a, b, L.or) : [];
     if (ors.length > 1) return { k: 'or', of: ors.map(([x, y]) => cond(x, y, 1)) };
-    const ands = split > 0 ? splitAt(T, a, b, (u) => isPunct(u, '&&')) : [];
+    const ands = split > 0 ? splitAt(T, a, b, L.and) : [];
     if (ands.length > 1) return { k: 'and', of: ands.map(([x, y]) => cond(x, y, 0)) };
-    if (isPunct(toks[a], '(') && closeOf(a) === b - 1) return cond(a + 1, b - 1);
-    if (split >= 0 && firstAt(T, a, b, (u) => isPunct(u, '?') || isPunct(u, ',') || isPunct(u, '=>')) < b) return opaque(a, b);
+    if (!L.notTight && L.not(toks[a])) return { k: 'not', of: cond(a + 1, b, 0) };
+    if (isPunct(toks[a], '(') && closeOf(a) === b - 1 && firstAt(T, a + 1, b - 1, isComma) >= b - 1) return cond(a + 1, b - 1);
+    if (split >= 0 && firstAt(T, a, b, L.condOpaque) < b) return opaque(a, b);
     const op = split >= 0 ? firstAt(T, a, b, compares) : b;
-    if (isPunct(toks[a], '!')) return op < b ? opaque(a, b) : { k: 'not', of: cond(a + 1, b, -1) };
-    if (op < b) {
-      const t = toks[op];
-      if (firstAt(T, op + 1, b, compares) < b) return opaque(a, b);
-      if (isWord(t, 'instanceof')) return { k: 'isinstance', of: value(a, op), types: [value(op + 1, b)] };
-      if (!JS_EQUALITY.has(t.v)) return opaque(a, b);
-      const neg = t.v.startsWith('!');
-      const loose = t.v.length === 2;
-      for (const [x, y, ox, oy] of [[op + 1, b, a, op], [a, op, op + 1, b]]) {
-        const n = nullish(x, y);
-        if (n) return loose ? { k: 'none', of: value(ox, oy), neg } : { k: 'none', of: value(ox, oy), neg, exact: n };
-        const s = stringOf(x, y);
-        if (s !== null && isWord(toks[ox], 'typeof') && !refAt.has(ox)) {
-          if (s === 'undefined') return { k: 'none', of: value(ox + 1, oy), neg, exact: 'undefined' };
-          return { k: 'typeof', of: value(ox + 1, oy), is: s, neg };
-        }
-      }
-      return opaque(a, b);
-    }
+    if (L.notTight && L.not(toks[a])) return op < b ? opaque(a, b) : { k: 'not', of: cond(a + 1, b, -1) };
+    if (op < b) return comparison(a, op, b);
     const v = value(a, b);
-    return v.k === 'opaque' ? v : { k: 'truthy', of: v };
+    return isinstanceCall(a, v) ?? (v.k === 'opaque' ? v : { k: 'truthy', of: v });
   });
+
+  return Object.assign(api, { value, cond, opaque, closeOf, items });
+}
+
+// The scripts' reader of values: the one reader with JavaScript's table, and its own reader of patterns.
+function scriptReader(F) {
+  const E = exprReader(F, EXPR.js);
+  const { T, toks } = F;
+  const { value, opaque, closeOf } = E;
 
   // A destructuring pattern, or a plain name, from token a to b-1 (a type after a top-level `:` left out).
   const pattern = (a, b) => {
@@ -828,7 +854,8 @@ function scriptReader(F) {
     return value(a, b);
   };
 
-  return { value, cond, target, pattern, withDefault, opaque, closeOf };
+  E.target = target;
+  return { value, cond: E.cond, target, pattern, withDefault, opaque, closeOf };
 }
 
 function scriptBodies(F) {

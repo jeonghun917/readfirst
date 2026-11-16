@@ -114,6 +114,21 @@ test('flow, Python: a value nested deeper than CPython parses (200) is opaque wi
   assert.equal(w.text, `${'f('.repeat(50)}x${')'.repeat(50)}`);
 });
 
+test('flow: one reader of values for both languages: what its merge fixed in each', () => {
+  // A word before a string is a prefix only if it is one (`f`, `rb`): `yield` and `in` are not.
+  assert.equal(valueOf('"a" in "abc"').k, 'opaque');
+  assert.equal(shape(stepsOf('def g():\n    yield "x".format(1)\n', 'g')[0].value).k, 'opaque');
+  assert.deepEqual(valueOf('rb"a" f"{x}"'), { k: 'lit', v: 'str', uses: [X] });
+  // A dict comprehension is a dict.
+  assert.deepEqual(valueOf('{k: x for k in y}'), { k: 'lit', v: 'dict', text: '{k: x for k in y}' });
+  assert.deepEqual(valueOf('{k for k in y}'), { k: 'lit', v: 'set', text: '{k for k in y}' });
+  // A comma binds loosest: `await a, b` is a tuple whose first item is awaited.
+  assert.deepEqual(valueOf('await x, y'), { k: 'lit', v: 'tuple', items: [{ ...X, await: true }, { k: 'ref', name: 'y' }] });
+  // A JS condition in parentheses that hold a comma is a sequence, not split at the || inside it.
+  assert.equal(jsCond('(f(), !x || y)').k, 'opaque');
+  assert.deepEqual(jsCond('(x)'), { k: 'truthy', of: X });
+});
+
 test('flow, Python: a lambda is a function value, its body a scope of the table', () => {
   const out = flowSteps('a.py', 'g = lambda z: z + 1\n');
   const v = out.bodies[0].steps[0].value;
